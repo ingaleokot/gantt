@@ -1,8 +1,14 @@
-import React, { useMemo, useRef, useState, useCallback, memo } from "react";
+import React, { useMemo, useRef, useState, useEffect, useCallback, memo } from "react";
 import { createRoot } from "react-dom/client";
 import { Gantt } from "@svar-ui/react-gantt";
 import { Willow as CoreWillow } from "@svar-ui/react-core";
 import { Willow as GridWillow } from "@svar-ui/react-grid";
+
+/* same stylesheet order as the editor */
+import "../style.css";
+import "@svar-ui/react-gantt/all.css";
+import "../wx-overrides.css";
+import "../icons.css";
 
 const DAY = 24 * 60 * 60 * 1000;
 const HOURS_PER_DAY = 7;
@@ -83,10 +89,16 @@ function trackerId(url) {
   return m ? m[1].toUpperCase() : null;
 }
 
-/* ---------- load embedded data ---------- */
-function loadStore() {
-  let raw = null;
-  try { raw = JSON.parse(document.getElementById("view-data").textContent); } catch (e) {}
+/* ---------- data comes from the `shared` edge function at runtime ---------- */
+const DATA_URL = import.meta.env.VITE_SUPABASE_URL + "/functions/v1/shared?raw=1";
+
+async function fetchStore() {
+  const r = await fetch(DATA_URL, { cache: "no-store" });
+  if (!r.ok) throw new Error((await r.text()) || "HTTP " + r.status);
+  return r.json();
+}
+
+function shapeStore(raw) {
   const empty = { active: null, projects: [], tasks: [], links: [], people: [] };
   const s = raw && Array.isArray(raw.projects) ? raw : empty;
   rosterRef = (s.people || []).filter((h) => h && h.id).map((h) => ({ id: h.id, name: h.name || "" }));
@@ -331,8 +343,7 @@ function computeStats(tasks) {
   };
 }
 
-function App() {
-  const store = useMemo(loadStore, []);
+function App({ store }) {
   const [activeId, setActiveId] = useState(store.active);
   const [view, setView] = useState("day");
   const [seed, setSeed] = useState(0);
@@ -436,4 +447,26 @@ function App() {
   );
 }
 
-createRoot(document.getElementById("app")).render(<App />);
+/* the page is public and holds no Supabase client: it just pulls the JSON the
+   edge function publishes and renders it read-only */
+function Boot() {
+  const [state, setState] = useState({ phase: "loading" });
+
+  useEffect(() => {
+    let alive = true;
+    fetchStore()
+      .then((raw) => { if (alive) setState({ phase: "ready", store: shapeStore(raw) }); })
+      .catch((e) => { if (alive) setState({ phase: "error", message: e.message }); });
+    return () => { alive = false; };
+  }, []);
+
+  if (state.phase === "loading") return <div className="auth-boot">Loading timeline…</div>;
+  if (state.phase === "error") {
+    return <div className="auth-boot">Could not load the chart: {state.message} — refresh to retry.</div>;
+  }
+  return <App store={state.store} />;
+}
+
+const container = document.getElementById("app");
+container.__root = container.__root || createRoot(container);
+container.__root.render(<Boot />);

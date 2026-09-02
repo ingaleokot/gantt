@@ -4,6 +4,16 @@ import { Gantt, Toolbar, ContextMenu, Editor } from "@svar-ui/react-gantt";
 import { Willow as CoreWillow } from "@svar-ui/react-core";
 import { Willow as GridWillow } from "@svar-ui/react-grid";
 import { buildGanttPdf } from "./pdf.js";
+import { supabase } from "./lib/supabase.js";
+import { dbLoad, dbSave } from "./lib/db.js";
+import Login from "./Login.jsx";
+
+/* stylesheet order matters: shell tokens, then the widget theme, then our
+   re-skin on top of it */
+import "../style.css";
+import "@svar-ui/react-gantt/all.css";
+import "../wx-overrides.css";
+import "../icons.css";
 
 const DAY = 24 * 60 * 60 * 1000;
 const uid = () => "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -194,176 +204,8 @@ function serializeSide(api, kind) {
   return kind === "tasks" ? extractTasks(api) : extractLinks(api);
 }
 
-/* ---------- capabilities ---------- */
-const downloadsReady = (async () => {
-  try {
-    if (window.claude && window.claude.use) return await window.claude.use("downloads");
-  } catch (e) { /* fall through */ }
-  return null;
-})();
-const mcpReady = (async () => {
-  try {
-    if (window.claude && window.claude.use) return await window.claude.use("mcp");
-  } catch (e) { /* fall through */ }
-  return null;
-})();
-
-/* ---------- Supabase persistence (relational, through the viewer's connector) ---------- */
-const SUPA = { server: "Supabase", tool: "execute_sql", projectId: "wouvkkaxehwuhtgpersx" };
-const SHARE_URL = "https://wouvkkaxehwuhtgpersx.supabase.co/functions/v1/shared/09b3dbcb-ca6b-4bca-bdc8-f0243049ac30";
-
-function sqlStr(s) { return s === null || s === undefined ? "null" : "'" + String(s).replace(/'/g, "''") + "'"; }
-function sqlNum(n) { const v = Number(n); return n === null || n === undefined || isNaN(v) ? "null" : String(v); }
-function sqlBool(b) { return b === true ? "true" : b === false ? "false" : "null"; }
-
-const LOAD_SQL = `select json_build_object(
-  'active', (select active_project from public.app_state where id = 'main'),
-  'projects', coalesce((select json_agg(json_build_object('id', p.id, 'name', p.name, 'view', p.view) order by p.position, p.created_at) from public.projects p), '[]'::json),
-  'tasks', coalesce((select json_agg(json_build_object('id', t.id, 'project', t.project_id, 'parent', t.parent_id, 'text', t.text, 'type', t.type, 'start', t.start_date, 'end', t.end_date, 'duration', t.duration, 'hours', t.hours, 'days', t.days, 'progress', t.progress, 'details', t.details, 'open', t.open, 'url', t.url, 'status', t.status, 'assignees', t.assignees) order by t.sort_order) from public.tasks t), '[]'::json),
-  'links', coalesce((select json_agg(json_build_object('id', l.id, 'project', l.project_id, 'source', l.source, 'target', l.target, 'type', l.type)) from public.links l), '[]'::json),
-  'people', coalesce((select json_agg(json_build_object('id', pe.id, 'name', pe.name) order by pe.position, pe.name) from public.people pe), '[]'::json)
-) as store;`;
-
-function buildSaveSql(data) {
-  const ids = data.projects.map((p) => sqlStr(p.id)).join(",");
-  let sql = "";
-  data.projects.forEach((p, i) => {
-    sql += `insert into public.projects (id,name,view,position) values (${sqlStr(p.id)},${sqlStr(p.name || "Untitled project")},${sqlStr(p.view || "day")},${i}) on conflict (id) do update set name=excluded.name, view=excluded.view, position=excluded.position, updated_at=now();\n`;
-  });
-  sql += `delete from public.projects where id not in (${ids});\n`;
-  sql += `delete from public.tasks where project_id in (${ids});\n`;
-  const taskRows = [];
-  data.projects.forEach((p) => {
-    (p.tasks || []).forEach((t, i) => {
-      const parent = t.parent !== undefined && t.parent !== null && t.parent !== 0 ? t.parent : null;
-      taskRows.push("(" + [
-        sqlStr(t.id), sqlStr(p.id), sqlStr(parent), sqlStr(t.text || ""), sqlStr(t.type || "task"),
-        sqlStr(t.start || null), sqlStr(t.end || null), sqlNum(t.duration), sqlNum(t.hours), sqlNum(t.days),
-        String(Math.round(Number(t.progress) || 0)), sqlStr(t.details || ""), sqlBool(t.open), String(i),
-        sqlStr(t.url || null), sqlStr(t.status || "todo"), sqlStr(t.assignees || null),
-      ].join(",") + ")");
-    });
-  });
-  if (taskRows.length) {
-    sql += "insert into public.tasks (id,project_id,parent_id,text,type,start_date,end_date,duration,hours,days,progress,details,open,sort_order,url,status,assignees) values\n" + taskRows.join(",\n") + ";\n";
-  }
-  const linkRows = [];
-  data.projects.forEach((p) => {
-    (p.links || []).forEach((l) => {
-      if (l.source === undefined || l.target === undefined) return;
-      linkRows.push(`(${sqlStr(l.id)},${sqlStr(p.id)},${sqlStr(l.source)},${sqlStr(l.target)},${sqlStr(l.type || "e2s")})`);
-    });
-  });
-  if (linkRows.length) {
-    sql += "insert into public.links (id,project_id,source,target,type) values\n" + linkRows.join(",\n") + " on conflict (id) do nothing;\n";
-  }
-  const people = data.people || [];
-  people.forEach((h, i) => {
-    sql += `insert into public.people (id,name,position) values (${sqlStr(h.id)},${sqlStr(h.name || "")},${i}) on conflict (id) do update set name=excluded.name, position=excluded.position, updated_at=now();\n`;
-  });
-  sql += people.length
-    ? `delete from public.people where id not in (${people.map((h) => sqlStr(h.id)).join(",")});\n`
-    : "delete from public.people;\n";
-  sql += `insert into public.app_state (id, active_project) values ('main', ${sqlStr(data.activeProject)}) on conflict (id) do update set active_project=excluded.active_project, updated_at=now();`;
-  return sql;
-}
-
-function parseSqlPayload(res) {
-  let p = res && res.payload;
-  if (Array.isArray(p)) return p;
-  if (p && typeof p === "object" && typeof p.result === "string") p = p.result;
-  if (typeof p !== "string") { try { p = JSON.stringify(p ?? ""); } catch (e) { return null; } }
-  const m = p.match(/<untrusted-data-[^>]*>\s*([\s\S]*?)\s*<\/untrusted-data-[^>]*>/);
-  const body = m ? m[1] : p;
-  try { const v = JSON.parse(body); return Array.isArray(v) ? v : null; } catch (e) {}
-  const i = body.indexOf("["), j = body.lastIndexOf("]");
-  if (i >= 0 && j > i) { try { const v = JSON.parse(body.slice(i, j + 1)); return Array.isArray(v) ? v : null; } catch (e) {} }
-  return null;
-}
-async function dbLoad() {
-  const mcp = await mcpReady;
-  if (!mcp) return { state: "off" };
-  try {
-    const res = await mcp.callTool(SUPA.server, SUPA.tool, { project_id: SUPA.projectId, query: LOAD_SQL });
-    const rows = parseSqlPayload(res);
-    const s = rows && rows[0] && rows[0].store;
-    if (!s || !Array.isArray(s.projects) || !s.projects.length) return { state: "ok", data: null };
-    const projects = s.projects.map((p) => ({
-      id: p.id,
-      name: p.name,
-      view: p.view || "day",
-      tasks: (s.tasks || []).filter((t) => t.project === p.id).map((t) => {
-        const o = { id: t.id, text: t.text || "", type: t.type || "task", progress: t.progress || 0, details: t.details || "" };
-        if (t.parent !== null && t.parent !== undefined) o.parent = t.parent;
-        if (t.start) o.start = t.start;
-        if (t.end) o.end = t.end;
-        if (t.duration !== null && t.duration !== undefined) o.duration = t.duration;
-        if (t.hours !== null && t.hours !== undefined) o.hours = Number(t.hours);
-        if (t.days !== null && t.days !== undefined) o.days = Number(t.days);
-        if (t.open !== null && t.open !== undefined) o.open = t.open;
-        if (t.url) o.url = t.url;
-        if (t.assignees) o.assignees = t.assignees;
-        o.status = t.status || "todo";
-        return o;
-      }),
-      links: (s.links || []).filter((l) => l.project === p.id).map((l) => ({ id: l.id, source: l.source, target: l.target, type: l.type || "e2s" })),
-    }));
-    const active = projects.some((p) => p.id === s.active) ? s.active : projects[0].id;
-    const people = (s.people || []).filter((x) => x && x.id).map((x) => ({ id: x.id, name: x.name || "" }));
-    return { state: "ok", data: { version: 2, activeProject: active, projects, people } };
-  } catch (e) {
-    return { state: "err", code: e && e.code };
-  }
-}
-async function dbSave(data) {
-  const mcp = await mcpReady;
-  if (!mcp) return { state: "off" };
-  try {
-    await mcp.callTool(SUPA.server, SUPA.tool, { project_id: SUPA.projectId, query: buildSaveSql(data) });
-    return { state: "ok" };
-  } catch (e) {
-    return { state: "err", code: e && e.code };
-  }
-}
-/* ---- share view template sync: uploads the read-only page into Supabase
-   (base64 chunks) so the gantt-view edge function can serve it live ---- */
-const VIEW_CHUNK = 60000;
-async function ensureViewPage(onProgress) {
-  const b64 = window.__VIEW_TPL_B64, hash = window.__VIEW_TPL_HASH;
-  if (!b64 || !hash) return { state: "ok" };
-  const mcp = await mcpReady;
-  if (!mcp) return { state: "off" };
-  const q = (query) => mcp.callTool(SUPA.server, SUPA.tool, { project_id: SUPA.projectId, query });
-  try {
-    const rows = parseSqlPayload(await q("select hash from public.view_page where id='main';"));
-    if (rows && rows[0] && rows[0].hash === hash) return { state: "ok" };
-    const chunks = [];
-    for (let i = 0; i < b64.length; i += VIEW_CHUNK) chunks.push(b64.slice(i, i + VIEW_CHUNK));
-    for (let i = 0; i < chunks.length; i++) {
-      if (onProgress) onProgress(i + 1, chunks.length);
-      await q(
-        "insert into public.view_chunks (idx,hash,data) values (" + i + ",'" + hash + "','" + chunks[i] + "')" +
-        " on conflict (idx) do update set hash=excluded.hash, data=excluded.data;"
-      );
-    }
-    await q(
-      "delete from public.view_chunks where idx >= " + chunks.length + ";" +
-      "insert into public.view_page (id,hash,chunk_count) values ('main','" + hash + "'," + chunks.length + ")" +
-      " on conflict (id) do update set hash=excluded.hash, chunk_count=excluded.chunk_count, updated_at=now();"
-    );
-    return { state: "ok" };
-  } catch (e) {
-    return { state: "err", code: e && e.code };
-  }
-}
-
-function dbErrorText(code) {
-  if (code === "needs_reauth") return "reconnect Supabase in claude.ai Settings → Connectors";
-  if (code === "server_not_connected") return "add Supabase in claude.ai Settings → Connectors";
-  if (code === "selection_required") return "choose a Supabase connector when prompted";
-  if (code === "not_granted" || code === "not_in_manifest") return "Supabase access not allowed for this page";
-  return "Supabase sync failed";
-}
+/* ---------- share link: the static read-only page next to this app ---------- */
+const SHARE_URL = new URL(import.meta.env.BASE_URL + "share/", window.location.origin).href;
 
 /* project totals: effort over all tasks, span over all dates */
 const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -733,7 +575,8 @@ const VIEWS = {
 };
 
 /* ---------- app ---------- */
-function App() {
+function App({ session }) {
+  const ownerId = session.user.id;
   const storeRef = useRef(loadData());
   const store = storeRef.current;
   const [activeId, setActiveId] = useState(store.activeProject);
@@ -744,7 +587,6 @@ function App() {
   const [status, setStatus] = useState("idle");
   const [taskCount, setTaskCount] = useState(activeProject().tasks.length);
   const [seed, setSeed] = useState(0);
-  const [canExport, setCanExport] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [stats, setStats] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -756,12 +598,9 @@ function App() {
   const pickerRef = useRef(null);
   const [shareOpen, setShareOpen] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [shareState, setShareState] = useState("idle"); /* idle | sync | ready | err */
-  const [shareProg, setShareProg] = useState("");
   const shareRef = useRef(null);
-  const shareSyncRef = useRef(false);
   const [armDelete, setArmDelete] = useState(null);
-  const [dbState, setDbState] = useState({ state: "off" });
+  const [dbState, setDbState] = useState({ state: "idle" });
   const [, forceRender] = useState(0);
   const nameRef = useRef(activeProject().name);
   const clipRef = useRef(null);
@@ -809,10 +648,10 @@ function App() {
     const s = storeRef.current;
     const data = { version: 2, activeProject: s.activeProject, projects: s.projects, people: s.people || [] };
     setStatus("saving");
-    const r = await dbSave(data);
+    const r = await dbSave(data, ownerId);
     setDbState(r);
     setStatus(r.state === "ok" ? "saved" : "local");
-  }, [view, snapshotActive]);
+  }, [view, snapshotActive, ownerId]);
 
   const scheduleSave = useCallback(() => {
     dirtyRef.current = true;
@@ -864,7 +703,6 @@ function App() {
     dbLoad().then((r) => {
       if (!alive) return;
       if (r.state === "err") { setDbState(r); return; }
-      if (r.state === "off") return;
       setDbState({ state: "ok" });
       if (r.data && !dirtyRef.current) {
         undoRef.current = []; redoRef.current = [];
@@ -878,12 +716,6 @@ function App() {
         setSeed((s) => s + 1);
       }
     });
-    return () => { alive = false; };
-  }, []);
-
-  useEffect(() => {
-    let alive = true;
-    downloadsReady.then((ns) => { if (alive && ns) setCanExport(true); });
     return () => { alive = false; };
   }, []);
 
@@ -1000,19 +832,6 @@ function App() {
     return () => document.removeEventListener("visibilitychange", flush);
   }, [doSave]);
 
-  /* first time the share popover opens, make sure the view page is in Supabase */
-  useEffect(() => {
-    if (!shareOpen || shareSyncRef.current) return;
-    shareSyncRef.current = true;
-    setShareState("sync");
-    setShareProg("");
-    ensureViewPage((i, n) => setShareProg(i + "/" + n)).then((r) => {
-      if (r.state === "ok") { setShareState("ready"); return; }
-      shareSyncRef.current = false; /* allow retry on next open */
-      setShareState("err");
-    });
-  }, [shareOpen]);
-
   /* close share popover on outside click */
   useEffect(() => {
     if (!shareOpen) return;
@@ -1045,14 +864,11 @@ function App() {
     const p = snapshotActive();
     setExporting(true);
     try {
-      const buf = buildGanttPdf(p.name, p.tasks, p.links);
-      const ns = await downloadsReady;
-      if (!ns) { setCanExport(false); return; }
+      const doc = buildGanttPdf(p.name, p.tasks, p.links);
       const safe = (p.name || "gantt").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "gantt";
-      await ns.save({ filename: safe + ".pdf", data: buf });
+      doc.save(safe + ".pdf"); /* plain browser download */
     } catch (e) {
-      const code = e && e.code;
-      if (code === "unavailable" || code === "not_granted" || code === "capability_disabled" || code === "capability_removed") setCanExport(false);
+      /* nothing to fall back to — the browser refused the download */
     } finally {
       setExporting(false);
     }
@@ -1292,7 +1108,7 @@ function App() {
   let statusText = {
     idle: "", saving: "Saving…", saved: "Saved · Supabase", local: "Not saved — Supabase unavailable",
   }[status];
-  if (statusText && dbState.state === "err") statusText += " · " + dbErrorText(dbState.code);
+  if (statusText && dbState.state === "err" && dbState.message) statusText += " · " + dbState.message;
   const projects = storeRef.current.projects;
 
   return (
@@ -1397,24 +1213,25 @@ function App() {
                 <input readOnly value={SHARE_URL} onFocus={(e) => e.target.select()} />
                 <button type="button" className="share-copy" onClick={copyShareLink}>{copied ? "Copied!" : "Copy"}</button>
               </div>
-              {shareState === "sync" && <p className="share-status">Preparing the view page{shareProg ? " · " + shareProg : ""}…</p>}
-              {shareState === "ready" && <p className="share-status ok">Link is live and up to date.</p>}
-              {shareState === "err" && <p className="share-status bad">Couldn't prepare the view page — check the Supabase connection and reopen this popover.</p>}
             </div>
           )}
         </div>
-        {canExport && (
-          <button className="export-btn" type="button" onClick={exportPdf} disabled={exporting}>
-            <span className="export-icon" aria-hidden="true" />
-            {exporting ? "Exporting…" : "Export PDF"}
-          </button>
-        )}
+        <button className="export-btn" type="button" onClick={exportPdf} disabled={exporting}>
+          <span className="export-icon" aria-hidden="true" />
+          {exporting ? "Exporting…" : "Export PDF"}
+        </button>
         <div className="seg" role="group" aria-label="Timeline scale">
           {Object.entries(VIEWS).map(([k, v]) => (
             <button key={k} className={"seg-btn" + (view === k ? " on" : "")}
               onClick={() => changeView(k)} type="button">{v.label}</button>
           ))}
         </div>
+        <button
+          className="export-btn"
+          type="button"
+          title={session.user.email || "Signed in"}
+          onClick={() => supabase.auth.signOut()}
+        >Sign out</button>
       </header>
       <div className="board">
         <CoreWillow fonts={false}>
@@ -1495,5 +1312,25 @@ function App() {
   );
 }
 
-const root = createRoot(document.getElementById("app"));
-root.render(<App />);
+/* ---------- auth gate: the editor only mounts with a live session ---------- */
+function Root() {
+  const [session, setSession] = useState(undefined); /* undefined = still checking */
+
+  useEffect(() => {
+    let alive = true;
+    supabase.auth.getSession().then(({ data }) => { if (alive) setSession(data.session || null); });
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => { if (alive) setSession(s || null); });
+    return () => { alive = false; sub.subscription.unsubscribe(); };
+  }, []);
+
+  if (session === undefined) return <div className="auth-boot">Loading…</div>;
+  if (!session) return <Login />;
+  /* keyed on the user so switching accounts remounts with a clean store */
+  return <App key={session.user.id} session={session} />;
+}
+
+/* the root is cached on the container so a dev hot-reload of this module
+   re-renders instead of creating a second root */
+const container = document.getElementById("app");
+container.__root = container.__root || createRoot(container);
+container.__root.render(<Root />);

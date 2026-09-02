@@ -292,5 +292,5 @@ export function buildGanttPdf(name, tasks, links) {
     doc.text("No scheduled tasks yet.", M, topY + scaleH + 10);
   }
 
-  return doc.output("arraybuffer");
+  return doc; /* caller saves it: doc.save(name) */
 }
