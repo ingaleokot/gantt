@@ -1,5 +1,5 @@
-import React, { useMemo, useRef, useState, useEffect, useCallback, memo } from "react";
-import { createRoot } from "react-dom/client";
+import { useMemo, useRef, useState, useEffect, useCallback, memo } from "react";
+import { useNavigate } from "@tanstack/react-router";
 import { Gantt } from "@svar-ui/react-gantt";
 import type { IApi, IColumnConfig, IScaleConfig, ITask, TID } from "@svar-ui/react-gantt";
 import { Willow as CoreWillow } from "@svar-ui/react-core";
@@ -7,11 +7,9 @@ import { Willow as GridWillow } from "@svar-ui/react-grid";
 import { SegmentGroup } from "@ark-ui/react/segment-group";
 import { setGlyph, type GlyphHost } from "./icons";
 
-/* same stylesheet order as the editor */
-import "../style.css";
-import "@svar-ui/react-gantt/all.css";
-import "../wx-overrides.css";
-import "../icons.css";
+/* The stylesheets are imported once by src/main.tsx, in the order that matters.
+   This module must not reach lib/ — pulling the Supabase client into the
+   public page is exactly what the split is there to prevent. */
 
 /* ---------- the library shapes this page narrows, same reasons as app.tsx:
    IApi types getTask as ITask, the store returns a parsed task; the shipped
@@ -473,13 +471,13 @@ function computeStats(tasks: ViewTask[]): Stats {
   };
 }
 
-function App({ store }: { store: ViewStore }) {
-  const [activeId, setActiveId] = useState(store.active);
+function Board({ store, activeId, onOpenProject }: { store: ViewStore; activeId: string | null; onOpenProject: (id: string) => void }) {
   const [view, setView] = useState("day");
   const [seed, setSeed] = useState(0);
   const apiRef = useRef<GanttApi | null>(null);
 
-  const project: ViewProject = store.projects.find((p) => p.id === activeId) || store.projects[0] || { name: "Project timeline", tasks: [], links: [] };
+  /* ShareViewer only mounts Board once the feed has at least one project */
+  const project: ViewProject = store.projects.find((p) => p.id === activeId) || store.projects[0];
   const revivedTasks = useMemo(() => prepareTasks(project.tasks), [activeId, seed]);
   const links = useMemo(() => project.links.slice(), [activeId, seed]);
   const stats = useMemo(() => computeStats(project.tasks), [activeId]);
@@ -526,7 +524,9 @@ function App({ store }: { store: ViewStore }) {
             className={SEG_ROOT}
             aria-label="Projects"
             value={project.id}
-            onValueChange={(d) => { if (d.value) { setActiveId(d.value); setSeed((s) => s + 1); } }}
+            /* the switcher navigates: which project is on screen is the URL's
+               business here too, so a viewer can link to one */
+            onValueChange={(d) => { if (d.value) onOpenProject(d.value); }}
           >
             {store.projects.map((p) => (
               <SegmentGroup.Item key={p.id} value={p.id!} className={SEG_ITEM}>
@@ -600,16 +600,21 @@ type BootState =
   | { phase: "ready"; store: ViewStore }
   | { phase: "error"; message: string };
 
-/* the page is public and holds no Supabase client: it just pulls the JSON the
-   edge function publishes and renders it read-only */
-function Boot() {
+/* The page is public and holds no Supabase client: it just pulls the JSON the
+   edge function publishes and renders it read-only. `projectId` comes from the
+   route (/share/$projectId); /share with no id falls back to whatever the feed
+   reports as active, which is what the links handed out before still use. */
+export default function ShareViewer({ projectId }: { projectId: string | null }) {
   const [state, setState] = useState<BootState>({ phase: "loading" });
+  const navigate = useNavigate();
 
   useEffect(() => {
     let alive = true;
     fetchStore()
       .then((raw) => { if (alive) setState({ phase: "ready", store: shapeStore(raw) }); })
-      .catch((e) => { if (alive) setState({ phase: "error", message: e.message }); });
+      .catch((e: unknown) => {
+        if (alive) setState({ phase: "error", message: e instanceof Error ? e.message : String(e) });
+      });
     return () => { alive = false; };
   }, []);
 
@@ -617,9 +622,18 @@ function Boot() {
   if (state.phase === "error") {
     return <div className={BOOT}>Could not load the chart: {state.message} — refresh to retry.</div>;
   }
-  return <App store={state.store} />;
+  const { store } = state;
+  if (!store.projects.length) return <div className={BOOT}>Nothing has been shared yet.</div>;
+  const known = projectId && store.projects.some((p) => p.id === projectId) ? projectId : null;
+  if (projectId && !known) {
+    return <div className={BOOT}>That timeline is not shared, or no longer exists.</div>;
+  }
+  return (
+    <Board
+      key={known || store.active || "none"}
+      store={store}
+      activeId={known || store.active}
+      onOpenProject={(id) => { void navigate({ to: "/share/$projectId", params: { projectId: id } }); }}
+    />
+  );
 }
-
-const container = document.getElementById("app") as HTMLElement;
-container.__root = container.__root || createRoot(container);
-container.__root.render(<Boot />);

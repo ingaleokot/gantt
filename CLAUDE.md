@@ -1,15 +1,20 @@
 # Gantt — project context for Claude
 
-Personal Gantt chart tool: a Vite + React SPA on SVAR react-gantt, styled with Tailwind
-CSS v4 + Ark UI + Phosphor icons, talking straight to cloud Supabase. Read README.md for
-the full architecture. Key facts and hard-won gotchas below.
+Personal Gantt chart tool: a Vite + React SPA on SVAR react-gantt, routed with TanStack
+Router, persisted through TanStack Query, styled with Tailwind CSS v4 + Ark UI + Phosphor
+icons, talking straight to cloud Supabase. Read README.md for the full architecture. Key
+facts and hard-won gotchas below.
 
 ## Deployed pieces
 
-- GitHub Pages under base path `/gantt/`:
-  - `/gantt/` — the editor SPA, gated behind Supabase Auth (email + password)
-  - `/gantt/share/` — the public read-only viewer, no auth, no Supabase client
+- GitHub Pages under base path `/gantt/`. **One HTML entry** (`index.html` → `src/main.tsx`)
+  serves every route; the share page is a lazily loaded route, not a second entry.
   Build with `bun run build` and publish `dist/`. There is no `docs/` folder any more.
+- **`dist/404.html` is a copy of `dist/index.html`**, written by the `pages-404-fallback`
+  plugin in `vite.config.ts`. GitHub Pages has no SPA rewrite, so without it a hard
+  refresh on `/gantt/p/<id>` 404s. `vite dev` and `vite preview` both rewrite to
+  index.html on their own, so this only ever breaks in production — don't drop the plugin
+  because "deep links work locally".
 - Supabase project "Gantt": id `wouvkkaxehwuhtgpersx` (org "Personal"),
   https://wouvkkaxehwuhtgpersx.supabase.co — **cloud only, never run a local stack.**
 - Edge Function `shared` (verify_jwt: false, source in `edge/shared/index.ts`):
@@ -26,7 +31,10 @@ the full architecture. Key facts and hard-won gotchas below.
   `export PATH=/opt/homebrew/bin:$PATH`. `node_modules/.bin/tsc` is a Node shim, so
   run the compiler through Bun (`bun run typecheck`, not `./node_modules/.bin/tsc`).
 - `bun run dev` (Vite, http://localhost:5173/gantt/) runs the real app against cloud
-  Supabase. `bun run build` → `dist/` with both entries. `bun run preview` serves it.
+  Supabase. `bun run build` → `dist/` (one entry + `404.html`). `bun run preview` serves it.
+- `src/routeTree.gen.ts` is **generated** by `@tanstack/router-plugin` on every `dev` and
+  `build`, and committed. `bun run typecheck` reads it, so on a fresh clone run
+  `bun run build` once before the first typecheck. Never edit it by hand.
 - `.env` (gitignored) holds `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY`,
   read via `import.meta.env`. Never hardcode or commit the values.
 - There is no test suite. `bun run typecheck` is the only automated check — verify
@@ -51,10 +59,48 @@ the full architecture. Key facts and hard-won gotchas below.
   container) and `--*` custom properties on `React.CSSProperties` (the `--who-hue`
   chips). Add global declarations there, not inline.
 - Shared domain types live in `src/lib/db.ts` (`TaskId`, `StoreTask`, `StoreLink`,
-  `StoreProject`, `StoreData`, `Person`); `app.tsx` and `pdf.ts` import them.
-  `view.tsx` deliberately keeps its own `ViewTask`/`ViewLink`/`Feed` shapes — it must
-  not import from `lib/` at all, because that would drag the Supabase client into the
-  public page.
+  `StoreProject`, `StoreData`, `Person`); `Editor.tsx` and `pdf.ts` import them.
+  `ShareViewer.tsx` deliberately keeps its own `ViewTask`/`ViewLink`/`Feed` shapes — it
+  must not import from `lib/` at all, because that would drag the Supabase client into
+  the public page.
+- The generated route tree carries `// @ts-nocheck`, but the routes you write are fully
+  checked: `main.tsx` registers the router through `declare module "@tanstack/react-router"`,
+  so a wrong `to:` or a missing param is a type error.
+
+## Routing (TanStack Router, `basepath: import.meta.env.BASE_URL` = `/gantt/`)
+
+File-based routes in `src/routes/`, `autoCodeSplitting: true`.
+
+| Route | File | Purpose |
+| --- | --- | --- |
+| `/login` | `routes/login.tsx` | email + password; `beforeLoad` redirects to `/` when a session already exists |
+| `/` | `routes/_authed/index.tsx` | resolves to `app_state.active_project` (or the first project) and forwards to `/p/$projectId`; with no projects it renders the empty state and a **New project** button |
+| `/p/$projectId` | `routes/_authed/p.$projectId.tsx` | the editor, deep-linkable, `?view=day\|week\|month` as a validated search param |
+| `/share/$projectId` | `routes/share.$projectId.tsx` | public read-only viewer — no auth, no Supabase client |
+| `/share` | `routes/share.index.tsx` | the same viewer on the feed's active project, so links handed out before the viewer was deep-linkable still work |
+
+- **The auth gate is a `beforeLoad` redirect**, not a conditional render: the pathless
+  layout `routes/_authed.tsx` resolves the session and throws `redirect({ to: "/login" })`.
+  Its component (`src/AuthedShell.tsx`) mounts `StoreProvider` once, so switching projects
+  navigates without reloading the store.
+- Consequence of the gate being a redirect: **nothing re-renders on sign-in by itself.**
+  `routes/login.tsx` subscribes to `watchSession` and navigates to `/` when a session
+  turns up (from this form, from a sign-up that returns one, or from another tab), and
+  `AuthedShell` does the mirror image for sign-out. Remove either and the user signs in
+  successfully and stays on the login screen.
+- **No route file may import `lib/supabase` (or anything reaching it) at the top level.**
+  The route tree is eager — it is what decides which route matches — so a static import
+  there puts supabase-js in the entry bundle and ships it to the public `/share` pages.
+  `src/lib/auth.ts` is the seam: it is imported statically by the route files and
+  `await import("./supabase")`s inside each function, which is what puts the client in
+  its own chunk. Verify after any route change with
+  `bun run build` and a look at whether `assets/index-*.js` references the supabase chunk
+  through `import(...)` only.
+- The URL is the source of truth for which project is open. `app_state.active_project` is
+  only "last opened", written by `p.$projectId` on mount and read by `/`.
+- The project switcher and the viewer's project segments **navigate**; they do not set
+  state. The editor is keyed on `projectId`, so a switch remounts it with a clean widget,
+  undo stack and row tagger.
 
 ## Data model (Supabase is the only store — no localStorage, no static data)
 
@@ -74,9 +120,54 @@ type)`, `people(id,name,position,owner)`, `app_state(id='main', active_project, 
   is checked against the real columns. Regenerate after any migration with
   `supabase gen types typescript --project-id wouvkkaxehwuhtgpersx > src/lib/database.types.ts`
   (or the Supabase MCP `generate_typescript_types` tool). Never hand-edit it.
-- Deletions are diffed client-side (select ids, then `.in('id', dead)`), never expressed
-  as a `not.in.(…)` filter string.
+- Foreign keys (checked against the live schema): `tasks.project_id`, `links.project_id`,
+  `links.source`, `links.target` and `tasks.parent_id` are all **ON DELETE CASCADE**;
+  `app_state.active_project` is ON DELETE SET NULL. So deleting a project takes its tasks
+  and links with it, and deleting a task takes its children and its links.
 - `tasks` carries a self-FK, so `db.ts` sorts rows parents-first before inserting.
+
+## The write path: snapshot + diff, never a wipe
+
+`src/lib/store.tsx` owns it. Two pieces of state:
+
+- **the snapshot** — React Query `["store"]`, loaded once by `fetchStore()`. It is
+  *what Postgres actually holds*, and it is only replaced when a write succeeds.
+- **the draft** — `draftRef` inside `StoreProvider`, seeded from the first successful
+  load. The editor serializes the SVAR widget into it on every change (synchronously),
+  and the roster and project names are edited on it directly.
+
+`scheduleSave()` debounces 1400 ms and then runs the `sync` mutation, which diffs draft
+against snapshot (`saveStore` in `db.ts`) and emits only the rows that differ:
+
+- new row → `insert` (tasks ordered parents-first)
+- one changed row → `update(...).eq("id", id)`
+- several changed rows → **one `upsert` of exactly those rows** — this is the path epic
+  roll-ups, `sort_order` rewrites and snapshot undo/redo take
+- removed row → `delete().in("id", deadIds)`, and never anything else
+
+Order inside a save is load-bearing: inserts, then updates, then deletes. A task dragged
+out of an epic has to be re-parented *before* the epic row is dropped, or the cascade
+takes it along.
+
+Explicit user actions are their own mutations rather than something the diff infers:
+`insertProject`, `deleteProject`, `setActiveProject`. All the write mutations share
+`scope: { id: "gantt-store-write" }` so they queue instead of racing each other's
+snapshot.
+
+**Why this replaced the old code.** `dbSave` used to `delete().in("project_id", ids)` on
+`links` and `tasks` and re-insert everything, on a debounce, while the user typed. Adding
+one task deleted every task in every loaded project; a failure or a closed laptop between
+the delete and the insert lost the lot. Nothing may go back to that shape:
+
+- **no `delete()` filtered by anything but `id`** — there are exactly two `.delete()`
+  calls in `src/`, both keyed by row id;
+- **`saveStore` refuses to run without a snapshot** (`if (!draft || !prev) throw`).
+  Without one every row looks new and every stored row looks deleted;
+- the draft and the snapshot must never share objects — `cloneStore` on the way into the
+  cache is what keeps the next diff honest.
+
+Ids compare through `key()` (`String(id)`), because SVAR mints ids the text columns store
+back as strings. Comparing raw would re-insert every in-session row on the next save.
 
 ## Styling layer (Tailwind v4 + Ark UI + Phosphor)
 
@@ -142,7 +233,7 @@ type)`, `people(id,name,position,owner)`, `app_state(id='main', active_project, 
   `prefers-contrast: more` goes near-solid with `--color-ink` borders. These blocks live
   **unlayered** at the bottom of `style.css` and `wx-overrides.css` so they outrank the
   layered Tailwind utilities that set background/border on the same elements.
-- **Focus is never the unstyled state.** `FOCUS` (a shared class string in `app.tsx` /
+- **Focus is never the unstyled state.** `FOCUS` (a shared class string in `Editor.tsx` /
   `Login.tsx`) is spelled into every interactive recipe; widget-owned controls get
   `:focus-visible` rules in `wx-overrides.css`.
 - The Who picker is a **controlled** `Popover.Root` keyed on the task id, anchored to the
@@ -169,7 +260,8 @@ type)`, `people(id,name,position,owner)`, `app_state(id='main', active_project, 
 - Four places where SVAR's shipped types are wrong or too narrow, each narrowed locally
   rather than cast to `any` — don't "fix" them by widening the api:
   - `IApi.getTask` is typed `ITask` (everything optional) but returns a parsed task, so
-    both entries define `ParsedTask` + `GanttApi` and cast the `init(api)` argument once.
+    `Editor.tsx` and `ShareViewer.tsx` each define `ParsedTask` + `GanttApi` and cast the
+    `init(api)` argument once.
   - `GanttScaleCell` omits the `date` the rendered cells carry, which `xForDate` reads —
     hence the local `ScaleCell`/`ScaleRow`/`ScaleData` and the cast on `_scales`.
   - `exec("show-editor", {id})` types `id` as `TID`, but `null` is what closes the
@@ -195,16 +287,26 @@ type)`, `people(id,name,position,owner)`, `app_state(id='main', active_project, 
   widget throws; with children its dates are deleted and auto-computed.
 - Widgets (MGantt/MToolbar/MContextMenu/MEditor) are memoized with stable props —
   otherwise App re-renders reset the uncontrolled editor fields mid-typing.
-- Mount-guard pattern in intercept setTimeouts: compare `apiRef.current` and the
-  captured activeProject before acting, or a stale mount serializes an empty widget over
-  freshly loaded data. Timing subtlety: the guard relies on `dbLoad()` being a real
-  network round-trip. An instantly-resolving data source (a stub, a synchronous cache)
-  makes the first mount abort and the row tagger never starts.
+- Mount-guard pattern in intercept setTimeouts: compare `apiRef.current` and the captured
+  project id before acting, or a stale mount serializes an empty widget over freshly
+  loaded data. It no longer depends on the load being a slow round trip — the editor only
+  mounts once `StoreProvider` has data, so there is no "adopt the loaded store" step to
+  race any more. Keep it anyway: changing the scale remounts the widget, and the pending
+  timeout from the old one must abort.
+- **No project is ever invented.** The old `loadData()` fabricated
+  `{ id: uid(), name: "Project timeline" }` client-side, and the first debounced save
+  wrote that phantom into the real database. Zero projects is a real state, rendered by
+  the `/` route; a project exists only because `insertProject` ran for a click.
+- `changeView` bumps `seed` as well as navigating. The gantt holder is keyed on
+  `seed + view + projectId`, so the widget remounts on a scale change — without the bump
+  it would remount around the *previous* serialization and show stale rows.
 - Vite strips SVAR's `@font-face` rules via a small plugin in `vite.config.ts`; the app
   supplies its own faces and passes `fonts={false}` to Willow. Keep that plugin's
   `enforce: "pre"` and keep it ahead of `tailwindcss()` in the plugin list.
-- Stylesheet import order in the entries is load-bearing: `style.css`, then
-  `@svar-ui/react-gantt/all.css`, then `wx-overrides.css` and `icons.css`.
+- Stylesheet import order is load-bearing: `style.css`, then
+  `@svar-ui/react-gantt/all.css`, then `wx-overrides.css` and `icons.css`. There is one
+  entry now, so all four are imported by `src/main.tsx` in that order and nowhere else —
+  don't move them back into the screens.
 - PDF export uses jsPDF's plain browser download: `buildGanttPdf(...)` returns the doc
   and the caller calls `doc.save(name)`.
 - The artifact integration is gone: no `window.claude`, no `mcp`/`downloads`/`publish`

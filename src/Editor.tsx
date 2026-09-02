@@ -1,6 +1,5 @@
 import React, { useMemo, useRef, useState, useEffect, useCallback, memo } from "react";
-import { createRoot } from "react-dom/client";
-import { Gantt, Toolbar, ContextMenu, Editor } from "@svar-ui/react-gantt";
+import { Gantt, Toolbar, ContextMenu, Editor as TaskEditor } from "@svar-ui/react-gantt";
 import type { IApi, IColumnConfig, ILink, IScaleConfig, ITask, TID } from "@svar-ui/react-gantt";
 import { Willow as CoreWillow } from "@svar-ui/react-core";
 import { Willow as GridWillow } from "@svar-ui/react-grid";
@@ -9,23 +8,15 @@ import { Popover } from "@ark-ui/react/popover";
 import { Portal } from "@ark-ui/react/portal";
 import { SegmentGroup } from "@ark-ui/react/segment-group";
 import { CaretDown, Check, DownloadSimple, ShareNetwork, SignOut, Users, X } from "@phosphor-icons/react";
-import type { Session } from "@supabase/supabase-js";
 import { buildGanttPdf } from "./pdf";
-import { supabase } from "./lib/supabase";
-import { dbLoad, dbSave } from "./lib/db";
-import type { Person, StoreData, StoreLink, StoreProject, StoreTask, TaskId } from "./lib/db";
-import Login from "./Login";
+import type { Person, StoreLink, StoreProject, StoreTask, TaskId } from "./lib/db";
+import { uid, useStore } from "./lib/store";
 import { setGlyph, type GlyphHost } from "./icons";
 
-/* stylesheet order matters: shell tokens, then the widget theme, then our
-   re-skin on top of it */
-import "../style.css";
-import "@svar-ui/react-gantt/all.css";
-import "../wx-overrides.css";
-import "../icons.css";
+/* The stylesheets are imported once by src/main.tsx — the order between them
+   is load-bearing, so it lives in one place rather than per screen. */
 
 const DAY = 24 * 60 * 60 * 1000;
-const uid = () => "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
 /* ---------- library types we have to narrow ----------
    IApi declares getTask as ITask (every field optional), but the store hands
@@ -171,12 +162,6 @@ const EDITOR_ITEMS = [
   { key: "links", comp: "links", label: "", batch: "links" },
 ];
 
-/* ---------- initial in-memory store; ALL real data lives in Supabase ---------- */
-function loadData(): StoreData {
-  const p: StoreProject = { id: uid(), name: "Project timeline", view: "day", tasks: [], links: [] };
-  return { version: 2, activeProject: p.id, projects: [p], people: [] };
-}
-
 function reviveTask(t: StoreTask): RevivedTask {
   /* start/end come in as ISO day strings and leave as Dates, so the copy is
      retyped once here rather than rebuilt field by field */
@@ -274,8 +259,9 @@ function serializeSide(api: GanttApi, kind: "tasks" | "links"): StoreTask[] | St
   return kind === "tasks" ? extractTasks(api) : extractLinks(api);
 }
 
-/* ---------- share link: the static read-only page next to this app ---------- */
-const SHARE_URL = new URL(import.meta.env.BASE_URL + "share/", window.location.origin).href;
+/* ---------- share link: the public read-only route, per project ---------- */
+const shareUrl = (projectId: string) =>
+  new URL(import.meta.env.BASE_URL + "share/" + projectId, window.location.origin).href;
 
 /* project totals: effort over all tasks, span over all dates */
 const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -653,7 +639,7 @@ function watchRowTags(api: GanttApi) {
 const MGantt = memo(Gantt);
 const MToolbar = memo(Toolbar);
 const MContextMenu = memo(ContextMenu);
-const MEditor = memo(Editor);
+const MEditor = memo(TaskEditor);
 const HIGHLIGHT = (d: Date, u: "day" | "hour") => (u === "day" && (d.getDay() === 0 || d.getDay() === 6) ? "wx-weekend" : "");
 const SUMMARY_CFG = { autoConvert: true, autoProgress: true };
 
@@ -671,8 +657,6 @@ const VIEWS: Record<string, ViewPreset> = {
   month: { label: "Month", cellWidth: 110, scales: [{ unit: "year", step: 1, format: "%Y" }, { unit: "month", step: 1, format: "%M" }] },
 };
 
-type SaveStatus = "idle" | "saving" | "saved" | "local";
-type DbState = { state: "idle" } | { state: "ok" } | { state: "err"; message: string };
 interface Picker {
   taskId: TID;
   el: HTMLElement | null;
@@ -685,22 +669,38 @@ interface Clipboard {
   project: string;
 }
 
-/* ---------- app ---------- */
-function App({ session }: { session: Session }) {
-  const ownerId = session.user.id;
-  const storeRef = useRef<StoreData>(loadData());
-  const store = storeRef.current;
-  const [activeId, setActiveId] = useState(store.activeProject);
-  const activeProject = () => storeRef.current.projects.find((p) => p.id === storeRef.current.activeProject) || storeRef.current.projects[0];
+export interface EditorProps {
+  /* the route guarantees this project exists in the loaded store */
+  projectId: string;
+  /* resolved from ?view= first, the project's stored scale second */
+  view: string;
+  onView: (v: string) => void;
+  onOpenProject: (id: string) => void;
+  onNewProject: () => Promise<void>;
+  onDeleteProject: (id: string) => Promise<void>;
+  onSignOut: () => Promise<void>;
+}
+
+/* ---------- the editor for one project ---------- */
+export default function GanttEditor({
+  projectId, view, onView, onOpenProject, onNewProject, onDeleteProject, onSignOut,
+}: EditorProps) {
+  /* the draft the whole app shares; mutate it, then scheduleSave() diffs it
+     against what Postgres holds and writes only the rows that moved */
+  const st = useStore();
+  const stRef = useRef(st);
+  stRef.current = st;
+  const activeProject = useCallback(
+    () => stRef.current.draft.projects.find((p) => p.id === projectId) as StoreProject,
+    [projectId],
+  );
 
   const [api, setApi] = useState<GanttApi | null>(null);
-  const [view, setView] = useState(VIEWS[activeProject().view] ? activeProject().view : "day");
-  const [status, setStatus] = useState<SaveStatus>("idle");
   const [taskCount, setTaskCount] = useState(activeProject().tasks.length);
   const [seed, setSeed] = useState(0);
   const [exporting, setExporting] = useState(false);
   const [stats, setStats] = useState<Stats | null>(null);
-  const [people, setPeople] = useState<Person[]>(() => storeRef.current.people || []);
+  const people = st.people;
   const [newPerson, setNewPerson] = useState("");
   const [picker, setPicker] = useState<Picker | null>(null); /* { taskId, el, rect, ids } */
   const pickerKeyRef = useRef("none");                       /* last opened row: see the popover below */
@@ -708,19 +708,15 @@ function App({ session }: { session: Session }) {
   const [copied, setCopied] = useState(false);
   const shareInputRef = useRef<HTMLInputElement>(null);
   const [armDelete, setArmDelete] = useState<string | null>(null);
-  const [dbState, setDbState] = useState<DbState>({ state: "idle" });
-  const [, forceRender] = useState(0);
   const nameRef = useRef(activeProject().name);
   const clipRef = useRef<Clipboard | null>(null);
   const undoRef = useRef<string[]>([]);
   const redoRef = useRef<string[]>([]);
   const snapTimer = useRef<number | null>(null);
-  const saveTimer = useRef<number | null>(null);
   const apiRef = useRef<GanttApi | null>(null);
-  const dirtyRef = useRef(false);
 
-  const revivedTasks = useMemo(() => prepareTasks(activeProject().tasks), [seed, activeId]);
-  const links = useMemo(() => activeProject().links.slice(), [seed, activeId]);
+  const revivedTasks = useMemo(() => prepareTasks(activeProject().tasks), [seed, activeProject]);
+  const links = useMemo(() => activeProject().links.slice(), [seed, activeProject]);
 
   const range = useMemo(() => {
     const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -746,25 +742,15 @@ function App({ session }: { session: Session }) {
     }
     p.name = nameRef.current;
     return p;
-  }, []);
+  }, [activeProject]);
 
-  const doSave = useCallback(async () => {
-    const p = snapshotActive();
-    p.view = view;
-    setTaskCount(p.tasks.length);
-    const s = storeRef.current;
-    const data: StoreData = { version: 2, activeProject: s.activeProject, projects: s.projects, people: s.people || [] };
-    setStatus("saving");
-    const r = await dbSave(data, ownerId);
-    setDbState(r);
-    setStatus(r.state === "ok" ? "saved" : "local");
-  }, [view, snapshotActive, ownerId]);
-
+  /* the draft is brought up to date immediately; only the write to Postgres is
+     debounced, and what it writes is the diff — never a rewrite of the store */
   const scheduleSave = useCallback(() => {
-    dirtyRef.current = true;
-    clearTimeout(saveTimer.current ?? undefined);
-    saveTimer.current = setTimeout(() => { saveTimer.current = null; doSave(); }, 1400);
-  }, [doSave]);
+    const p = snapshotActive();
+    setTaskCount(p.tasks.length);
+    stRef.current.scheduleSave();
+  }, [snapshotActive]);
 
   /* ---------- snapshot-based undo/redo (the library's history is pro-only) ---------- */
   const serializeActive = useCallback(() => {
@@ -799,33 +785,11 @@ function App({ session }: { session: Session }) {
       p.links = d.l;
       setTaskCount(d.t.length);
       setSeed((s) => s + 1);
-      dirtyRef.current = true;
-      scheduleSave();
+      /* a restored snapshot is a bulk change: the diff turns it into the rows
+         that actually differ from what is stored, not a rewrite */
+      stRef.current.scheduleSave();
     } catch (e) {}
-  }, [scheduleSave]);
-
-  /* on open: everything comes from Supabase (unless the user already started editing) */
-  useEffect(() => {
-    let alive = true;
-    dbLoad().then((r) => {
-      if (!alive) return;
-      if (r.state === "err") { setDbState(r); return; }
-      setDbState({ state: "ok" });
-      const loaded = r.data;
-      if (loaded && !dirtyRef.current) {
-        undoRef.current = []; redoRef.current = [];
-        storeRef.current = loaded;
-        setPeople(loaded.people || []);
-        const p = loaded.projects.find((x) => x.id === loaded.activeProject) || loaded.projects[0];
-        nameRef.current = p.name;
-        setActiveId(p.id);
-        setView(VIEWS[p.view] ? p.view : "day");
-        setTaskCount(p.tasks.length);
-        setSeed((s) => s + 1);
-      }
-    });
-    return () => { alive = false; };
-  }, []);
+  }, [activeProject]);
 
   /* keyboard shortcuts: ⌘/Ctrl+C copy, +X cut, +V paste (into epics), +Z undo, +Shift+Z redo */
   useEffect(() => {
@@ -837,8 +801,9 @@ function App({ session }: { session: Session }) {
       const el = e.target;
       if (el instanceof Element && el.closest('input, textarea, [contenteditable="true"]')) return;
       if (document.querySelector(".wx-gantt-editor")) return; /* editor modal open: keep native behavior */
-      const st = api.getState();
-      const sel = st.selected && st.selected.length ? st.selected[st.selected.length - 1] : null;
+      /* `gs`, not `st`: the gantt's state, not the store api above */
+      const gs = api.getState();
+      const sel = gs.selected && gs.selected.length ? gs.selected[gs.selected.length - 1] : null;
 
       if (k === "z") {
         e.preventDefault(); e.stopPropagation();
@@ -859,14 +824,14 @@ function App({ session }: { session: Session }) {
       if (k === "c" || k === "x") {
         if (sel === null || sel === undefined) return;
         e.preventDefault(); e.stopPropagation();
-        clipRef.current = { op: k === "x" ? "cut" : "copy", id: sel, project: storeRef.current.activeProject };
+        clipRef.current = { op: k === "x" ? "cut" : "copy", id: sel, project: projectId };
         return;
       }
       if (k === "v") {
         const clip = clipRef.current;
         if (!clip) return;
         e.preventDefault(); e.stopPropagation();
-        if (clip.project !== storeRef.current.activeProject) return; /* clipboard is per project */
+        if (clip.project !== projectId) return; /* clipboard is per project */
         let srcOk: ParsedTask | null = null;
         try { srcOk = api.getTask(clip.id); } catch (err) {}
         if (!srcOk) return;
@@ -890,7 +855,7 @@ function App({ session }: { session: Session }) {
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
-  }, [api]);
+  }, [api, projectId, flushSnapshot, restoreSnapshot]);
 
   /* editor modal: close (with autosave) on backdrop click; inject an Okay button */
   useEffect(() => {
@@ -932,22 +897,10 @@ function App({ session }: { session: Session }) {
     };
   }, [api]);
 
-  useEffect(() => {
-    const flush = () => {
-      if (document.hidden && saveTimer.current) {
-        clearTimeout(saveTimer.current);
-        saveTimer.current = null;
-        doSave();
-      }
-    };
-    document.addEventListener("visibilitychange", flush);
-    return () => document.removeEventListener("visibilitychange", flush);
-  }, [doSave]);
-
   /* Ark's Popover owns dismissal (outside click + Escape) and placement */
   const copyShareLink = async () => {
     let ok = false;
-    try { await navigator.clipboard.writeText(SHARE_URL); ok = true; } catch (e) {}
+    try { await navigator.clipboard.writeText(shareUrl(projectId)); ok = true; } catch (e) {}
     if (!ok) {
       const inp = shareInputRef.current;
       if (inp) { inp.focus(); inp.select(); try { ok = document.execCommand("copy"); } catch (e) {} }
@@ -1044,16 +997,16 @@ function App({ session }: { session: Session }) {
     };
     finalEvents.forEach((ev) => a.on(ev, () => { touched(); }));
     a.on("drag-task", (ev) => { if (!ev || !ev.inProgress) scheduleSave(); });
-    const mountProject = storeRef.current.activeProject;
+    const mountProject = projectId;
     setTimeout(() => {
-      /* a Supabase adoption or project switch may have superseded this mount */
-      if (apiRef.current !== a || storeRef.current.activeProject !== mountProject) return;
+      /* a project switch may have superseded this mount */
+      if (apiRef.current !== a || projectId !== mountProject) return;
       watchRowTags(a);
       try { rollupEpics(a); setStats(computeStats(a)); } catch (e) {}
       try { seedSnapshot(); } catch (e) {}
     }, 0);
     if (window.__ganttProbe) window.__ganttProbe(a);
-  }, [scheduleSave, scheduleSnapshot, seedSnapshot]);
+  }, [scheduleSave, scheduleSnapshot, seedSnapshot, projectId]);
 
   /* ---------- people roster ---------- */
   /* the tagger reads the roster from module scope; keep it in step and repaint */
@@ -1076,28 +1029,30 @@ function App({ session }: { session: Session }) {
     return () => { pickHook = null; };
   }, []);
 
+  /* the roster is one list for the whole account, so it lives on the shared
+     draft; a rename is one people-row update once the diff has run */
   const commitPeople = useCallback((next: Person[]) => {
-    storeRef.current.people = next;
-    setPeople(next);
+    stRef.current.draft.people = next;
+    stRef.current.bump();
     scheduleSave();
   }, [scheduleSave]);
 
   const addPerson = useCallback(() => {
     const name = newPerson.trim();
     if (!name) return;
-    const next = [...(storeRef.current.people || []), { id: uid(), name }];
+    const next = [...stRef.current.draft.people, { id: uid(), name }];
     setNewPerson("");
     commitPeople(next);
   }, [newPerson, commitPeople]);
 
   const renamePerson = useCallback((id: string, name: string) => {
-    commitPeople((storeRef.current.people || []).map((h) => (h.id === id ? { ...h, name } : h)));
+    commitPeople(stRef.current.draft.people.map((h) => (h.id === id ? { ...h, name } : h)));
   }, [commitPeople]);
 
   /* removing a person also clears them from every task that referenced them */
   const removePerson = useCallback((id: string) => {
     const strip = (v: unknown) => parseAssignees(v).filter((x) => x !== id).join(",") || null;
-    storeRef.current.projects.forEach((pr) => {
+    stRef.current.draft.projects.forEach((pr) => {
       (pr.tasks || []).forEach((t) => { if (t.assignees) t.assignees = strip(t.assignees); });
     });
     const a = apiRef.current;
@@ -1110,7 +1065,7 @@ function App({ session }: { session: Session }) {
         });
       } catch (e) { /* the store copy above is still correct */ }
     }
-    commitPeople((storeRef.current.people || []).filter((h) => h.id !== id));
+    commitPeople(stRef.current.draft.people.filter((h) => h.id !== id));
   }, [commitPeople]);
 
   const toggleAssignee = useCallback((taskId: TID, personId: string) => {
@@ -1126,65 +1081,35 @@ function App({ session }: { session: Session }) {
     if (retagHook) setTimeout(() => retagHook!(), 0);
   }, []);
 
-  /* ---------- project actions ---------- */
+  /* ---------- project actions: the URL is what changes, not local state ----------
+     every one of them serializes the widget into the draft first, so nothing
+     in flight is lost when this component unmounts on the navigation */
   const openProject = (id: string) => {
-    if (id !== storeRef.current.activeProject) {
-      const prev = snapshotActive();
-      prev.view = view;
-      storeRef.current.activeProject = id;
-      undoRef.current = []; redoRef.current = [];
-      const next = activeProject();
-      nameRef.current = next.name;
-      setActiveId(id);
-      setView(VIEWS[next.view] ? next.view : "day");
-      setTaskCount(next.tasks.length);
-      setSeed((s) => s + 1);
-      scheduleSave();
-    }
     setArmDelete(null);
+    if (id === projectId) return;
+    scheduleSave();
+    onOpenProject(id);
   };
   const createProject = () => {
-    const prev = snapshotActive();
-    prev.view = view;
-    const p: StoreProject = { id: uid(), name: "New project", view: "day", tasks: [], links: [] };
-    storeRef.current.projects.push(p);
-    storeRef.current.activeProject = p.id;
-    undoRef.current = []; redoRef.current = [];
-    nameRef.current = p.name;
-    setActiveId(p.id);
-    setView("day");
-    setTaskCount(0);
-    setSeed((s) => s + 1);
     setArmDelete(null);
     scheduleSave();
+    void onNewProject();
   };
   const deleteProject = (id: string) => {
     if (armDelete !== id) { setArmDelete(id); return; }
-    const s = storeRef.current;
-    if (s.projects.length <= 1) return;
-    s.projects = s.projects.filter((p) => p.id !== id);
     setArmDelete(null);
-    if (s.activeProject === id) {
-      undoRef.current = []; redoRef.current = [];
-      s.activeProject = s.projects[0].id;
-      const next = activeProject();
-      nameRef.current = next.name;
-      setActiveId(next.id);
-      setView(VIEWS[next.view] ? next.view : "day");
-      setTaskCount(next.tasks.length);
-      setSeed((v) => v + 1);
-    } else {
-      forceRender((n) => n + 1);
-    }
     scheduleSave();
+    void onDeleteProject(id);
   };
 
   const changeView = (v: string) => {
     const p = snapshotActive();
     p.view = v;
-    setView(v);
+    /* the holder is keyed on seed+view+project, so the widget remounts; bump
+       the seed too or it would remount around the previous serialization */
     setSeed((s) => s + 1);
-    setTimeout(scheduleSave, 0);
+    stRef.current.scheduleSave();
+    onView(v);
   };
 
   const onName = (e: React.SyntheticEvent<HTMLHeadingElement>) => {
@@ -1201,12 +1126,12 @@ function App({ session }: { session: Session }) {
     lastPickerRef.current = picker;
   }
 
-  const vd = VIEWS[view];
+  const vd = VIEWS[view] || VIEWS.day;
   let statusText = {
     idle: "", saving: "Saving…", saved: "Saved · Supabase", local: "Not saved — Supabase unavailable",
-  }[status];
-  if (statusText && dbState.state === "err" && dbState.message) statusText += " · " + dbState.message;
-  const projects = storeRef.current.projects;
+  }[st.status];
+  if (statusText && st.error) statusText += " · " + st.error;
+  const projects = st.projects;
 
   return (
     <div className="flex h-full flex-col">
@@ -1218,7 +1143,7 @@ function App({ session }: { session: Session }) {
             pointer-down would fight the caret rather than confirm a commit */}
         <div className="flex items-center gap-0.5">
           <h1
-            key={activeId}
+            key={projectId}
             className="m-0 max-w-[46vw] min-w-[60px] overflow-hidden rounded-[7px] px-2 py-[0.1875rem] font-display text-display font-semibold text-ellipsis whitespace-nowrap outline-none transition-colors duration-[130ms] ease-out hover:bg-surface-hover focus-visible:bg-surface focus-visible:shadow-[0_0_0_2px_var(--color-accent)]"
             contentEditable
             suppressContentEditableWarning
@@ -1249,25 +1174,25 @@ function App({ session }: { session: Session }) {
                         className={`press flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-lg border-0 bg-transparent px-2 py-[0.4375rem] text-left font-ui text-body text-ink data-[highlighted]:bg-surface-hover ${FOCUS}`}
                       >
                         <span
-                          className={`h-[7px] w-[7px] flex-none rounded-full ${p.id === activeId ? "bg-accent" : "bg-line"}`}
+                          className={`h-[7px] w-[7px] flex-none rounded-full ${p.id === projectId ? "bg-accent" : "bg-line"}`}
                           aria-hidden="true"
                         />
-                        <span className={`flex-1 overflow-hidden text-ellipsis whitespace-nowrap ${p.id === activeId ? "font-semibold text-accent" : ""}`}>{p.name}</span>
+                        <span className={`flex-1 overflow-hidden text-ellipsis whitespace-nowrap ${p.id === projectId ? "font-semibold text-accent" : ""}`}>{p.name}</span>
                         <span className="text-tiny text-faint tabular-nums">{p.tasks.length || ""}</span>
                       </Menu.Item>
-                      {projects.length > 1 && (
-                        /* two-step confirm, not a modal: the second click deletes */
-                        <button
-                          className={
-                            armDelete === p.id
-                              ? `press press-sm flex-none cursor-pointer rounded-[7px] border-0 bg-transparent px-2 py-[0.3125rem] font-ui text-tiny leading-none font-semibold text-danger opacity-100 ${FOCUS}`
-                              : `press press-sm flex-none cursor-pointer rounded-[7px] border-0 bg-transparent px-2 py-[0.3125rem] font-ui text-copy leading-none text-faint opacity-0 group-hover:opacity-100 hover:text-danger focus-visible:opacity-100 ${FOCUS}`
-                          }
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); deleteProject(p.id); }}
-                          title={armDelete === p.id ? "Click again to delete" : "Delete project"}
-                        >{armDelete === p.id ? "Sure?" : <X size={13} aria-hidden="true" />}</button>
-                      )}
+                      {/* two-step confirm, not a modal: the second click deletes.
+                          Deleting the last project is allowed now — `/` has a
+                          real empty state instead of inventing one. */}
+                      <button
+                        className={
+                          armDelete === p.id
+                            ? `press press-sm flex-none cursor-pointer rounded-[7px] border-0 bg-transparent px-2 py-[0.3125rem] font-ui text-tiny leading-none font-semibold text-danger opacity-100 ${FOCUS}`
+                            : `press press-sm flex-none cursor-pointer rounded-[7px] border-0 bg-transparent px-2 py-[0.3125rem] font-ui text-copy leading-none text-faint opacity-0 group-hover:opacity-100 hover:text-danger focus-visible:opacity-100 ${FOCUS}`
+                        }
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); deleteProject(p.id); }}
+                        title={armDelete === p.id ? "Click again to delete" : "Delete project"}
+                      >{armDelete === p.id ? "Sure?" : <X size={13} aria-hidden="true" />}</button>
                     </div>
                   ))}
                   <Menu.Item
@@ -1282,7 +1207,7 @@ function App({ session }: { session: Session }) {
         {statusText && (
           <span
             className={
-              status === "saved"
+              st.status === "saved"
                 ? "rounded-full border border-transparent bg-accent-hover px-2.5 py-[0.1875rem] text-mini whitespace-nowrap text-accent"
                 : "rounded-full border border-line bg-surface px-2.5 py-[0.1875rem] text-mini whitespace-nowrap text-muted"
             }
@@ -1357,7 +1282,7 @@ function App({ session }: { session: Session }) {
                 <Popover.Title className={POP_TITLE}>View-only link</Popover.Title>
                 <Popover.Description className={POP_HINT}>Anyone with this link can see the chart live — data loads fresh on every open, no editing.</Popover.Description>
                 <div className="flex gap-1.5">
-                  <input ref={shareInputRef} className={POP_INPUT} readOnly value={SHARE_URL} onFocus={(e) => e.target.select()} />
+                  <input ref={shareInputRef} className={POP_INPUT} readOnly value={shareUrl(projectId)} onFocus={(e) => e.target.select()} />
                   <button type="button" className={POP_ACTION} onClick={copyShareLink}>{copied ? "Copied!" : "Copy"}</button>
                 </div>
               </Popover.Content>
@@ -1384,8 +1309,8 @@ function App({ session }: { session: Session }) {
         <button
           className={BTN}
           type="button"
-          title={session.user.email || "Signed in"}
-          onClick={() => supabase.auth.signOut()}
+          title="Sign out"
+          onClick={() => { void onSignOut(); }}
         >
           <SignOut size={13} aria-hidden="true" />
           Sign out
@@ -1407,7 +1332,7 @@ function App({ session }: { session: Session }) {
             </div>
           </div>
           <MContextMenu api={api!} />
-          <div className="gantt-holder min-h-0 flex-1" key={seed + "-" + view + "-" + activeId}>
+          <div className="gantt-holder min-h-0 flex-1" key={seed + "-" + view + "-" + projectId}>
               <MGantt
                 init={init}
                 tasks={revivedTasks}
@@ -1499,26 +1424,3 @@ function App({ session }: { session: Session }) {
     </div>
   );
 }
-
-/* ---------- auth gate: the editor only mounts with a live session ---------- */
-function Root() {
-  const [session, setSession] = useState<Session | null | undefined>(undefined); /* undefined = still checking */
-
-  useEffect(() => {
-    let alive = true;
-    supabase.auth.getSession().then(({ data }) => { if (alive) setSession(data.session || null); });
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => { if (alive) setSession(s || null); });
-    return () => { alive = false; sub.subscription.unsubscribe(); };
-  }, []);
-
-  if (session === undefined) return <div className="grid min-h-screen place-items-center bg-ground font-ui text-[13px] text-muted">Loading…</div>;
-  if (!session) return <Login />;
-  /* keyed on the user so switching accounts remounts with a clean store */
-  return <App key={session.user.id} session={session} />;
-}
-
-/* the root is cached on the container so a dev hot-reload of this module
-   re-renders instead of creating a second root */
-const container = document.getElementById("app") as HTMLElement;
-container.__root = container.__root || createRoot(container);
-container.__root.render(<Root />);
