@@ -4,9 +4,10 @@ import { supabase } from "./lib/supabase.js";
 
 /* Email + password gate. Supabase Auth owns the session; the app only
    renders once onAuthStateChange has handed us one. */
-const FIELD = "flex flex-col gap-1 font-ui text-xs text-muted";
+const FOCUS = "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent";
+const FIELD = "flex flex-col gap-1 font-ui text-mini text-muted";
 const INPUT =
-  "rounded-lg border border-line bg-surface-alt px-2.5 py-2 font-ui text-[13.5px] text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent";
+  `rounded-lg border border-line bg-surface-alt px-2.5 py-2 font-ui text-body text-ink transition-colors duration-[130ms] ease-out ${FOCUS}`;
 
 export default function Login() {
   const [mode, setMode] = useState("signin"); /* signin | signup */
@@ -47,8 +48,8 @@ export default function Login() {
         <div className="mb-0.5" aria-hidden="true">
           <span className="block h-3.5 w-3.5 rounded-[4px] bg-[linear-gradient(135deg,var(--color-accent)_0_50%,var(--color-summary-fill)_50%_100%)]" />
         </div>
-        <h1 className="m-0 font-display text-xl font-semibold tracking-[-0.01em]">Project timelines</h1>
-        <p className="m-0 mb-1.5 text-[12.5px] text-muted">
+        <h1 className="m-0 font-display text-hero font-semibold">Project timelines</h1>
+        <p className="m-0 mb-1.5 text-small text-muted">
           {mode === "signup" ? "Create an account to start planning." : "Sign in to open your Gantt charts."}
         </p>
         <Field.Root className={FIELD}>
@@ -75,18 +76,18 @@ export default function Login() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
           />
-          <Field.ErrorText className="m-0 mt-1.5 text-xs text-danger">{error}</Field.ErrorText>
+          <Field.ErrorText className="m-0 mt-1.5 text-mini text-danger">{error}</Field.ErrorText>
         </Field.Root>
-        {notice && <p className="m-0 text-xs text-accent">{notice}</p>}
+        {notice && <p className="m-0 text-mini text-accent">{notice}</p>}
         <button
-          className="mt-1.5 cursor-pointer rounded-lg border-0 bg-accent px-3 py-[9px] font-ui text-[13.5px] font-semibold text-accent-ink hover:brightness-[1.08] disabled:cursor-default disabled:opacity-60"
+          className={`press mt-1.5 cursor-pointer rounded-lg border-0 bg-accent px-3 py-[0.5625rem] font-ui text-body font-semibold text-accent-ink hover:brightness-[1.08] active:brightness-[0.94] disabled:cursor-default disabled:opacity-60 ${FOCUS}`}
           type="submit"
           disabled={busy}
         >
           {busy ? "Working…" : mode === "signup" ? "Sign up" : "Sign in"}
         </button>
         <button
-          className="cursor-pointer border-0 bg-transparent p-1 font-ui text-xs text-muted hover:text-ink"
+          className={`press cursor-pointer rounded-md border-0 bg-transparent p-1 font-ui text-mini text-muted hover:text-ink ${FOCUS}`}
           type="button"
           onClick={() => { setMode(mode === "signup" ? "signin" : "signup"); setError(""); setNotice(""); }}
         >

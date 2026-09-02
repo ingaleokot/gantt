@@ -4,6 +4,7 @@ import { Gantt } from "@svar-ui/react-gantt";
 import { Willow as CoreWillow } from "@svar-ui/react-core";
 import { Willow as GridWillow } from "@svar-ui/react-grid";
 import { SegmentGroup } from "@ark-ui/react/segment-group";
+import { setGlyph } from "./icons.jsx";
 
 /* same stylesheet order as the editor */
 import "../style.css";
@@ -153,10 +154,10 @@ const LEGEND = [
 /* the shell recipes the editor uses, kept in step by hand */
 const SEG_ROOT = "flex gap-0.5 rounded-[9px] border border-line bg-surface p-0.5";
 const SEG_ITEM =
-  "flex cursor-pointer select-none items-center rounded-[7px] border-0 bg-transparent px-3.5 py-[5px] font-ui text-[12.5px] font-medium tracking-[0.01em] text-muted hover:bg-surface-hover hover:text-ink data-[state=checked]:bg-accent data-[state=checked]:text-accent-ink data-[state=checked]:hover:bg-accent data-[state=checked]:hover:text-accent-ink has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-1 has-[:focus-visible]:outline-accent";
+  "press flex cursor-pointer select-none items-center rounded-[7px] border-0 bg-transparent px-3.5 py-[0.3125rem] font-ui text-small font-medium text-muted hover:bg-surface-hover hover:text-ink data-[state=checked]:bg-accent data-[state=checked]:text-accent-ink data-[state=checked]:hover:bg-accent data-[state=checked]:hover:text-accent-ink has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-1 has-[:focus-visible]:outline-accent";
 const BRAND_MARK =
   "block h-3.5 w-3.5 rounded-[4px] bg-[linear-gradient(135deg,var(--color-accent)_0_50%,var(--color-summary-fill)_50%_100%)]";
-const BOOT = "grid min-h-screen place-items-center bg-ground font-ui text-[13px] text-muted";
+const BOOT = "grid min-h-screen place-items-center bg-ground font-ui text-body text-muted";
 const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const fmtD = (d) => d.getDate() + " " + MON[d.getMonth()];
 
@@ -198,10 +199,12 @@ function decorate(api, project) {
       if (!dot) { dot = document.createElement("span"); dot.className = "status-dot"; content.appendChild(dot); }
       const dc = "status-dot sd-" + status;
       if (dot.className !== dc) dot.className = dc;
-      const iconCls = "type-icon ti-" + (t.type || "task");
+      const typeKey = "ti-" + (t.type || "task");
+      const iconCls = "type-icon " + typeKey;
       let ic = content.querySelector(".type-icon");
       if (!ic) { ic = document.createElement("span"); ic.className = iconCls; content.appendChild(ic); }
       else if (ic.className !== iconCls) ic.className = iconCls;
+      setGlyph(ic, typeKey); /* cached Phosphor SVG, rendered once at module scope */
     }
     const whoCell = row.querySelector('[data-col-id=":who"]');
     if (whoCell) {
@@ -386,12 +389,14 @@ function App({ store }) {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex flex-none items-center gap-3 pt-2.5 pr-[18px] pb-2.5 pl-4">
+      {/* same material topbar as the editor (§12): translucent layer, bright top
+          edge, soft scroll edge where it meets the board */}
+      <header className="material-chrome edge-fade relative z-10 flex flex-none items-center gap-3 pt-2.5 pr-[18px] pb-2.5 pl-4">
         <div aria-hidden="true"><span className={BRAND_MARK} /></div>
-        <h1 className="m-0 max-w-[46vw] min-w-[60px] cursor-default overflow-hidden rounded-[7px] px-2 py-[3px] font-display text-[19px] font-semibold tracking-[-0.01em] text-ellipsis whitespace-nowrap">{project.name}</h1>
-        <span className="rounded-full border border-line bg-surface px-2.5 py-[3px] text-xs whitespace-nowrap text-muted">View only</span>
+        <h1 className="m-0 max-w-[46vw] min-w-[60px] cursor-default overflow-hidden rounded-[7px] px-2 py-[0.1875rem] font-display text-display font-semibold text-ellipsis whitespace-nowrap">{project.name}</h1>
+        <span className="rounded-full border border-line bg-surface px-2.5 py-[0.1875rem] text-mini whitespace-nowrap text-muted">View only</span>
         {stats && stats.min && stats.max && (
-          <span className="pl-1 text-xs whitespace-nowrap text-muted tabular-nums max-[1100px]:hidden">
+          <span className="pl-1 text-mini whitespace-nowrap text-muted tabular-nums max-[1100px]:hidden">
             {fmtD(stats.min)} – {fmtD(new Date(stats.max.getTime() - DAY))}
             {" · "}<strong className="font-semibold text-ink">{stats.h}h</strong> / {stats.d}d
             {stats.epics > 0 && " · " + stats.epics + (stats.epics === 1 ? " epic" : " epics")}
@@ -431,7 +436,7 @@ function App({ store }) {
         <CoreWillow fonts={false}>
         <GridWillow fonts={false}>
           <div className="toolbar-row flex min-h-[44px] flex-none items-center justify-end border-b border-b-line-soft">
-            <div className="flex flex-none items-center gap-[14px] px-4 text-[11.5px] whitespace-nowrap text-muted max-[900px]:hidden" aria-hidden="true">
+            <div className="flex flex-none items-center gap-[14px] px-4 text-tiny whitespace-nowrap text-muted max-[900px]:hidden" aria-hidden="true">
               {LEGEND.map((t) => (
                 <span key={t.id} className="inline-flex items-center gap-[5px]">
                   <span className={`h-2 w-2 rounded-[3px] ${t.dot}`} />{t.label}
@@ -461,9 +466,9 @@ function App({ store }) {
         </CoreWillow>
         {!project.tasks.length && (
           <div className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center">
-            <div className="pointer-events-auto max-w-[380px] rounded-[14px] border border-line bg-surface px-[26px] py-[22px] text-center shadow-pop motion-safe:animate-rise">
-              <div className="mb-1.5 font-display text-[17px] font-semibold">Nothing here yet</div>
-              <p className="m-0 leading-[1.55] text-muted">This project has no scheduled tasks.</p>
+            <div className="material-pop pointer-events-auto max-w-[380px] rounded-[14px] border border-line px-[1.625rem] py-[1.375rem] text-center motion-safe:animate-rise">
+              <div className="mb-1.5 font-display text-title font-semibold">Nothing here yet</div>
+              <p className="m-0 text-copy text-muted">This project has no scheduled tasks.</p>
             </div>
           </div>
         )}

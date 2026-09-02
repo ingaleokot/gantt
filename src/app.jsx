@@ -12,6 +12,7 @@ import { buildGanttPdf } from "./pdf.js";
 import { supabase } from "./lib/supabase.js";
 import { dbLoad, dbSave } from "./lib/db.js";
 import Login from "./Login.jsx";
+import { setGlyph } from "./icons.jsx";
 
 /* stylesheet order matters: shell tokens, then the widget theme, then our
    re-skin on top of it */
@@ -42,21 +43,29 @@ const LEGEND = [
   { id: "testing", label: "Testing", dot: "bg-type-testing" },
 ];
 
-/* ---------- shared utility-class recipes for the app shell ---------- */
+/* ---------- shared utility-class recipes for the app shell ----------
+   `press` (style.css, @layer components) is the §1 house default: transform
+   feedback that latches on pointer-down, degrading to a brightness step under
+   prefers-reduced-motion. `FOCUS` is spelled into every interactive recipe so
+   keyboard focus is never the state nobody styled. Sizes come from the rem
+   type ramp; arbitrary spacing is rem too, so a larger text setting scales the
+   whole control rather than bursting it. */
+const FOCUS = "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent";
 const BTN =
-  "inline-flex cursor-pointer items-center gap-1.5 rounded-[9px] border border-line bg-surface px-[13px] py-1.5 font-ui text-[12.5px] font-medium text-muted hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:cursor-default disabled:opacity-60";
+  `press inline-flex cursor-pointer items-center gap-1.5 rounded-[9px] border border-line bg-surface px-[0.8125rem] py-1.5 font-ui text-small font-medium text-muted hover:bg-surface-hover hover:text-ink ${FOCUS} disabled:cursor-default disabled:opacity-60`;
 /* no radius here: each popover sets its own, and two rounded-* utilities on
-   one element would race inside @layer utilities */
-const POP = "border border-line bg-surface shadow-pop outline-none";
-const POP_TITLE = "mb-1 text-[13.5px] font-semibold";
-const POP_HINT = "m-0 mb-2.5 text-xs leading-[1.5] text-muted";
+   one element would race inside @layer utilities. `material-pop` owns the
+   background and the shadow (§12), `pop-anim` the anchored entry/exit (§7). */
+const POP = "pop-anim material-pop border border-line outline-none";
+const POP_TITLE = "mb-1 text-body font-semibold";
+const POP_HINT = "m-0 mb-2.5 text-mini text-muted";
 const POP_INPUT =
-  "min-w-0 flex-1 rounded-lg border border-line bg-surface-alt px-[9px] py-[7px] font-ui text-xs text-ink focus:outline-2 focus:outline-accent";
+  `min-w-0 flex-1 rounded-lg border border-line bg-surface-alt px-[0.5625rem] py-[0.4375rem] font-ui text-mini text-ink focus:outline-2 focus:outline-accent ${FOCUS}`;
 const POP_ACTION =
-  "flex-none cursor-pointer rounded-lg border-0 bg-accent px-3.5 py-[7px] font-ui text-[12.5px] font-semibold text-accent-ink hover:brightness-[1.08]";
+  `press flex-none cursor-pointer rounded-lg border-0 bg-accent px-3.5 py-[0.4375rem] font-ui text-small font-semibold text-accent-ink hover:brightness-[1.08] active:brightness-[0.94] ${FOCUS}`;
 const SEG_ROOT = "flex gap-0.5 rounded-[9px] border border-line bg-surface p-0.5";
 const SEG_ITEM =
-  "flex cursor-pointer select-none items-center rounded-[7px] border-0 bg-transparent px-3.5 py-[5px] font-ui text-[12.5px] font-medium tracking-[0.01em] text-muted hover:bg-surface-hover hover:text-ink data-[state=checked]:bg-accent data-[state=checked]:text-accent-ink data-[state=checked]:hover:bg-accent data-[state=checked]:hover:text-accent-ink has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-1 has-[:focus-visible]:outline-accent";
+  "press flex cursor-pointer select-none items-center rounded-[7px] border-0 bg-transparent px-3.5 py-[0.3125rem] font-ui text-small font-medium text-muted hover:bg-surface-hover hover:text-ink data-[state=checked]:bg-accent data-[state=checked]:text-accent-ink data-[state=checked]:hover:bg-accent data-[state=checked]:hover:text-accent-ink has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-1 has-[:focus-visible]:outline-accent";
 const BRAND_MARK =
   "block h-3.5 w-3.5 rounded-[4px] bg-[linear-gradient(135deg,var(--color-accent)_0_50%,var(--color-summary-fill)_50%_100%)]";
 
@@ -376,8 +385,10 @@ function syncFoldAllButton(api) {
   btn.dataset.next = anyOpen ? "collapse" : "expand";
   btn.title = anyOpen ? "Collapse all epics" : "Expand all epics";
   const icon = btn.firstChild;
-  const cls = "ci " + (anyOpen ? "ci-collapse" : "ci-expand");
+  const name = anyOpen ? "ci-collapse" : "ci-expand";
+  const cls = "ci " + name;
   if (icon.className !== cls) icon.className = cls;
+  setGlyph(icon, name); /* cached Phosphor SVG, rendered once at module scope */
 }
 /* ---------- assignees: a comma-separated list of people ids, shown as initials ---------- */
 function parseAssignees(v) {
@@ -458,7 +469,8 @@ function watchRowTags(api) {
       }
       /* type icon in front of the name (appended, repositioned via flex order —
          never inserted between React-managed nodes) */
-      const iconCls = "type-icon ti-" + (t.type || "task");
+      const typeKey = "ti-" + (t.type || "task");
+      const iconCls = "type-icon " + typeKey;
       let ic = row.querySelector(".type-icon");
       if (!ic) {
         const content = row.querySelector('[data-col-id=":text"] .wx-content');
@@ -470,6 +482,7 @@ function watchRowTags(api) {
       } else if (ic.className !== iconCls) {
         ic.className = iconCls;
       }
+      if (ic) setGlyph(ic, typeKey);
       /* Who column: assignee initials from the roster; click opens the picker.
          The host is appended, never inserted between React-managed nodes. */
       const whoCell = row.querySelector('[data-col-id=":who"]');
@@ -491,7 +504,7 @@ function watchRowTags(api) {
           if (!assigned.length) {
             const ph = document.createElement("span");
             ph.className = "who-empty";
-            ph.textContent = "+";
+            setGlyph(ph, "who-add");
             host.appendChild(ph);
           }
           const shown = assigned.slice(0, 3);
@@ -549,7 +562,7 @@ function watchRowTags(api) {
         bEl.addEventListener("pointerdown", (e) => e.stopPropagation());
         bEl.addEventListener("dblclick", (e) => { e.stopPropagation(); e.preventDefault(); });
         const content = row.querySelector('[data-col-id=":text"] .wx-content');
-        if (content) content.appendChild(bEl); else bEl = null;
+        if (content) { setGlyph(bEl, "row-edit"); content.appendChild(bEl); } else bEl = null;
       }
       if (bEl) {
         const label = t.type === "summary" ? "Edit epic" : "Edit task";
@@ -620,6 +633,8 @@ function App({ session }) {
   const [people, setPeople] = useState(() => storeRef.current.people || []);
   const [newPerson, setNewPerson] = useState("");
   const [picker, setPicker] = useState(null); /* { taskId, el, rect, ids } */
+  const pickerKeyRef = useRef("none");        /* last opened row: see the popover below */
+  const lastPickerRef = useRef(null);
   const [copied, setCopied] = useState(false);
   const shareInputRef = useRef(null);
   const [armDelete, setArmDelete] = useState(null);
@@ -1096,6 +1111,14 @@ function App({ session }) {
     scheduleSave();
   };
 
+  /* the Who popover's remount key and anchor both survive the close, so the
+     exit animation has a stable origin to collapse into; both are plain refs
+     updated during render, which is idempotent under StrictMode */
+  if (picker) {
+    pickerKeyRef.current = String(picker.taskId);
+    lastPickerRef.current = picker;
+  }
+
   const vd = VIEWS[view];
   let statusText = {
     idle: "", saving: "Saving…", saved: "Saved · Supabase", local: "Not saved — Supabase unavailable",
@@ -1105,12 +1128,16 @@ function App({ session }) {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex flex-none items-center gap-3 pt-2.5 pr-[18px] pb-2.5 pl-4">
+      {/* the topbar is a material, not a painted strip: a translucent layer with
+          a bright top edge, closed off by a soft scroll edge instead of a rule */}
+      <header className="material-chrome edge-fade relative z-10 flex flex-none items-center gap-3 pt-2.5 pr-[18px] pb-2.5 pl-4">
         <div aria-hidden="true"><span className={BRAND_MARK} /></div>
+        {/* the title carries no `press`: it is a text field, so a scale on
+            pointer-down would fight the caret rather than confirm a commit */}
         <div className="flex items-center gap-0.5">
           <h1
             key={activeId}
-            className="m-0 max-w-[46vw] min-w-[60px] overflow-hidden rounded-[7px] px-2 py-[3px] font-display text-[19px] font-semibold tracking-[-0.01em] text-ellipsis whitespace-nowrap outline-none hover:bg-surface-hover focus-visible:bg-surface focus-visible:shadow-[0_0_0_2px_var(--color-accent)]"
+            className="m-0 max-w-[46vw] min-w-[60px] overflow-hidden rounded-[7px] px-2 py-[0.1875rem] font-display text-display font-semibold text-ellipsis whitespace-nowrap outline-none transition-colors duration-[130ms] ease-out hover:bg-surface-hover focus-visible:bg-surface focus-visible:shadow-[0_0_0_2px_var(--color-accent)]"
             contentEditable
             suppressContentEditableWarning
             spellCheck={false}
@@ -1124,7 +1151,7 @@ function App({ session }) {
             onSelect={(d) => (d.value === "::new" ? createProject() : openProject(d.value))}
           >
             <Menu.Trigger
-              className="flex h-6 w-6 cursor-pointer items-center justify-center rounded-md border-0 bg-transparent p-0 text-muted hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+              className={`press press-sm flex h-6 w-6 cursor-pointer items-center justify-center rounded-md border-0 bg-transparent p-0 text-muted hover:bg-surface-hover hover:text-ink ${FOCUS}`}
               aria-label="Switch project"
             >
               <CaretDown size={12} weight="bold" aria-hidden="true" />
@@ -1132,27 +1159,27 @@ function App({ session }) {
             <Portal>
               <Menu.Positioner style={{ zIndex: 40 }}>
                 <Menu.Content className={`${POP} min-w-[240px] rounded-[11px] p-1.5`}>
-                  <div className="px-2.5 pt-[5px] pb-1 text-[10.5px] font-semibold tracking-[0.06em] text-faint uppercase">Projects</div>
+                  <div className="px-2.5 pt-[0.3125rem] pb-1 text-label font-semibold text-faint uppercase">Projects</div>
                   {projects.map((p) => (
-                    <div key={p.id} className="group flex items-center gap-0.5 rounded-lg hover:bg-surface-hover">
+                    <div key={p.id} className="group flex items-center gap-0.5 rounded-lg transition-colors duration-[130ms] ease-out hover:bg-surface-hover">
                       <Menu.Item
                         value={p.id}
-                        className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-lg border-0 bg-transparent px-2 py-[7px] text-left font-ui text-[13.5px] text-ink data-[highlighted]:bg-surface-hover"
+                        className={`press flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-lg border-0 bg-transparent px-2 py-[0.4375rem] text-left font-ui text-body text-ink data-[highlighted]:bg-surface-hover ${FOCUS}`}
                       >
                         <span
                           className={`h-[7px] w-[7px] flex-none rounded-full ${p.id === activeId ? "bg-accent" : "bg-line"}`}
                           aria-hidden="true"
                         />
                         <span className={`flex-1 overflow-hidden text-ellipsis whitespace-nowrap ${p.id === activeId ? "font-semibold text-accent" : ""}`}>{p.name}</span>
-                        <span className="text-[11.5px] text-faint tabular-nums">{p.tasks.length || ""}</span>
+                        <span className="text-tiny text-faint tabular-nums">{p.tasks.length || ""}</span>
                       </Menu.Item>
                       {projects.length > 1 && (
                         /* two-step confirm, not a modal: the second click deletes */
                         <button
                           className={
                             armDelete === p.id
-                              ? "flex-none cursor-pointer rounded-[7px] border-0 bg-transparent px-2 py-[5px] font-ui text-[11.5px] leading-none font-semibold text-danger opacity-100"
-                              : "flex-none cursor-pointer rounded-[7px] border-0 bg-transparent px-2 py-[5px] font-ui text-[14px] leading-none text-faint opacity-0 transition-opacity duration-[120ms] group-hover:opacity-100 hover:text-danger"
+                              ? `press press-sm flex-none cursor-pointer rounded-[7px] border-0 bg-transparent px-2 py-[0.3125rem] font-ui text-tiny leading-none font-semibold text-danger opacity-100 ${FOCUS}`
+                              : `press press-sm flex-none cursor-pointer rounded-[7px] border-0 bg-transparent px-2 py-[0.3125rem] font-ui text-copy leading-none text-faint opacity-0 group-hover:opacity-100 hover:text-danger focus-visible:opacity-100 ${FOCUS}`
                           }
                           type="button"
                           onClick={(e) => { e.stopPropagation(); deleteProject(p.id); }}
@@ -1163,7 +1190,7 @@ function App({ session }) {
                   ))}
                   <Menu.Item
                     value="::new"
-                    className="mt-1 block w-full cursor-pointer rounded-b-lg border-0 border-t border-t-line-soft bg-transparent px-2.5 py-[7px] text-left font-ui text-[13px] font-medium text-accent hover:rounded-lg hover:bg-accent-hover data-[highlighted]:rounded-lg data-[highlighted]:bg-accent-hover"
+                    className={`press mt-1 block w-full cursor-pointer rounded-b-lg border-0 border-t border-t-line-soft bg-transparent px-2.5 py-[0.4375rem] text-left font-ui text-body font-medium text-accent hover:rounded-lg hover:bg-accent-hover data-[highlighted]:rounded-lg data-[highlighted]:bg-accent-hover ${FOCUS}`}
                   >+ New project</Menu.Item>
                 </Menu.Content>
               </Menu.Positioner>
@@ -1174,13 +1201,13 @@ function App({ session }) {
           <span
             className={
               status === "saved"
-                ? "rounded-full border border-transparent bg-accent-hover px-2.5 py-[3px] text-xs whitespace-nowrap text-accent"
-                : "rounded-full border border-line bg-surface px-2.5 py-[3px] text-xs whitespace-nowrap text-muted"
+                ? "rounded-full border border-transparent bg-accent-hover px-2.5 py-[0.1875rem] text-mini whitespace-nowrap text-accent"
+                : "rounded-full border border-line bg-surface px-2.5 py-[0.1875rem] text-mini whitespace-nowrap text-muted"
             }
           >{statusText}</span>
         )}
         {stats && stats.min && stats.max && (
-          <span className="pl-1 text-xs whitespace-nowrap text-muted tabular-nums max-[1100px]:hidden">
+          <span className="pl-1 text-mini whitespace-nowrap text-muted tabular-nums max-[1100px]:hidden">
             {fmtD(stats.min)} – {fmtD(new Date(stats.max.getTime() - DAY))}
             {" · "}<strong className="font-semibold text-ink">{stats.h}h</strong> / {stats.d}d
             {stats.epics > 0 && " · " + stats.epics + (stats.epics === 1 ? " epic" : " epics")}
@@ -1200,20 +1227,19 @@ function App({ session }) {
                 {people.length > 0 && (
                   <ul className="m-0 mb-2.5 max-h-[240px] list-none overflow-y-auto p-0">
                     {people.map((h) => (
-                      <li key={h.id} className="flex items-center gap-2 py-[3px]">
-                        {/* .who-chip is scoped to .wx-willow-theme in wx-overrides.css, so
-                            outside the widget it renders as bare initials — unchanged from
-                            before this migration, and a candidate for the design pass */}
+                      <li key={h.id} className="flex items-center gap-2 py-[0.1875rem]">
+                        {/* .who-chip is styled unscoped in wx-overrides.css, so the pill
+                            looks identical here, in the Who picker and in the grid */}
                         <span className="who-chip" style={{ "--who-hue": nameHue(h.name) }}>{initialsOf(h.name)}</span>
                         <input
-                          className="min-w-0 flex-1 rounded-[7px] border border-transparent bg-transparent px-2 py-[5px] font-ui text-[13px] text-ink hover:border-line-soft focus:border-accent focus:bg-surface-alt focus:outline-none"
+                          className={`min-w-0 flex-1 rounded-[7px] border border-transparent bg-transparent px-2 py-[0.3125rem] font-ui text-body text-ink transition-colors duration-[130ms] ease-out hover:border-line-soft focus:border-accent focus:bg-surface-alt focus:outline-none ${FOCUS}`}
                           value={h.name}
                           aria-label="Name"
                           onChange={(e) => renamePerson(h.id, e.target.value)}
                         />
                         <button
                           type="button"
-                          className="inline-flex h-[22px] w-[22px] flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent p-0 leading-none text-faint hover:bg-surface-hover hover:text-danger"
+                          className={`press press-sm inline-flex h-[22px] w-[22px] flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent p-0 leading-none text-faint hover:bg-surface-hover hover:text-danger ${FOCUS}`}
                           title={"Remove " + h.name}
                           onClick={() => removePerson(h.id)}
                         ><X size={14} aria-hidden="true" /></button>
@@ -1288,7 +1314,7 @@ function App({ session }) {
         <GridWillow fonts={false}>
           <div className="toolbar-row flex flex-none items-center border-b border-b-line-soft">
             <MToolbar api={api} items={TOOLBAR_ITEMS} />
-            <div className="flex flex-none items-center gap-[14px] px-4 text-[11.5px] whitespace-nowrap text-muted max-[900px]:hidden" aria-hidden="true">
+            <div className="flex flex-none items-center gap-[14px] px-4 text-tiny whitespace-nowrap text-muted max-[900px]:hidden" aria-hidden="true">
               {LEGEND.map((t) => (
                 <span key={t.id} className="inline-flex items-center gap-[5px]">
                   <span className={`h-2 w-2 rounded-[3px] ${t.dot}`} />{t.label}
@@ -1322,9 +1348,9 @@ function App({ session }) {
         </CoreWillow>
         {taskCount === 0 && (
           <div className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center">
-            <div className="pointer-events-auto max-w-[380px] rounded-[14px] border border-line bg-surface px-[26px] py-[22px] text-center shadow-pop motion-safe:animate-rise">
-              <div className="mb-1.5 font-display text-[17px] font-semibold">Plan your first task</div>
-              <p className="m-0 leading-[1.55] text-muted">Use <strong>“+”</strong> in the toolbar to add a task, then drag its bar to
+            <div className="material-pop pointer-events-auto max-w-[380px] rounded-[14px] border border-line px-[1.625rem] py-[1.375rem] text-center motion-safe:animate-rise">
+              <div className="mb-1.5 font-display text-title font-semibold">Plan your first task</div>
+              <p className="m-0 text-copy text-muted">Use <strong>“+”</strong> in the toolbar to add a task, then drag its bar to
               reschedule, drag its edge to resize, and double&#8209;click it to edit details.
               Double&#8209;click a task&#8217;s name in the list to rename it in place. Make a
               task an <strong>Epic</strong> and indent tasks under it — its length follows its
@@ -1335,18 +1361,23 @@ function App({ session }) {
       </div>
       {/* the Who cell is built by the tagger, so this popover is controlled and
           anchored to that DOM node through getAnchorRect; the key remounts it
-          per row so Ark re-measures instead of reusing the old placement */}
+          per row so Ark re-measures instead of reusing the old placement.
+          The key tracks the last *opened* row rather than the live one: closing
+          would otherwise remount and cut the exit animation off mid-flight, and
+          the anchor has to stay put for those 130ms so the panel collapses back
+          into the cell it came out of (§7). */}
       <Popover.Root
-        key={picker ? String(picker.taskId) : "none"}
+        key={pickerKeyRef.current}
         open={!!picker}
         onOpenChange={(e) => { if (!e.open) setPicker(null); }}
         positioning={{
           placement: "bottom-start",
           gutter: 8,
           getAnchorRect: () => {
-            if (!picker) return null;
-            const el = picker.el;
-            const r = el && el.isConnected ? el.getBoundingClientRect() : picker.rect;
+            const p = picker || lastPickerRef.current;
+            if (!p) return null;
+            const el = p.el;
+            const r = el && el.isConnected ? el.getBoundingClientRect() : p.rect;
             return r ? { x: r.left, y: r.top, width: r.width, height: r.height } : null;
           },
         }}
@@ -1365,7 +1396,7 @@ function App({ session }) {
                       <li key={h.id}>
                         <button
                           type="button"
-                          className={`flex w-full cursor-pointer items-center gap-2 rounded-lg border-0 px-1.5 py-[5px] text-left font-ui text-[13px] text-ink hover:bg-surface-hover ${on ? "bg-accent-hover" : "bg-transparent"}`}
+                          className={`press flex w-full cursor-pointer items-center gap-2 rounded-lg border-0 px-1.5 py-[0.3125rem] text-left font-ui text-body text-ink hover:bg-surface-hover ${FOCUS} ${on ? "bg-accent-hover" : "bg-transparent"}`}
                           onClick={() => toggleAssignee(picker.taskId, h.id)}
                         >
                           <span className="who-chip" style={{ "--who-hue": nameHue(h.name) }}>{initialsOf(h.name)}</span>

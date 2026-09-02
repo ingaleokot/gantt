@@ -50,10 +50,11 @@ type)`, `people(id,name,position,owner)`, `app_state(id='main', active_project, 
 ## Styling layer (Tailwind v4 + Ark UI + Phosphor)
 
 - **One token source.** `style.css` is the Tailwind entry and holds every token in a
-  single `@theme static` block (`--color-*`, `--font-*`, `--shadow-pop`, `--animate-rise`).
-  `static` is load-bearing: `wx-overrides.css` reads those tokens through `var(--color-…)`,
-  and Tailwind cannot see uses in another stylesheet, so without it they'd be tree-shaken.
-  There is **no `tailwind.config.js`** — v4 configures from CSS.
+  single `@theme static` block: `--color-*`, `--font-*`, the `--text-*` ramp, `--shadow-*`,
+  `--ease-*`, `--dur-*`, `--animate-rise`. `static` is load-bearing: `wx-overrides.css`
+  reads those tokens through `var(--color-…)` / `var(--dur-…)`, and Tailwind cannot see
+  uses in another stylesheet, so without it they'd be tree-shaken. There is **no
+  `tailwind.config.js`** — v4 configures from CSS.
 - **Three theme blocks** must stay in step: `@theme` (light), the
   `@media (prefers-color-scheme: dark) :root:not([data-theme="light"])` block, and
   `:root[data-theme="dark"]`. Both dark blocks are unlayered so they beat the layered
@@ -75,16 +76,59 @@ type)`, `people(id,name,position,owner)`, `app_state(id='main', active_project, 
 - Ark owns the shell primitives: `Popover` (Share, People, Who picker), `Menu` (project
   switcher), `SegmentGroup` (Day/Week/Month, viewer project switcher), `Field` (login).
   The SVAR gantt, MToolbar, MContextMenu and MEditor are library-owned — leave them alone.
+
+### Design conventions (the Apple-design pass)
+
+- **Press feedback belongs on pointer-down.** Every interactive control carries the
+  `press` class (`@layer components` in `style.css`): `transform: scale(0.97)` over
+  `--dur-press` (100 ms), plus `press-sm` (0.9) for icon-sized targets. `:active` latches
+  on pointerdown, so the surface moves before the click commits. Widget-owned controls
+  (`.wx-button`, `.row-edit`, `.who-chips`, `.fold-all`, `.tracker-link`, `.editor-okay`)
+  get the same treatment from selectors in `wx-overrides.css`.
+- **Motion tokens.** `--dur-press: 100ms`, `--dur-hover: 130ms`, `--dur-enter: 180ms`,
+  `--dur-exit: 130ms`; `--ease-emphasized` for anything arriving and `--ease-exit`, its
+  mirror, for anything leaving. Don't hardcode a duration or a curve.
+- **Anchored popovers.** `pop-anim` keys the `pop-in` / `pop-out` keyframes off Ark's
+  `data-state`, with `transform-origin: var(--transform-origin)` — the variable zag writes
+  on the positioner from the resolved placement — so each panel grows out of the edge
+  nearest its trigger and collapses back into it. The Who picker's remount `key` and
+  anchor rect are held in refs (`pickerKeyRef` / `lastPickerRef`) that survive the close;
+  keying them on the live `picker` would remount on close and cut the exit off mid-flight.
+- **Two material weights.** `material-chrome` (topbar: 20px blur, 58% surface) and
+  `material-pop` (floating surfaces: 30px blur, 82% surface, `--shadow-material`). Both
+  carry a bright top hairline (`--color-glass-edge`). Bigger surfaces read thicker. Never
+  stack one on the other — solid chips (buttons, inputs) are what sits *on* glass. The
+  topbar closes with `edge-fade` (a soft gradient) rather than a 1px rule.
+- **Type ramp, not px.** Nine rem steps — `text-label` (10.5px) · `tiny` · `mini` ·
+  `small` · `body` · `copy` · `title` · `display` · `hero` (20px) — each with its own
+  tracking and leading: `+0.06em` at the uppercase micro end down to `-0.022em` at the
+  display end. Spacing that has to scale with text is rem/em too. **The SVAR widget keeps
+  px sizes** (`--wx-font-size` etc.): its column widths are content-box px set in JS, so
+  scaling its body text would clip cells.
+- **Three accessibility signals, all mandatory.** `prefers-reduced-motion` swaps scale for
+  a cross-fade and turns the press into a brightness step; `prefers-reduced-transparency`
+  raises opacity and drops every `backdrop-filter` (required — the app has real blur now);
+  `prefers-contrast: more` goes near-solid with `--color-ink` borders. These blocks live
+  **unlayered** at the bottom of `style.css` and `wx-overrides.css` so they outrank the
+  layered Tailwind utilities that set background/border on the same elements.
+- **Focus is never the unstyled state.** `FOCUS` (a shared class string in `app.jsx` /
+  `Login.jsx`) is spelled into every interactive recipe; widget-owned controls get
+  `:focus-visible` rules in `wx-overrides.css`.
 - The Who picker is a **controlled** `Popover.Root` keyed on the task id, anchored to the
   tagger-built cell via `positioning.getAnchorRect`. The key forces a remount so Ark
   re-measures instead of reusing the previous row's placement; the stored rect is the
   fallback for when the widget re-renders the cell away.
-- `scripts/gen-icons.py` regenerates `icons.css` plus the type-icon and row-pencil masks
-  in `wx-overrides.css` from `@phosphor-icons/core`. It is idempotent; run it from the
-  repo root after changing the icon mapping.
-- Known carry-over, not a regression: `.who-chip` is scoped to `.wx-willow-theme`, so the
-  chips inside the People manager and the Who picker render as bare initials. Same before
-  and after the migration.
+- **Icons: components first, masks only where SVAR renders the element.** Everything the
+  app renders is a `@phosphor-icons/react` component — in JSX for the header and popovers,
+  and through `src/icons.jsx` for the nodes the tagger builds (type icons, row pencil,
+  fold-all chevron, the Who "+"). `icons.jsx` renders each glyph once into a detached
+  React root and caches the SVG string; the tagger re-runs on every mutation, so it must
+  never render per row. It deliberately avoids `react-dom/server`, which costs ~220 kB in
+  the shared chunk. The **only** CSS-drawn icons are the `<i class="wxi-…">` elements SVAR
+  injects itself: no React slot exists there, so `icons.css` masks them, with the `url()`
+  pointing straight at `@phosphor-icons/core/assets/**.svg` so Vite inlines the installed
+  package's own files at build time. There is no icon generation script and no glyph data
+  committed here — don't reintroduce either, and don't convert the tagger glyphs back.
 
 ## Gotchas that cost real debugging time
 

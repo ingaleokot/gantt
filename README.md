@@ -27,8 +27,10 @@ out the read-only link.
 - `src/view.jsx` — the read-only viewer (same look, no editing UI, no Supabase client)
 - `src/pdf.js` — vector PDF export (jsPDF, A4 landscape); returns a jsPDF doc
 - `style.css` — Tailwind entry and the single `@theme` token source
-- `wx-overrides.css`, `icons.css` — SVAR re-skin and Phosphor icon masks (plain CSS)
-- `scripts/gen-icons.py` — regenerates those mask data URIs from `@phosphor-icons/core`
+- `src/icons.jsx` — Phosphor glyphs for the nodes the row tagger builds in plain JS
+- `wx-overrides.css` — SVAR re-skin (plain CSS)
+- `icons.css` — masks for SVAR's own `<i class="wxi-…">` markup, pointing at
+  `@phosphor-icons/core`'s SVG files
 - `vite.config.js` — `base: '/gantt/'`, two rollup inputs, `@tailwindcss/vite`, and a
   small plugin that strips SVAR's CDN `@font-face` rules
 - `edge/shared/index.ts` — Supabase Edge Function `shared`: the public JSON feed for the
@@ -39,9 +41,10 @@ out the read-only link.
 Tailwind CSS v4 + [Ark UI](https://ark-ui.com) + [Phosphor icons](https://phosphoricons.com).
 
 - **Tokens.** `style.css` is the Tailwind entry. Every design token lives in one
-  `@theme static` block there as `--color-*` / `--font-*` / `--shadow-*` / `--animate-*`,
-  which gives both the utilities (`bg-surface`, `text-ink`, `font-display`, `shadow-pop`)
-  and the CSS variables the plain stylesheets read. `static` is required: Tailwind cannot
+  `@theme static` block there as `--color-*` / `--font-*` / `--text-*` / `--shadow-*` /
+  `--ease-*` / `--dur-*` / `--animate-*`, which gives both the utilities (`bg-surface`,
+  `text-ink`, `text-display`, `font-display`, `shadow-pop`) and the CSS variables the
+  plain stylesheets read. `static` is required: Tailwind cannot
   see uses that live in another stylesheet and would otherwise tree-shake those variables
   away. There is **no `tailwind.config.js`** — v4 configures itself from CSS.
 - **Themes.** Three blocks must stay in step: the `@theme` block (light), the
@@ -70,11 +73,39 @@ Tailwind CSS v4 + [Ark UI](https://ark-ui.com) + [Phosphor icons](https://phosph
   switcher, `SegmentGroup` for the Day/Week/Month and project switchers, `Field` for the
   login inputs. The SVAR gantt, its toolbar, context menu and task editor are
   library-owned and stay untouched.
-- **Phosphor icons** everywhere React renders (`@phosphor-icons/react` components). SVAR
-  injects its own `<i class="wxi-…">` markup, so `icons.css` reimplements that icon set as
-  `mask-image` data URIs pointing at Phosphor glyphs; `scripts/gen-icons.py` regenerates
-  `icons.css` and the type-icon/pencil masks in `wx-overrides.css` from
-  `@phosphor-icons/core`.
+- **Phosphor icons** for everything the app draws. In JSX that means
+  `@phosphor-icons/react` components directly; for the nodes the MutationObserver tagger
+  builds in plain JS — the type icons, the row pencil, the fold-all chevron and the Who
+  "+" — `src/icons.jsx` renders each component once into a detached React root and caches
+  the SVG markup, which the tagger then assigns. The only CSS-drawn icons left are SVAR's
+  own `<i class="wxi-…">` elements: the app never renders those, so `icons.css` masks them
+  with `url("@phosphor-icons/core/assets/…svg")`, which Vite resolves and inlines from the
+  installed package at build time. There is no icon generation step.
+
+## Design language
+
+The shell follows Apple's interface-design guidance, translated to CSS:
+
+- **Response.** Every control gives feedback on pointer-down, not on release: the `press`
+  class scales to `0.97` (`0.9` for icon-sized targets) over `--dur-press` (100 ms).
+- **Motion.** Four duration tokens (`--dur-press` / `-hover` / `-enter` / `-exit`) and a
+  mirrored easing pair (`--ease-emphasized` in, `--ease-exit` out).
+- **Anchored surfaces.** Popovers and menus scale out of the edge nearest their trigger
+  and collapse back into it, using Ark's `data-state` and the `--transform-origin` it
+  computes from the placement.
+- **Materials.** Two weights — `material-chrome` for the topbar, the thicker
+  `material-pop` for floating panels — each a translucent layer with a blur, a bright top
+  edge and a shadow scaled to its size. The topbar meets the content with a soft scroll
+  edge instead of a hairline.
+- **Typography.** A nine-step rem ramp with size-specific tracking and leading: positive
+  tracking on small uppercase labels, zero through body, negative as display sizes grow.
+  Spacing that must scale with text is rem/em, so the layout follows the reader's
+  text-size setting. The SVAR widget keeps px sizes — its column widths are content-box px
+  set in JS.
+- **Accessibility.** `prefers-reduced-motion` (cross-fade instead of scale, brightness
+  instead of a press), `prefers-reduced-transparency` (opaque, no blur) and
+  `prefers-contrast: more` (near-solid, defined borders) are all honoured, and every
+  interactive element has a visible `:focus-visible` ring.
 
 ## Auth and access
 

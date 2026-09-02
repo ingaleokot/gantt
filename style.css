@@ -11,6 +11,17 @@
      style.css → @svar-ui/react-gantt/all.css → wx-overrides.css → icons.css
    Utilities live in @layer utilities, so the unlayered SVAR theme and our
    unlayered wx-overrides always win inside the widget — which is what we want.
+
+   Layout of this file:
+     1. @theme static    — every token (color, type ramp, motion, material)
+     2. dark theme blocks
+     3. @keyframes
+     4. @layer base      — document chrome
+     5. @layer components — .press / .material-* / .pop-anim / .edge-fade
+     6. unlayered structural hooks into SVAR DOM
+     7. unlayered accessibility blocks (reduced motion / transparency / contrast)
+   The accessibility blocks are unlayered ON PURPOSE: they have to beat the
+   layered Tailwind utilities that set background/border on the same elements.
 --------------------------------------------------------------------------- */
 @layer theme, base, components, utilities;
 @import "tailwindcss/theme.css" layer(theme);
@@ -52,14 +63,76 @@
   --color-status-progress: #3b82f6;
   --color-status-done: #22a06b;
 
+  /* ---- materials (§12) ------------------------------------------------
+     The two glass tints are derived from --color-surface, so they follow the
+     theme on their own and do NOT need repeating in the dark blocks. The two
+     that cannot be derived — the bright top edge that reads as light catching
+     the material, and the modal scrim — do. */
+  --color-glass: color-mix(in srgb, var(--color-surface) 82%, transparent);
+  --color-glass-chrome: color-mix(in srgb, var(--color-surface) 58%, transparent);
+  --color-glass-edge: rgba(255, 255, 255, 0.75);
+  --color-scrim: rgba(8, 14, 16, 0.42);
+
   /* not colors: the lightness/saturation pair the per-person chip hue plugs into */
   --who-bg: 55% 88%;
   --who-fg: 45% 26%;
 
+  /* ---- depth: small chips read thinner than big floating surfaces ------ */
   --shadow-pop: 0 1px 2px rgba(28, 42, 46, 0.05), 0 4px 16px rgba(28, 42, 46, 0.07);
+  --shadow-material: 0 2px 6px rgba(28, 42, 46, 0.07), 0 14px 38px rgba(28, 42, 46, 0.16);
+  --shadow-modal: 0 12px 32px rgba(8, 16, 18, 0.22), 0 32px 80px rgba(8, 16, 18, 0.3);
+
   --font-display: "Bricolage Grotesque", "Instrument Sans", system-ui, sans-serif;
   --font-ui: "Instrument Sans", "Segoe UI", system-ui, Arial, sans-serif;
-  --animate-rise: rise 0.35s ease-out;
+
+  /* ---- type ramp (§15) -------------------------------------------------
+     Every step is a rem so the whole shell scales with the reader's text-size
+     setting, and every step carries its OWN tracking and leading: positive
+     tracking on the small uppercase end, zero through body, negative as the
+     display sizes grow. The rem values are the exact equivalents of the fixed
+     px sizes this replaced, so nothing reflows at a 16px root.
+     (The SVAR widget keeps px sizes — its column widths are content-box px set
+     in JS, so scaling its body text would clip cells. See wx-overrides.css.) */
+  --text-label: 0.65625rem;             /* 10.5px — uppercase micro-labels   */
+  --text-label--line-height: 1.3;
+  --text-label--letter-spacing: 0.06em;
+  --text-tiny: 0.71875rem;              /* 11.5px — legend, counts           */
+  --text-tiny--line-height: 1.45;
+  --text-tiny--letter-spacing: 0.03em;
+  --text-mini: 0.75rem;                 /* 12px   — hints, secondary meta    */
+  --text-mini--line-height: 1.5;
+  --text-mini--letter-spacing: 0.015em;
+  --text-small: 0.78125rem;             /* 12.5px — control labels           */
+  --text-small--line-height: 1.45;
+  --text-small--letter-spacing: 0.005em;
+  --text-body: 0.84375rem;              /* 13.5px — list rows, inputs        */
+  --text-body--line-height: 1.5;
+  --text-body--letter-spacing: 0em;
+  --text-copy: 0.875rem;                /* 14px   — running paragraph copy   */
+  --text-copy--line-height: 1.55;
+  --text-copy--letter-spacing: 0em;
+  --text-title: 1.0625rem;              /* 17px   — card titles              */
+  --text-title--line-height: 1.3;
+  --text-title--letter-spacing: -0.015em;
+  --text-display: 1.1875rem;            /* 19px   — the project title        */
+  --text-display--line-height: 1.25;
+  --text-display--letter-spacing: -0.02em;
+  --text-hero: 1.25rem;                 /* 20px   — the sign-in headline     */
+  --text-hero--line-height: 1.2;
+  --text-hero--letter-spacing: -0.022em;
+
+  /* ---- motion ----------------------------------------------------------
+     One emphasized curve for anything arriving, its mirror for anything
+     leaving (§7), and four durations. Press is the shortest — it has to feel
+     like the surface moved under the finger, not like an animation played. */
+  --ease-emphasized: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-exit: cubic-bezier(0.7, 0, 0.84, 0);
+  --dur-press: 100ms;
+  --dur-hover: 130ms;
+  --dur-enter: 180ms;
+  --dur-exit: 130ms;
+
+  --animate-rise: rise 0.35s var(--ease-emphasized);
 }
 
 /* The two dark blocks are plain (unlayered) CSS so they override the layered
@@ -98,7 +171,11 @@
     --color-type-testing-deep: #97c877;
     --who-bg: 28% 26%;
     --who-fg: 60% 76%;
+    --color-glass-edge: rgba(255, 255, 255, 0.08);
+    --color-scrim: rgba(0, 0, 0, 0.58);
     --shadow-pop: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 16px rgba(0, 0, 0, 0.35);
+    --shadow-material: 0 2px 6px rgba(0, 0, 0, 0.34), 0 14px 38px rgba(0, 0, 0, 0.5);
+    --shadow-modal: 0 12px 32px rgba(0, 0, 0, 0.45), 0 32px 80px rgba(0, 0, 0, 0.55);
   }
 }
 :root[data-theme="dark"] {
@@ -134,12 +211,33 @@
   --color-type-testing-deep: #97c877;
   --who-bg: 28% 26%;
   --who-fg: 60% 76%;
+  --color-glass-edge: rgba(255, 255, 255, 0.08);
+  --color-scrim: rgba(0, 0, 0, 0.58);
   --shadow-pop: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 16px rgba(0, 0, 0, 0.35);
+  --shadow-material: 0 2px 6px rgba(0, 0, 0, 0.34), 0 14px 38px rgba(0, 0, 0, 0.5);
+  --shadow-modal: 0 12px 32px rgba(0, 0, 0, 0.45), 0 32px 80px rgba(0, 0, 0, 0.55);
 }
 
 @keyframes rise {
   from { opacity: 0; transform: translateY(8px); }
 }
+/* Anchored entry/exit (§7). The scale runs from --transform-origin, which
+   Ark/zag writes onto the positioner from the resolved placement, so every
+   popover grows out of the edge nearest its trigger and collapses back into
+   it. The blur ramp makes it read as a material arriving, not a fade (§12). */
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+    -webkit-backdrop-filter: blur(0) saturate(100%);
+    backdrop-filter: blur(0) saturate(100%);
+  }
+}
+@keyframes pop-out {
+  to { opacity: 0; transform: scale(0.965); }
+}
+@keyframes fade-in { from { opacity: 0; } }
+@keyframes fade-out { to { opacity: 0; } }
 
 /* ---------- base: the document chrome React does not render ---------- */
 @layer base {
@@ -150,10 +248,72 @@
     background: var(--color-ground);
     color: var(--color-ink);
     font-family: var(--font-ui);
-    font-size: 14px;
+    /* rem, not px: the whole shell follows the reader's text-size setting */
+    font-size: var(--text-copy);
+    line-height: 1.55;
     overflow: hidden;
   }
   #app { height: 100%; }
+}
+
+@layer components {
+  /* ---- §1 Response: feedback on pointer-down, never on release --------
+     :active latches on pointerdown, so the surface is already moving before
+     the click commits. Hover/colour changes get a slower curve than the
+     press, which has to feel immediate. */
+  .press {
+    transition:
+      transform var(--dur-press) ease-out,
+      background-color var(--dur-hover) ease-out,
+      border-color var(--dur-hover) ease-out,
+      color var(--dur-hover) ease-out,
+      opacity var(--dur-hover) ease-out,
+      filter var(--dur-hover) ease-out;
+  }
+  .press:active { transform: scale(0.97); }
+  /* small icon-sized targets need a larger ratio to read as the same push */
+  .press-sm:active { transform: scale(0.9); }
+
+  /* ---- §12 Materials --------------------------------------------------
+     Two weights. Chrome is the thin one (the topbar); pop is the thick one
+     (floating surfaces) — stronger blur, deeper shadow, higher opacity so
+     text stays legible over whatever it covers. Both carry a bright top
+     hairline. Never put one of these on top of the other; solid chips
+     (buttons, inputs) are what sits ON glass. */
+  .material-chrome {
+    background-color: var(--color-glass-chrome);
+    -webkit-backdrop-filter: blur(20px) saturate(165%);
+    backdrop-filter: blur(20px) saturate(165%);
+    box-shadow: inset 0 1px 0 var(--color-glass-edge);
+  }
+  .material-pop {
+    background-color: var(--color-glass);
+    -webkit-backdrop-filter: blur(30px) saturate(180%);
+    backdrop-filter: blur(30px) saturate(180%);
+    box-shadow: inset 0 1px 0 var(--color-glass-edge), var(--shadow-material);
+  }
+
+  /* Scroll edge, not a hairline: where floating chrome meets the content
+     below it, fade the boundary out instead of drawing a 1px rule. */
+  .edge-fade::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 100%;
+    height: 0.75rem;
+    background: linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--color-ink) 7%, transparent),
+      transparent
+    );
+    pointer-events: none;
+  }
+
+  /* ---- §7 anchored, mirrored entry/exit ------------------------------- */
+  .pop-anim { transform-origin: var(--transform-origin, center); }
+  .pop-anim[data-state="open"] { animation: pop-in var(--dur-enter) var(--ease-emphasized); }
+  .pop-anim[data-state="closed"] { animation: pop-out var(--dur-exit) var(--ease-exit); }
 }
 
 /* ---------- structural hooks that reach into SVAR-rendered DOM ----------
@@ -168,3 +328,65 @@
 }
 .toolbar-row > :first-child { flex: 1; min-width: 0; }
 .gantt-holder > div { height: 100%; }
+
+/* ---------- §14 accessibility ------------------------------------------
+   Three independent signals, all unlayered so they outrank the utilities
+   that set background/border/transform on the very same elements. */
+
+/* Reduced motion: cross-fade instead of scale, and press feedback becomes a
+   brightness step rather than a movement — the feedback stays, the vestibular
+   part goes. */
+@media (prefers-reduced-motion: reduce) {
+  .press {
+    transition:
+      background-color var(--dur-hover) ease-out,
+      border-color var(--dur-hover) ease-out,
+      color var(--dur-hover) ease-out,
+      opacity var(--dur-hover) ease-out,
+      filter var(--dur-hover) ease-out;
+  }
+  .press:active,
+  .press-sm:active {
+    transform: none;
+    filter: brightness(0.92);
+  }
+  .pop-anim[data-state="open"] { animation: fade-in var(--dur-enter) ease-out; }
+  .pop-anim[data-state="closed"] { animation: fade-out var(--dur-exit) ease-out; }
+}
+
+/* Reduced transparency: raise the opacity, drop the blur. Required the moment
+   backdrop-filter exists anywhere. */
+@media (prefers-reduced-transparency: reduce) {
+  .material-chrome {
+    background-color: var(--color-ground);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .material-pop {
+    background-color: var(--color-surface);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .edge-fade::after { display: none; }
+  .pop-anim[data-state="open"] { animation-name: fade-in; }
+}
+
+/* More contrast: near-solid surfaces with a defined border. */
+@media (prefers-contrast: more) {
+  .material-chrome,
+  .material-pop {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .material-chrome { background-color: var(--color-ground); }
+  .material-pop {
+    background-color: var(--color-surface);
+    border-color: var(--color-ink);
+    box-shadow: var(--shadow-modal);
+  }
+  .edge-fade::after {
+    height: 1px;
+    background: var(--color-ink);
+    opacity: 0.5;
+  }
+}
