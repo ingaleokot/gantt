@@ -18,17 +18,15 @@ Read README.md for the full architecture. Key facts and hard-won gotchas below.
 - `hosting/gantt-share.html` — the public share page; user hosts it on a static host.
   It fetches ?raw=1 and renders it in a full-page srcdoc iframe.
 
-## Build & test
+## Build
 
-- `node build.mjs` → `out/gantt-chart.html` (artifact fragment, no doctype),
+- Toolchain is Bun (`bun install`, `bun.lock`). Node/npm are not used and the npm
+  lockfile was dropped.
+- `bun build.mjs` → `out/gantt-chart.html` (artifact fragment, no doctype),
   `out/view-template.html` (standalone viewer with `"__GANTT_VIEW_DATA__"`
   placeholder), `out/test.html` (harness with stubbed `window.claude`).
-- Tests are Playwright scripts run directly: `node test7.mjs` (editor stability),
-  `node test8.mjs` (relational persistence), `node test9.mjs` (share/view),
-  `node testhost.mjs` (hosted page, cross-origin). They expect Chromium at
-  `/opt/pw-browsers/chromium`; otherwise `npx playwright install` and drop
-  `executablePath`.
-- Always run tests before republishing the artifact.
+- There is no automated test suite: the Playwright regression scripts were removed.
+  Verify changes by hand in `out/test.html` before republishing the artifact.
 
 ## Data model (Supabase is the only store — no localStorage, no static data)
 

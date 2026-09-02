@@ -28,7 +28,6 @@ hands out a live view-only link.
   with live data on every request
 - `hosting/gantt-share.html` — the one static file to put on any host; it fetches the
   composed page from the edge function and renders it full-screen
-- `test*.mjs`, `testshell.mjs`, `testhost.mjs` — Playwright regression tests
 
 ## Storage (Supabase)
 
@@ -63,13 +62,9 @@ Viewers always see the current data; the hosted file never needs re-uploading.
 ## Develop
 
 ```sh
-npm install
-node build.mjs        # builds out/
-node test9.mjs        # share feature (viewer render + template sync)
-node testhost.mjs     # hosted share page, cross-origin
-node test7.mjs        # editor stability
-node test8.mjs        # relational persistence
+bun install
+bun build.mjs         # builds out/
 ```
 
-Tests expect a Chromium at `/opt/pw-browsers/chromium` (or run `npx playwright install`
-and drop the `executablePath`).
+Tooling is [Bun](https://bun.sh) (`bun.lock` is the lockfile; there is no npm lockfile).
+There is no automated test suite — the Playwright regression scripts were removed.
