@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 import { resolve } from "path";
 
 /* SVAR ships @font-face rules that pull Roboto/Open Sans from its own CDN.
@@ -18,7 +19,9 @@ const stripSvarFonts = {
 
 export default defineConfig({
   base: "/gantt/",
-  plugins: [react(), stripSvarFonts],
+  /* stripSvarFonts keeps enforce:"pre" so it rewrites SVAR's CSS before
+     Tailwind and Vite's own CSS pipeline see it */
+  plugins: [react(), stripSvarFonts, tailwindcss()],
   build: {
     outDir: "dist",
     emptyOutDir: true,

@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { Gantt } from "@svar-ui/react-gantt";
 import { Willow as CoreWillow } from "@svar-ui/react-core";
 import { Willow as GridWillow } from "@svar-ui/react-grid";
+import { SegmentGroup } from "@ark-ui/react/segment-group";
 
 /* same stylesheet order as the editor */
 import "../style.css";
@@ -140,12 +141,22 @@ const COLUMNS = [
   { id: "hours", header: "Hrs", width: 62, align: "center", sort: true },
   { id: "days", header: "Days", width: 58, align: "center", sort: true },
 ];
+/* `dot` is a complete literal class string: Tailwind's scanner only sees class
+   names spelled out in the source, never ones assembled at runtime */
 const LEGEND = [
-  { id: "backend", label: "Backend" },
-  { id: "frontend", label: "Frontend" },
-  { id: "design", label: "Design" },
-  { id: "testing", label: "Testing" },
+  { id: "backend", label: "Backend", dot: "bg-type-backend" },
+  { id: "frontend", label: "Frontend", dot: "bg-type-frontend" },
+  { id: "design", label: "Design", dot: "bg-type-design" },
+  { id: "testing", label: "Testing", dot: "bg-type-testing" },
 ];
+
+/* the shell recipes the editor uses, kept in step by hand */
+const SEG_ROOT = "flex gap-0.5 rounded-[9px] border border-line bg-surface p-0.5";
+const SEG_ITEM =
+  "flex cursor-pointer select-none items-center rounded-[7px] border-0 bg-transparent px-3.5 py-[5px] font-ui text-[12.5px] font-medium tracking-[0.01em] text-muted hover:bg-surface-hover hover:text-ink data-[state=checked]:bg-accent data-[state=checked]:text-accent-ink data-[state=checked]:hover:bg-accent data-[state=checked]:hover:text-accent-ink has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-1 has-[:focus-visible]:outline-accent";
+const BRAND_MARK =
+  "block h-3.5 w-3.5 rounded-[4px] bg-[linear-gradient(135deg,var(--color-accent)_0_50%,var(--color-summary-fill)_50%_100%)]";
+const BOOT = "grid min-h-screen place-items-center bg-ground font-ui text-[13px] text-muted";
 const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const fmtD = (d) => d.getDate() + " " + MON[d.getMonth()];
 
@@ -374,47 +385,61 @@ function App({ store }) {
   const vd = VIEWS[view];
 
   return (
-    <div className="shell">
-      <header className="topbar">
-        <div className="brand" aria-hidden="true"><span className="brand-mark" /></div>
-        <h1 className="project-name view-name">{project.name}</h1>
-        <span className="save-chip">View only</span>
+    <div className="flex h-full flex-col">
+      <header className="flex flex-none items-center gap-3 pt-2.5 pr-[18px] pb-2.5 pl-4">
+        <div aria-hidden="true"><span className={BRAND_MARK} /></div>
+        <h1 className="m-0 max-w-[46vw] min-w-[60px] cursor-default overflow-hidden rounded-[7px] px-2 py-[3px] font-display text-[19px] font-semibold tracking-[-0.01em] text-ellipsis whitespace-nowrap">{project.name}</h1>
+        <span className="rounded-full border border-line bg-surface px-2.5 py-[3px] text-xs whitespace-nowrap text-muted">View only</span>
         {stats && stats.min && stats.max && (
-          <span className="proj-stats">
+          <span className="pl-1 text-xs whitespace-nowrap text-muted tabular-nums max-[1100px]:hidden">
             {fmtD(stats.min)} – {fmtD(new Date(stats.max.getTime() - DAY))}
-            {" · "}<strong>{stats.h}h</strong> / {stats.d}d
+            {" · "}<strong className="font-semibold text-ink">{stats.h}h</strong> / {stats.d}d
             {stats.epics > 0 && " · " + stats.epics + (stats.epics === 1 ? " epic" : " epics")}
           </span>
         )}
-        <div className="spacer" />
+        <div className="flex-1" />
         {store.projects.length > 1 && (
-          <div className="seg" role="group" aria-label="Projects">
+          <SegmentGroup.Root
+            className={SEG_ROOT}
+            aria-label="Projects"
+            value={project.id}
+            onValueChange={(d) => { if (d.value) { setActiveId(d.value); setSeed((s) => s + 1); } }}
+          >
             {store.projects.map((p) => (
-              <button key={p.id} className={"seg-btn" + (p.id === project.id ? " on" : "")}
-                onClick={() => { setActiveId(p.id); setSeed((s) => s + 1); }} type="button">{p.name}</button>
+              <SegmentGroup.Item key={p.id} value={p.id} className={SEG_ITEM}>
+                <SegmentGroup.ItemText>{p.name}</SegmentGroup.ItemText>
+                <SegmentGroup.ItemHiddenInput />
+              </SegmentGroup.Item>
             ))}
-          </div>
+          </SegmentGroup.Root>
         )}
-        <div className="seg" role="group" aria-label="Timeline scale">
+        <SegmentGroup.Root
+          className={SEG_ROOT}
+          aria-label="Timeline scale"
+          value={view}
+          onValueChange={(d) => { if (d.value) { setView(d.value); setSeed((s) => s + 1); } }}
+        >
           {Object.entries(VIEWS).map(([k, v]) => (
-            <button key={k} className={"seg-btn" + (view === k ? " on" : "")}
-              onClick={() => { setView(k); setSeed((s) => s + 1); }} type="button">{v.label}</button>
+            <SegmentGroup.Item key={k} value={k} className={SEG_ITEM}>
+              <SegmentGroup.ItemText>{v.label}</SegmentGroup.ItemText>
+              <SegmentGroup.ItemHiddenInput />
+            </SegmentGroup.Item>
           ))}
-        </div>
+        </SegmentGroup.Root>
       </header>
-      <div className="board">
+      <div className="board relative mx-[14px] mb-[14px] flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-line bg-surface shadow-pop">
         <CoreWillow fonts={false}>
         <GridWillow fonts={false}>
-          <div className="toolbar-row view-toolbar">
-            <div className="legend" aria-hidden="true">
+          <div className="toolbar-row flex min-h-[44px] flex-none items-center justify-end border-b border-b-line-soft">
+            <div className="flex flex-none items-center gap-[14px] px-4 text-[11.5px] whitespace-nowrap text-muted max-[900px]:hidden" aria-hidden="true">
               {LEGEND.map((t) => (
-                <span key={t.id} className="legend-item">
-                  <span className={"legend-dot type-" + t.id} />{t.label}
+                <span key={t.id} className="inline-flex items-center gap-[5px]">
+                  <span className={`h-2 w-2 rounded-[3px] ${t.dot}`} />{t.label}
                 </span>
               ))}
             </div>
           </div>
-          <div className="gantt-holder" key={seed + "-" + view + "-" + (project.id || "none")}>
+          <div className="gantt-holder min-h-0 flex-1" key={seed + "-" + view + "-" + (project.id || "none")}>
             <MGantt
               init={init}
               tasks={revivedTasks}
@@ -435,10 +460,10 @@ function App({ store }) {
         </GridWillow>
         </CoreWillow>
         {!project.tasks.length && (
-          <div className="empty-hint">
-            <div className="empty-card">
-              <div className="empty-title">Nothing here yet</div>
-              <p>This project has no scheduled tasks.</p>
+          <div className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center">
+            <div className="pointer-events-auto max-w-[380px] rounded-[14px] border border-line bg-surface px-[26px] py-[22px] text-center shadow-pop motion-safe:animate-rise">
+              <div className="mb-1.5 font-display text-[17px] font-semibold">Nothing here yet</div>
+              <p className="m-0 leading-[1.55] text-muted">This project has no scheduled tasks.</p>
             </div>
           </div>
         )}
@@ -460,9 +485,9 @@ function Boot() {
     return () => { alive = false; };
   }, []);
 
-  if (state.phase === "loading") return <div className="auth-boot">Loading timeline…</div>;
+  if (state.phase === "loading") return <div className={BOOT}>Loading timeline…</div>;
   if (state.phase === "error") {
-    return <div className="auth-boot">Could not load the chart: {state.message} — refresh to retry.</div>;
+    return <div className={BOOT}>Could not load the chart: {state.message} — refresh to retry.</div>;
   }
   return <App store={state.store} />;
 }

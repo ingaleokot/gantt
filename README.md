@@ -2,7 +2,8 @@
 
 A personal Gantt chart tool built on [SVAR React Gantt](https://github.com/svar-widgets/react-gantt),
 with Supabase as the backing store and a public view-only share page. It is a Vite +
-React SPA with two entry points, deployed to GitHub Pages under `/gantt/`.
+React SPA with two entry points, deployed to GitHub Pages under `/gantt/`. The shell is
+Tailwind CSS v4 + Ark UI + Phosphor icons.
 
 ## What it does
 
@@ -25,11 +26,55 @@ out the read-only link.
 - `src/lib/db.js` — all persistence: supabase-js table queries, no SQL strings
 - `src/view.jsx` — the read-only viewer (same look, no editing UI, no Supabase client)
 - `src/pdf.js` — vector PDF export (jsPDF, A4 landscape); returns a jsPDF doc
-- `style.css`, `wx-overrides.css`, `icons.css` — shell styles, SVAR re-skin, icon masks
-- `vite.config.js` — `base: '/gantt/'`, two rollup inputs, and a small plugin that strips
-  SVAR's CDN `@font-face` rules
+- `style.css` — Tailwind entry and the single `@theme` token source
+- `wx-overrides.css`, `icons.css` — SVAR re-skin and Phosphor icon masks (plain CSS)
+- `scripts/gen-icons.py` — regenerates those mask data URIs from `@phosphor-icons/core`
+- `vite.config.js` — `base: '/gantt/'`, two rollup inputs, `@tailwindcss/vite`, and a
+  small plugin that strips SVAR's CDN `@font-face` rules
 - `edge/shared/index.ts` — Supabase Edge Function `shared`: the public JSON feed for the
   viewer (deployed by hand; this repo only holds the source)
+
+## Styling stack
+
+Tailwind CSS v4 + [Ark UI](https://ark-ui.com) + [Phosphor icons](https://phosphoricons.com).
+
+- **Tokens.** `style.css` is the Tailwind entry. Every design token lives in one
+  `@theme static` block there as `--color-*` / `--font-*` / `--shadow-*` / `--animate-*`,
+  which gives both the utilities (`bg-surface`, `text-ink`, `font-display`, `shadow-pop`)
+  and the CSS variables the plain stylesheets read. `static` is required: Tailwind cannot
+  see uses that live in another stylesheet and would otherwise tree-shake those variables
+  away. There is **no `tailwind.config.js`** — v4 configures itself from CSS.
+- **Themes.** Three blocks must stay in step: the `@theme` block (light), the
+  `@media (prefers-color-scheme: dark) :root:not([data-theme="light"])` block, and
+  `:root[data-theme="dark"]`. The two dark blocks are unlayered so they beat the layered
+  `@theme` values.
+- **No preflight.** `style.css` imports `tailwindcss/theme.css` and
+  `tailwindcss/utilities.css` but not the reset: preflight forces `box-sizing: border-box`
+  and zeroes padding on every element, and SVAR's gantt sizes its own DOM with content-box
+  widths. Everything the app renders sets its own border/background/padding utilities, so
+  the reset buys nothing and would silently reflow the widget.
+- **`wx-overrides.css` stays selector-based CSS.** Most of its ~130 selectors target
+  markup we never render (`.wx-willow-theme .wx-row`, `[data-col-id=":text"] .wx-content`,
+  the nodes the MutationObserver tagger builds in plain JS), so there is nothing to put a
+  class on. It reads the same `@theme` tokens through `var(--color-…)`, so tokens still
+  have one home.
+- **Literal class strings only.** Tailwind's scanner matches class names that appear
+  verbatim in the source. The tagger creates ~14 DOM nodes in plain JS, so those keep
+  semantic class names backed by CSS rules rather than utilities, and anything conditional
+  in JSX spells out the whole class list per branch (never `"bg-" + name`). A mistake here
+  works in dev and silently loses styles in the production build — verify with
+  `bun run build && bun run preview`, not just `bun run dev`.
+- **Ark UI** owns the shell interaction primitives: `Popover` for Share, the People
+  manager and the Who picker (dismissal, focus and placement, replacing the hand-rolled
+  `mousedown` listeners and `getBoundingClientRect()` math), `Menu` for the project
+  switcher, `SegmentGroup` for the Day/Week/Month and project switchers, `Field` for the
+  login inputs. The SVAR gantt, its toolbar, context menu and task editor are
+  library-owned and stay untouched.
+- **Phosphor icons** everywhere React renders (`@phosphor-icons/react` components). SVAR
+  injects its own `<i class="wxi-…">` markup, so `icons.css` reimplements that icon set as
+  `mask-image` data URIs pointing at Phosphor glyphs; `scripts/gen-icons.py` regenerates
+  `icons.css` and the type-icon/pencil masks in `wx-overrides.css` from
+  `@phosphor-icons/core`.
 
 ## Auth and access
 

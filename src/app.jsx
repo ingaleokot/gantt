@@ -3,6 +3,11 @@ import { createRoot } from "react-dom/client";
 import { Gantt, Toolbar, ContextMenu, Editor } from "@svar-ui/react-gantt";
 import { Willow as CoreWillow } from "@svar-ui/react-core";
 import { Willow as GridWillow } from "@svar-ui/react-grid";
+import { Menu } from "@ark-ui/react/menu";
+import { Popover } from "@ark-ui/react/popover";
+import { Portal } from "@ark-ui/react/portal";
+import { SegmentGroup } from "@ark-ui/react/segment-group";
+import { CaretDown, Check, DownloadSimple, ShareNetwork, SignOut, Users, X } from "@phosphor-icons/react";
 import { buildGanttPdf } from "./pdf.js";
 import { supabase } from "./lib/supabase.js";
 import { dbLoad, dbSave } from "./lib/db.js";
@@ -27,12 +32,33 @@ export const TASK_TYPES = [
   { id: "summary", label: "Epic" },
   { id: "milestone", label: "Milestone" },
 ];
+/* `dot` has to be a complete literal class string — Tailwind's scanner only
+   sees class names that appear verbatim in the source, never ones assembled
+   at runtime. Same rule everywhere below. */
 const LEGEND = [
-  { id: "backend", label: "Backend" },
-  { id: "frontend", label: "Frontend" },
-  { id: "design", label: "Design" },
-  { id: "testing", label: "Testing" },
+  { id: "backend", label: "Backend", dot: "bg-type-backend" },
+  { id: "frontend", label: "Frontend", dot: "bg-type-frontend" },
+  { id: "design", label: "Design", dot: "bg-type-design" },
+  { id: "testing", label: "Testing", dot: "bg-type-testing" },
 ];
+
+/* ---------- shared utility-class recipes for the app shell ---------- */
+const BTN =
+  "inline-flex cursor-pointer items-center gap-1.5 rounded-[9px] border border-line bg-surface px-[13px] py-1.5 font-ui text-[12.5px] font-medium text-muted hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:cursor-default disabled:opacity-60";
+/* no radius here: each popover sets its own, and two rounded-* utilities on
+   one element would race inside @layer utilities */
+const POP = "border border-line bg-surface shadow-pop outline-none";
+const POP_TITLE = "mb-1 text-[13.5px] font-semibold";
+const POP_HINT = "m-0 mb-2.5 text-xs leading-[1.5] text-muted";
+const POP_INPUT =
+  "min-w-0 flex-1 rounded-lg border border-line bg-surface-alt px-[9px] py-[7px] font-ui text-xs text-ink focus:outline-2 focus:outline-accent";
+const POP_ACTION =
+  "flex-none cursor-pointer rounded-lg border-0 bg-accent px-3.5 py-[7px] font-ui text-[12.5px] font-semibold text-accent-ink hover:brightness-[1.08]";
+const SEG_ROOT = "flex gap-0.5 rounded-[9px] border border-line bg-surface p-0.5";
+const SEG_ITEM =
+  "flex cursor-pointer select-none items-center rounded-[7px] border-0 bg-transparent px-3.5 py-[5px] font-ui text-[12.5px] font-medium tracking-[0.01em] text-muted hover:bg-surface-hover hover:text-ink data-[state=checked]:bg-accent data-[state=checked]:text-accent-ink data-[state=checked]:hover:bg-accent data-[state=checked]:hover:text-accent-ink has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-1 has-[:focus-visible]:outline-accent";
+const BRAND_MARK =
+  "block h-3.5 w-3.5 rounded-[4px] bg-[linear-gradient(135deg,var(--color-accent)_0_50%,var(--color-summary-fill)_50%_100%)]";
 
 const COLUMNS = [
   { id: "text", header: "Task name", width: 183, flexgrow: 1, sort: true, editor: "text" },
@@ -485,9 +511,11 @@ function watchRowTags(api) {
         }
         const label = assigned.length ? assigned.map((h) => h.name).join(", ") : "Assign people";
         if (host.title !== label) { host.title = label; host.setAttribute("aria-label", label); }
+        /* the tagger owns this node, so hand React the element itself — the
+           Who popover anchors to it through Ark's getAnchorRect */
         host.onclick = (e) => {
           e.stopPropagation();
-          if (pickHook) pickHook(t.id, host.getBoundingClientRect());
+          if (pickHook) pickHook(t.id, host);
         };
       }
       const rawUrl = typeof t.url === "string" && /^https?:\/\//i.test(t.url.trim()) ? t.url.trim() : null;
@@ -589,16 +617,11 @@ function App({ session }) {
   const [seed, setSeed] = useState(0);
   const [exporting, setExporting] = useState(false);
   const [stats, setStats] = useState(null);
-  const [menuOpen, setMenuOpen] = useState(false);
   const [people, setPeople] = useState(() => storeRef.current.people || []);
-  const [peopleOpen, setPeopleOpen] = useState(false);
   const [newPerson, setNewPerson] = useState("");
-  const peopleRef = useRef(null);
-  const [picker, setPicker] = useState(null); /* { taskId, rect } */
-  const pickerRef = useRef(null);
-  const [shareOpen, setShareOpen] = useState(false);
+  const [picker, setPicker] = useState(null); /* { taskId, el, rect, ids } */
   const [copied, setCopied] = useState(false);
-  const shareRef = useRef(null);
+  const shareInputRef = useRef(null);
   const [armDelete, setArmDelete] = useState(null);
   const [dbState, setDbState] = useState({ state: "idle" });
   const [, forceRender] = useState(0);
@@ -609,7 +632,6 @@ function App({ session }) {
   const snapTimer = useRef(null);
   const saveTimer = useRef(null);
   const apiRef = useRef(null);
-  const menuRef = useRef(null);
   const dirtyRef = useRef(false);
 
   const revivedTasks = useMemo(() => prepareTasks(activeProject().tasks), [seed, activeId]);
@@ -832,32 +854,17 @@ function App({ session }) {
     return () => document.removeEventListener("visibilitychange", flush);
   }, [doSave]);
 
-  /* close share popover on outside click */
-  useEffect(() => {
-    if (!shareOpen) return;
-    const close = (e) => { if (shareRef.current && !shareRef.current.contains(e.target)) { setShareOpen(false); setCopied(false); } };
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [shareOpen]);
-
+  /* Ark's Popover owns dismissal (outside click + Escape) and placement */
   const copyShareLink = async () => {
     let ok = false;
     try { await navigator.clipboard.writeText(SHARE_URL); ok = true; } catch (e) {}
     if (!ok) {
-      const inp = shareRef.current && shareRef.current.querySelector("input");
+      const inp = shareInputRef.current;
       if (inp) { inp.focus(); inp.select(); try { ok = document.execCommand("copy"); } catch (e) {} }
     }
     setCopied(ok);
     if (ok) setTimeout(() => setCopied(false), 2500);
   };
-
-  /* close project menu on outside click */
-  useEffect(() => {
-    if (!menuOpen) return;
-    const close = (e) => { if (menuRef.current && !menuRef.current.contains(e.target)) { setMenuOpen(false); setArmDelete(null); } };
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [menuOpen]);
 
   const exportPdf = useCallback(async () => {
     if (exporting) return;
@@ -961,10 +968,13 @@ function App({ session }) {
   }, [people]);
 
   useEffect(() => {
-    pickHook = (taskId, rect) => {
+    pickHook = (taskId, hostEl) => {
       let ids = [];
       try { ids = parseAssignees(apiRef.current.getTask(taskId).assignees); } catch (e) { /* unassigned */ }
-      setPicker({ taskId, rect, ids });
+      /* keep a rect snapshot: the widget may re-render the cell away while the
+         popover is open, and a detached node measures as 0×0 */
+      const rect = hostEl ? hostEl.getBoundingClientRect() : null;
+      setPicker({ taskId, el: hostEl, rect, ids });
     };
     return () => { pickHook = null; };
   }, []);
@@ -1019,22 +1029,6 @@ function App({ session }) {
     if (retagHook) setTimeout(() => retagHook(), 0);
   }, []);
 
-  useEffect(() => {
-    if (!peopleOpen) return undefined;
-    const close = (e) => { if (peopleRef.current && !peopleRef.current.contains(e.target)) setPeopleOpen(false); };
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [peopleOpen]);
-
-  useEffect(() => {
-    if (!picker) return undefined;
-    const close = (e) => { if (pickerRef.current && !pickerRef.current.contains(e.target)) setPicker(null); };
-    const esc = (e) => { if (e.key === "Escape") setPicker(null); };
-    document.addEventListener("mousedown", close);
-    document.addEventListener("keydown", esc, true);
-    return () => { document.removeEventListener("mousedown", close); document.removeEventListener("keydown", esc, true); };
-  }, [picker]);
-
   /* ---------- project actions ---------- */
   const openProject = (id) => {
     if (id !== storeRef.current.activeProject) {
@@ -1050,7 +1044,6 @@ function App({ session }) {
       setSeed((s) => s + 1);
       scheduleSave();
     }
-    setMenuOpen(false);
     setArmDelete(null);
   };
   const createProject = () => {
@@ -1065,7 +1058,6 @@ function App({ session }) {
     setView("day");
     setTaskCount(0);
     setSeed((s) => s + 1);
-    setMenuOpen(false);
     setArmDelete(null);
     scheduleSave();
   };
@@ -1112,13 +1104,13 @@ function App({ session }) {
   const projects = storeRef.current.projects;
 
   return (
-    <div className="shell">
-      <header className="topbar">
-        <div className="brand" aria-hidden="true"><span className="brand-mark" /></div>
-        <div className="proj" ref={menuRef}>
+    <div className="flex h-full flex-col">
+      <header className="flex flex-none items-center gap-3 pt-2.5 pr-[18px] pb-2.5 pl-4">
+        <div aria-hidden="true"><span className={BRAND_MARK} /></div>
+        <div className="flex items-center gap-0.5">
           <h1
             key={activeId}
-            className="project-name"
+            className="m-0 max-w-[46vw] min-w-[60px] overflow-hidden rounded-[7px] px-2 py-[3px] font-display text-[19px] font-semibold tracking-[-0.01em] text-ellipsis whitespace-nowrap outline-none hover:bg-surface-hover focus-visible:bg-surface focus-visible:shadow-[0_0_0_2px_var(--color-accent)]"
             contentEditable
             suppressContentEditableWarning
             spellCheck={false}
@@ -1126,128 +1118,186 @@ function App({ session }) {
             onBlur={onName}
             onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); } }}
           >{activeProject().name}</h1>
-          <button className="proj-toggle" type="button" aria-label="Switch project"
-            onClick={() => { setMenuOpen((o) => !o); setArmDelete(null); }}>
-            <span className="chev" aria-hidden="true" />
-          </button>
-          {menuOpen && (
-            <div className="proj-menu" role="menu">
-              <div className="proj-menu-label">Projects</div>
-              {projects.map((p) => (
-                <div key={p.id} className={"proj-row" + (p.id === activeId ? " on" : "")}>
-                  <button className="proj-open" type="button" onClick={() => openProject(p.id)}>
-                    <span className="proj-dot" aria-hidden="true" />
-                    <span className="proj-title">{p.name}</span>
-                    <span className="proj-count">{p.tasks.length || ""}</span>
-                  </button>
-                  {projects.length > 1 && (
-                    <button
-                      className={"proj-del" + (armDelete === p.id ? " armed" : "")}
-                      type="button"
-                      onClick={() => deleteProject(p.id)}
-                      title={armDelete === p.id ? "Click again to delete" : "Delete project"}
-                    >{armDelete === p.id ? "Sure?" : "×"}</button>
-                  )}
-                </div>
-              ))}
-              <button className="proj-new" type="button" onClick={createProject}>+ New project</button>
-            </div>
-          )}
+          <Menu.Root
+            positioning={{ placement: "bottom-start", gutter: 6 }}
+            onOpenChange={(e) => { if (!e.open) setArmDelete(null); }}
+            onSelect={(d) => (d.value === "::new" ? createProject() : openProject(d.value))}
+          >
+            <Menu.Trigger
+              className="flex h-6 w-6 cursor-pointer items-center justify-center rounded-md border-0 bg-transparent p-0 text-muted hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+              aria-label="Switch project"
+            >
+              <CaretDown size={12} weight="bold" aria-hidden="true" />
+            </Menu.Trigger>
+            <Portal>
+              <Menu.Positioner style={{ zIndex: 40 }}>
+                <Menu.Content className={`${POP} min-w-[240px] rounded-[11px] p-1.5`}>
+                  <div className="px-2.5 pt-[5px] pb-1 text-[10.5px] font-semibold tracking-[0.06em] text-faint uppercase">Projects</div>
+                  {projects.map((p) => (
+                    <div key={p.id} className="group flex items-center gap-0.5 rounded-lg hover:bg-surface-hover">
+                      <Menu.Item
+                        value={p.id}
+                        className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-lg border-0 bg-transparent px-2 py-[7px] text-left font-ui text-[13.5px] text-ink data-[highlighted]:bg-surface-hover"
+                      >
+                        <span
+                          className={`h-[7px] w-[7px] flex-none rounded-full ${p.id === activeId ? "bg-accent" : "bg-line"}`}
+                          aria-hidden="true"
+                        />
+                        <span className={`flex-1 overflow-hidden text-ellipsis whitespace-nowrap ${p.id === activeId ? "font-semibold text-accent" : ""}`}>{p.name}</span>
+                        <span className="text-[11.5px] text-faint tabular-nums">{p.tasks.length || ""}</span>
+                      </Menu.Item>
+                      {projects.length > 1 && (
+                        /* two-step confirm, not a modal: the second click deletes */
+                        <button
+                          className={
+                            armDelete === p.id
+                              ? "flex-none cursor-pointer rounded-[7px] border-0 bg-transparent px-2 py-[5px] font-ui text-[11.5px] leading-none font-semibold text-danger opacity-100"
+                              : "flex-none cursor-pointer rounded-[7px] border-0 bg-transparent px-2 py-[5px] font-ui text-[14px] leading-none text-faint opacity-0 transition-opacity duration-[120ms] group-hover:opacity-100 hover:text-danger"
+                          }
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); deleteProject(p.id); }}
+                          title={armDelete === p.id ? "Click again to delete" : "Delete project"}
+                        >{armDelete === p.id ? "Sure?" : <X size={13} aria-hidden="true" />}</button>
+                      )}
+                    </div>
+                  ))}
+                  <Menu.Item
+                    value="::new"
+                    className="mt-1 block w-full cursor-pointer rounded-b-lg border-0 border-t border-t-line-soft bg-transparent px-2.5 py-[7px] text-left font-ui text-[13px] font-medium text-accent hover:rounded-lg hover:bg-accent-hover data-[highlighted]:rounded-lg data-[highlighted]:bg-accent-hover"
+                  >+ New project</Menu.Item>
+                </Menu.Content>
+              </Menu.Positioner>
+            </Portal>
+          </Menu.Root>
         </div>
-        {statusText && <span className={"save-chip save-" + status}>{statusText}</span>}
+        {statusText && (
+          <span
+            className={
+              status === "saved"
+                ? "rounded-full border border-transparent bg-accent-hover px-2.5 py-[3px] text-xs whitespace-nowrap text-accent"
+                : "rounded-full border border-line bg-surface px-2.5 py-[3px] text-xs whitespace-nowrap text-muted"
+            }
+          >{statusText}</span>
+        )}
         {stats && stats.min && stats.max && (
-          <span className="proj-stats">
+          <span className="pl-1 text-xs whitespace-nowrap text-muted tabular-nums max-[1100px]:hidden">
             {fmtD(stats.min)} – {fmtD(new Date(stats.max.getTime() - DAY))}
-            {" · "}<strong>{stats.h}h</strong> / {stats.d}d
+            {" · "}<strong className="font-semibold text-ink">{stats.h}h</strong> / {stats.d}d
             {stats.epics > 0 && " · " + stats.epics + (stats.epics === 1 ? " epic" : " epics")}
           </span>
         )}
-        <div className="spacer" />
-        <div className="people" ref={peopleRef}>
-          <button className="export-btn" type="button" onClick={() => setPeopleOpen((o) => !o)}>
-            <span className="people-icon" aria-hidden="true" />
+        <div className="flex-1" />
+        <Popover.Root positioning={{ placement: "bottom-end", gutter: 8 }}>
+          <Popover.Trigger className={BTN}>
+            <Users size={14} aria-hidden="true" />
             People{people.length ? " · " + people.length : ""}
-          </button>
-          {peopleOpen && (
-            <div className="people-pop">
-              <div className="share-title">People</div>
-              <p className="share-hint">Anyone on this list can be assigned to a task or an epic.</p>
-              {people.length > 0 && (
-                <ul className="people-list">
-                  {people.map((h) => (
-                    <li key={h.id}>
-                      <span className="who-chip" style={{ "--who-hue": nameHue(h.name) }}>{initialsOf(h.name)}</span>
-                      <input
-                        value={h.name}
-                        aria-label="Name"
-                        onChange={(e) => renamePerson(h.id, e.target.value)}
-                      />
-                      <button type="button" className="people-del" title={"Remove " + h.name}
-                        onClick={() => removePerson(h.id)}>×</button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <div className="share-row">
-                <input
-                  value={newPerson}
-                  placeholder="Add a person"
-                  onChange={(e) => setNewPerson(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addPerson(); } }}
-                />
-                <button type="button" className="share-copy" onClick={addPerson}>Add</button>
-              </div>
-            </div>
-          )}
-        </div>
-        <div className="share" ref={shareRef}>
-          <button className="export-btn" type="button" onClick={() => { setShareOpen((o) => !o); setCopied(false); }}>
-            <span className="share-icon" aria-hidden="true" />
+          </Popover.Trigger>
+          <Portal>
+            <Popover.Positioner style={{ zIndex: 40 }}>
+              <Popover.Content className={`${POP} w-[288px] rounded-xl p-3.5`}>
+                <Popover.Title className={POP_TITLE}>People</Popover.Title>
+                <Popover.Description className={POP_HINT}>Anyone on this list can be assigned to a task or an epic.</Popover.Description>
+                {people.length > 0 && (
+                  <ul className="m-0 mb-2.5 max-h-[240px] list-none overflow-y-auto p-0">
+                    {people.map((h) => (
+                      <li key={h.id} className="flex items-center gap-2 py-[3px]">
+                        {/* .who-chip is scoped to .wx-willow-theme in wx-overrides.css, so
+                            outside the widget it renders as bare initials — unchanged from
+                            before this migration, and a candidate for the design pass */}
+                        <span className="who-chip" style={{ "--who-hue": nameHue(h.name) }}>{initialsOf(h.name)}</span>
+                        <input
+                          className="min-w-0 flex-1 rounded-[7px] border border-transparent bg-transparent px-2 py-[5px] font-ui text-[13px] text-ink hover:border-line-soft focus:border-accent focus:bg-surface-alt focus:outline-none"
+                          value={h.name}
+                          aria-label="Name"
+                          onChange={(e) => renamePerson(h.id, e.target.value)}
+                        />
+                        <button
+                          type="button"
+                          className="inline-flex h-[22px] w-[22px] flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent p-0 leading-none text-faint hover:bg-surface-hover hover:text-danger"
+                          title={"Remove " + h.name}
+                          onClick={() => removePerson(h.id)}
+                        ><X size={14} aria-hidden="true" /></button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <div className="flex gap-1.5">
+                  <input
+                    className={POP_INPUT}
+                    value={newPerson}
+                    placeholder="Add a person"
+                    onChange={(e) => setNewPerson(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addPerson(); } }}
+                  />
+                  <button type="button" className={POP_ACTION} onClick={addPerson}>Add</button>
+                </div>
+              </Popover.Content>
+            </Popover.Positioner>
+          </Portal>
+        </Popover.Root>
+        <Popover.Root
+          positioning={{ placement: "bottom-end", gutter: 8 }}
+          onOpenChange={(e) => { if (!e.open) setCopied(false); }}
+        >
+          <Popover.Trigger className={BTN}>
+            <ShareNetwork size={13} aria-hidden="true" />
             Share
-          </button>
-          {shareOpen && (
-            <div className="share-pop">
-              <div className="share-title">View-only link</div>
-              <p className="share-hint">Anyone with this link can see the chart live — data loads fresh on every open, no editing.</p>
-              <div className="share-row">
-                <input readOnly value={SHARE_URL} onFocus={(e) => e.target.select()} />
-                <button type="button" className="share-copy" onClick={copyShareLink}>{copied ? "Copied!" : "Copy"}</button>
-              </div>
-            </div>
-          )}
-        </div>
-        <button className="export-btn" type="button" onClick={exportPdf} disabled={exporting}>
-          <span className="export-icon" aria-hidden="true" />
+          </Popover.Trigger>
+          <Portal>
+            <Popover.Positioner style={{ zIndex: 60 }}>
+              <Popover.Content className={`${POP} w-[380px] rounded-xl px-4 py-3.5`}>
+                <Popover.Title className={POP_TITLE}>View-only link</Popover.Title>
+                <Popover.Description className={POP_HINT}>Anyone with this link can see the chart live — data loads fresh on every open, no editing.</Popover.Description>
+                <div className="flex gap-1.5">
+                  <input ref={shareInputRef} className={POP_INPUT} readOnly value={SHARE_URL} onFocus={(e) => e.target.select()} />
+                  <button type="button" className={POP_ACTION} onClick={copyShareLink}>{copied ? "Copied!" : "Copy"}</button>
+                </div>
+              </Popover.Content>
+            </Popover.Positioner>
+          </Portal>
+        </Popover.Root>
+        <button className={BTN} type="button" onClick={exportPdf} disabled={exporting}>
+          <DownloadSimple size={13} aria-hidden="true" />
           {exporting ? "Exporting…" : "Export PDF"}
         </button>
-        <div className="seg" role="group" aria-label="Timeline scale">
+        <SegmentGroup.Root
+          className={SEG_ROOT}
+          aria-label="Timeline scale"
+          value={view}
+          onValueChange={(d) => { if (d.value) changeView(d.value); }}
+        >
           {Object.entries(VIEWS).map(([k, v]) => (
-            <button key={k} className={"seg-btn" + (view === k ? " on" : "")}
-              onClick={() => changeView(k)} type="button">{v.label}</button>
+            <SegmentGroup.Item key={k} value={k} className={SEG_ITEM}>
+              <SegmentGroup.ItemText>{v.label}</SegmentGroup.ItemText>
+              <SegmentGroup.ItemHiddenInput />
+            </SegmentGroup.Item>
           ))}
-        </div>
+        </SegmentGroup.Root>
         <button
-          className="export-btn"
+          className={BTN}
           type="button"
           title={session.user.email || "Signed in"}
           onClick={() => supabase.auth.signOut()}
-        >Sign out</button>
+        >
+          <SignOut size={13} aria-hidden="true" />
+          Sign out
+        </button>
       </header>
-      <div className="board">
+      <div className="board relative mx-[14px] mb-[14px] flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-line bg-surface shadow-pop">
         <CoreWillow fonts={false}>
         <GridWillow fonts={false}>
-          <div className="toolbar-row">
+          <div className="toolbar-row flex flex-none items-center border-b border-b-line-soft">
             <MToolbar api={api} items={TOOLBAR_ITEMS} />
-            <div className="legend" aria-hidden="true">
+            <div className="flex flex-none items-center gap-[14px] px-4 text-[11.5px] whitespace-nowrap text-muted max-[900px]:hidden" aria-hidden="true">
               {LEGEND.map((t) => (
-                <span key={t.id} className="legend-item">
-                  <span className={"legend-dot type-" + t.id} />{t.label}
+                <span key={t.id} className="inline-flex items-center gap-[5px]">
+                  <span className={`h-2 w-2 rounded-[3px] ${t.dot}`} />{t.label}
                 </span>
               ))}
             </div>
           </div>
           <MContextMenu api={api} />
-          <div className="gantt-holder" key={seed + "-" + view + "-" + activeId}>
+          <div className="gantt-holder min-h-0 flex-1" key={seed + "-" + view + "-" + activeId}>
               <MGantt
                 init={init}
                 tasks={revivedTasks}
@@ -1271,10 +1321,10 @@ function App({ session }) {
         </GridWillow>
         </CoreWillow>
         {taskCount === 0 && (
-          <div className="empty-hint">
-            <div className="empty-card">
-              <div className="empty-title">Plan your first task</div>
-              <p>Use <strong>“+”</strong> in the toolbar to add a task, then drag its bar to
+          <div className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center">
+            <div className="pointer-events-auto max-w-[380px] rounded-[14px] border border-line bg-surface px-[26px] py-[22px] text-center shadow-pop motion-safe:animate-rise">
+              <div className="mb-1.5 font-display text-[17px] font-semibold">Plan your first task</div>
+              <p className="m-0 leading-[1.55] text-muted">Use <strong>“+”</strong> in the toolbar to add a task, then drag its bar to
               reschedule, drag its edge to resize, and double&#8209;click it to edit details.
               Double&#8209;click a task&#8217;s name in the list to rename it in place. Make a
               task an <strong>Epic</strong> and indent tasks under it — its length follows its
@@ -1283,31 +1333,54 @@ function App({ session }) {
           </div>
         )}
       </div>
-      {picker && (
-        <div className="who-pop" ref={pickerRef}
-          style={{ left: Math.max(8, Math.min(picker.rect.left - 60, window.innerWidth - 236)), top: picker.rect.bottom + 8 }}>
-          <div className="share-title">Assign</div>
-          {people.length === 0 ? (
-            <p className="share-hint">No people yet — add them under <strong>People</strong> in the header.</p>
-          ) : (
-            <ul className="who-pick">
-              {people.map((h) => {
-                const on = picker.ids.includes(h.id);
-                return (
-                  <li key={h.id}>
-                    <button type="button" className={"who-pick-row" + (on ? " on" : "")}
-                      onClick={() => toggleAssignee(picker.taskId, h.id)}>
-                      <span className="who-chip" style={{ "--who-hue": nameHue(h.name) }}>{initialsOf(h.name)}</span>
-                      <span className="who-pick-name">{h.name}</span>
-                      <span className="who-pick-check" aria-hidden="true">{on ? "\u2713" : ""}</span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </div>
-      )}
+      {/* the Who cell is built by the tagger, so this popover is controlled and
+          anchored to that DOM node through getAnchorRect; the key remounts it
+          per row so Ark re-measures instead of reusing the old placement */}
+      <Popover.Root
+        key={picker ? String(picker.taskId) : "none"}
+        open={!!picker}
+        onOpenChange={(e) => { if (!e.open) setPicker(null); }}
+        positioning={{
+          placement: "bottom-start",
+          gutter: 8,
+          getAnchorRect: () => {
+            if (!picker) return null;
+            const el = picker.el;
+            const r = el && el.isConnected ? el.getBoundingClientRect() : picker.rect;
+            return r ? { x: r.left, y: r.top, width: r.width, height: r.height } : null;
+          },
+        }}
+      >
+        <Portal>
+          <Popover.Positioner style={{ zIndex: 60 }}>
+            <Popover.Content className={`${POP} w-[228px] rounded-xl p-3`}>
+              <Popover.Title className={POP_TITLE}>Assign</Popover.Title>
+              {people.length === 0 ? (
+                <Popover.Description className={POP_HINT}>No people yet — add them under <strong>People</strong> in the header.</Popover.Description>
+              ) : (
+                <ul className="m-0 mt-1.5 max-h-[260px] list-none overflow-y-auto p-0">
+                  {people.map((h) => {
+                    const on = picker ? picker.ids.includes(h.id) : false;
+                    return (
+                      <li key={h.id}>
+                        <button
+                          type="button"
+                          className={`flex w-full cursor-pointer items-center gap-2 rounded-lg border-0 px-1.5 py-[5px] text-left font-ui text-[13px] text-ink hover:bg-surface-hover ${on ? "bg-accent-hover" : "bg-transparent"}`}
+                          onClick={() => toggleAssignee(picker.taskId, h.id)}
+                        >
+                          <span className="who-chip" style={{ "--who-hue": nameHue(h.name) }}>{initialsOf(h.name)}</span>
+                          <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{h.name}</span>
+                          <span className="flex-none text-accent" aria-hidden="true">{on ? <Check size={13} weight="bold" /> : null}</span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </Popover.Content>
+          </Popover.Positioner>
+        </Portal>
+      </Popover.Root>
     </div>
   );
 }
@@ -1323,7 +1396,7 @@ function Root() {
     return () => { alive = false; sub.subscription.unsubscribe(); };
   }, []);
 
-  if (session === undefined) return <div className="auth-boot">Loading…</div>;
+  if (session === undefined) return <div className="grid min-h-screen place-items-center bg-ground font-ui text-[13px] text-muted">Loading…</div>;
   if (!session) return <Login />;
   /* keyed on the user so switching accounts remounts with a clean store */
   return <App key={session.user.id} session={session} />;

@@ -1,8 +1,8 @@
 # Gantt — project context for Claude
 
-Personal Gantt chart tool: a Vite + React SPA on SVAR react-gantt, talking straight to
-cloud Supabase. Read README.md for the full architecture. Key facts and hard-won
-gotchas below.
+Personal Gantt chart tool: a Vite + React SPA on SVAR react-gantt, styled with Tailwind
+CSS v4 + Ark UI + Phosphor icons, talking straight to cloud Supabase. Read README.md for
+the full architecture. Key facts and hard-won gotchas below.
 
 ## Deployed pieces
 
@@ -47,6 +47,45 @@ type)`, `people(id,name,position,owner)`, `app_state(id='main', active_project, 
   as a `not.in.(…)` filter string.
 - `tasks` carries a self-FK, so `db.js` sorts rows parents-first before inserting.
 
+## Styling layer (Tailwind v4 + Ark UI + Phosphor)
+
+- **One token source.** `style.css` is the Tailwind entry and holds every token in a
+  single `@theme static` block (`--color-*`, `--font-*`, `--shadow-pop`, `--animate-rise`).
+  `static` is load-bearing: `wx-overrides.css` reads those tokens through `var(--color-…)`,
+  and Tailwind cannot see uses in another stylesheet, so without it they'd be tree-shaken.
+  There is **no `tailwind.config.js`** — v4 configures from CSS.
+- **Three theme blocks** must stay in step: `@theme` (light), the
+  `@media (prefers-color-scheme: dark) :root:not([data-theme="light"])` block, and
+  `:root[data-theme="dark"]`. Both dark blocks are unlayered so they beat the layered
+  `@theme` values regardless of specificity.
+- **Preflight is deliberately not imported** — only `tailwindcss/theme.css` and
+  `tailwindcss/utilities.css`. Preflight's `box-sizing: border-box` + zeroed padding on
+  `*` would reflow SVAR's content-box internals. Consequence: our own elements are
+  content-box too, so widths like the 380px share popover measure 414px with padding —
+  the same as before the migration. Don't add `box-border` to "fix" it.
+- **`wx-overrides.css` and `icons.css` stay plain CSS.** Their selectors target markup we
+  never render — SVAR's internals and the nodes the tagger builds in JS.
+- **Literal class strings only.** Tailwind's scanner reads source text, so never build a
+  class name by concatenation (`"bg-" + type`). Tagger-created nodes keep semantic classes
+  backed by CSS; conditional JSX spells out the full class list per branch. A slip works
+  in dev and silently loses styles in the production build — check with
+  `bun run build && bun run preview`.
+- Two `rounded-*` utilities on one element race inside `@layer utilities` (source order
+  doesn't decide the winner) — set the radius once per element.
+- Ark owns the shell primitives: `Popover` (Share, People, Who picker), `Menu` (project
+  switcher), `SegmentGroup` (Day/Week/Month, viewer project switcher), `Field` (login).
+  The SVAR gantt, MToolbar, MContextMenu and MEditor are library-owned — leave them alone.
+- The Who picker is a **controlled** `Popover.Root` keyed on the task id, anchored to the
+  tagger-built cell via `positioning.getAnchorRect`. The key forces a remount so Ark
+  re-measures instead of reusing the previous row's placement; the stored rect is the
+  fallback for when the widget re-renders the cell away.
+- `scripts/gen-icons.py` regenerates `icons.css` plus the type-icon and row-pencil masks
+  in `wx-overrides.css` from `@phosphor-icons/core`. It is idempotent; run it from the
+  repo root after changing the icon mapping.
+- Known carry-over, not a regression: `.who-chip` is scoped to `.wx-willow-theme`, so the
+  chips inside the People manager and the Who picker render as bare initials. Same before
+  and after the migration.
+
 ## Gotchas that cost real debugging time
 
 - SVAR react-gantt 2.x, PRO features reimplemented manually: weekend-skipping
@@ -70,7 +109,8 @@ type)`, `people(id,name,position,owner)`, `app_state(id='main', active_project, 
   network round-trip. An instantly-resolving data source (a stub, a synchronous cache)
   makes the first mount abort and the row tagger never starts.
 - Vite strips SVAR's `@font-face` rules via a small plugin in `vite.config.js`; the app
-  supplies its own faces and passes `fonts={false}` to Willow.
+  supplies its own faces and passes `fonts={false}` to Willow. Keep that plugin's
+  `enforce: "pre"` and keep it ahead of `tailwindcss()` in the plugin list.
 - Stylesheet import order in the entries is load-bearing: `style.css`, then
   `@svar-ui/react-gantt/all.css`, then `wx-overrides.css` and `icons.css`.
 - PDF export uses jsPDF's plain browser download: `buildGanttPdf(...)` returns the doc
