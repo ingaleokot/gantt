@@ -1,0 +1,330 @@
+/* Willow theme re-skin — must load after gantt.css */
+.wx-willow-theme {
+  --wx-font-family: var(--ui-font);
+  --wx-font-size: 13.5px;
+  --wx-font-size-sm: 12px;
+  --wx-color-font: var(--ink);
+  --wx-color-font-alt: var(--muted);
+  --wx-icon-color: var(--faint);
+  --wx-background: var(--surface);
+  --wx-background-alt: var(--surface-alt);
+  --wx-background-hover: var(--surface-hover);
+  --wx-border: 1px solid var(--line);
+  --wx-border-medium: 1px solid var(--line-soft);
+  --wx-border-radius: 7px;
+  --wx-radius-major: 10px;
+  --wx-color-primary: var(--accent);
+  --wx-color-primary-font: var(--accent-ink);
+  --wx-color-primary-selected: var(--accent-selected);
+  --wx-color-secondary-hover: var(--accent-hover);
+  --wx-color-danger: var(--danger);
+  --wx-color-disabled: var(--surface-alt);
+  --wx-color-disabled-alt: var(--surface-hover);
+  --wx-color-font-disabled: var(--faint);
+  --wx-input-border-radius: 7px;
+  --wx-input-background: var(--surface);
+  --wx-modal-background: var(--surface);
+  --wx-popup-background: var(--surface);
+  --wx-notice-background: var(--surface);
+  --wx-modal-backdrop: rgba(15, 23, 25, 0.45);
+
+  /* gantt-specific */
+  --wx-gantt-select-color: var(--accent-hover);
+  --wx-gantt-border: 1px solid var(--line-soft);
+  --wx-gantt-border-color: var(--line);
+  --wx-border-color: var(--line);
+  --wx-gantt-bar-border-radius: 7px;
+  --wx-gantt-bar-font: 500 12px var(--ui-font);
+  --wx-gantt-task-color: var(--accent);
+  --wx-gantt-task-fill-color: color-mix(in srgb, var(--accent) 72%, var(--surface));
+  --wx-gantt-task-border-color: transparent;
+  --wx-gantt-task-font-color: var(--accent-ink);
+  --wx-gantt-summary-color: var(--summary);
+  --wx-gantt-summary-fill-color: var(--summary-fill);
+  --wx-gantt-summary-border-color: transparent;
+  --wx-gantt-summary-font-color: var(--summary-ink);
+  --wx-gantt-milestone-color: var(--milestone);
+  --wx-gantt-link-color: var(--faint);
+  --wx-gantt-link-marker-background: var(--accent);
+  --wx-gantt-link-marker-color: var(--accent-ink);
+  --wx-gantt-marker-color: var(--danger);
+  --wx-gantt-holiday-background: var(--weekend);
+  --wx-gantt-holiday-color: var(--muted);
+  --wx-gantt-icon-color: var(--faint);
+  --wx-grid-header-font: 600 11.5px/1.4 var(--ui-font);
+  --wx-grid-header-font-color: var(--muted);
+  --wx-grid-header-text-transform: uppercase;
+  --wx-grid-body-font: 400 13.5px/1.45 var(--ui-font);
+  --wx-grid-body-font-color: var(--ink);
+}
+.wx-willow-theme .wx-weekend { background: var(--weekend); }
+
+/* ---------- epic → task hierarchy in the task list ---------- */
+.wx-willow-theme .wx-row.is-epic { background: var(--epic-row); }
+.wx-willow-theme .wx-row.is-epic .wx-text { font-weight: 600; }
+.wx-willow-theme .wx-row.is-epic > .wx-cell:first-child { box-shadow: inset 3px 0 0 var(--epic-rail); }
+.wx-willow-theme .wx-row.in-epic > .wx-cell:first-child { box-shadow: inset 3px 0 0 var(--epic-rail); }
+.wx-willow-theme .wx-row.in-epic .wx-content { position: relative; }
+.wx-willow-theme .wx-row.in-epic .wx-content::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: -19px;
+  height: 38px;
+  width: 10px;
+  border-left: 1.5px solid var(--epic-rail);
+  border-bottom: 1.5px solid var(--epic-rail);
+  border-bottom-left-radius: 6px;
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+/* ---------- ticket ID column (extracted from the link) ---------- */
+.wx-willow-theme .tracker-link {
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  text-decoration: none;
+  padding: 2px 8px;
+  border-radius: 99px;
+  background: var(--accent-hover);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.wx-willow-theme .tracker-link:hover { text-decoration: underline; }
+.wx-willow-theme .tracker-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* ---------- type icons in front of names ---------- */
+/* visual order inside the name cell: toggle, icon, status dot, text, edit button */
+.wx-willow-theme [data-col-id=":text"] .wx-content > .wx-toggle-icon,
+.wx-willow-theme [data-col-id=":text"] .wx-content > .wx-toggle-placeholder { order: -3; }
+.wx-willow-theme [data-col-id=":text"] .wx-content > .type-icon { order: -2; }
+.wx-willow-theme [data-col-id=":text"] .wx-content > .status-dot { order: -1; }
+.wx-willow-theme [data-col-id=":text"] .wx-content > .wx-text { order: 0; }
+.wx-willow-theme [data-col-id=":text"] .wx-content > .row-edit { order: 1; }
+
+/* ---------- statuses ---------- */
+.wx-willow-theme .status-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 99px;
+  margin-right: 7px;
+}
+.wx-willow-theme .sd-todo { background: transparent; box-shadow: inset 0 0 0 1.5px var(--faint); }
+.wx-willow-theme .sd-progress { background: #3b82f6; }
+.wx-willow-theme .sd-done { background: #22a06b; }
+.wx-willow-theme .wx-row.st-done .wx-text { text-decoration: line-through; opacity: 0.6; }
+.wx-willow-theme .wx-bar.st-done { opacity: 0.5; filter: saturate(0.6); }
+.wx-willow-theme .type-icon {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  margin-right: 7px;
+  background: var(--faint);
+  -webkit-mask: var(--ti, none) center/contain no-repeat;
+  mask: var(--ti, none) center/contain no-repeat;
+}
+.wx-willow-theme .ti-summary {
+  background: var(--epic-rail);
+  --ti: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M3.5 7 8 10.5 12 5l4 5.5L20.5 7 19 16H5zM5 18h14v2H5z'/%3E%3C/svg%3E");
+}
+.wx-willow-theme .ti-backend {
+  background: var(--type-backend-deep);
+  --ti: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M4 3h16a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zm2 3.5A1.5 1.5 0 1 0 7.5 5 1.5 1.5 0 0 0 6 6.5zM4 14h16a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-5a1 1 0 0 1 1-1zm2 3.5A1.5 1.5 0 1 0 7.5 16 1.5 1.5 0 0 0 6 17.5z'/%3E%3C/svg%3E");
+}
+.wx-willow-theme .ti-frontend {
+  background: var(--type-frontend-deep);
+  --ti: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill-rule='evenodd' d='M3 4h18a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm1 5v9h16V9zm1-3a1 1 0 1 0 1 1 1 1 0 0 0-1-1zm3 0a1 1 0 1 0 1 1 1 1 0 0 0-1-1z'/%3E%3C/svg%3E");
+}
+.wx-willow-theme .ti-design {
+  background: var(--type-design-deep);
+  --ti: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M20.7 4.7 19.3 3.3a1 1 0 0 0-1.4 0L9 12.2l3 3 8.7-9.1a1 1 0 0 0 0-1.4zM7 14c-1.7 0-3 1.3-3 3 0 1.3-1.1 2-2 2 .9 1.2 2.5 2 4 2 2.2 0 4-1.8 4-4 0-1.7-1.3-3-3-3z'/%3E%3C/svg%3E");
+}
+.wx-willow-theme .ti-testing {
+  background: var(--type-testing-deep);
+  --ti: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M9 3h6v2h-1v4.6l4.7 8.2A2 2 0 0 1 16.9 21H7.1a2 2 0 0 1-1.7-3.2L10 9.6V5H9zm3 8.5-2.4 4.2h4.8z'/%3E%3C/svg%3E");
+}
+.wx-willow-theme .ti-milestone {
+  background: var(--milestone);
+  --ti: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2l10 10-10 10L2 12z'/%3E%3C/svg%3E");
+}
+.wx-willow-theme .ti-task {
+  background: var(--faint);
+  --ti: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill-rule='evenodd' d='M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm1 2v12h12V6zm2.5 5.5 2 2 4-4L15.9 11l-5.4 5.4L7.1 13z'/%3E%3C/svg%3E");
+}
+
+/* ---------- hover-only edit icon on all rows ---------- */
+.wx-willow-theme .row-edit {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  margin-left: 7px;
+  border: 0;
+  padding: 0;
+  background: var(--epic-rail);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34a.9959.9959 0 0 0-1.41 0l-1.84 1.83 3.75 3.75M3 17.25V21h3.75L17.81 9.94l-3.75-3.75z'/%3E%3C/svg%3E") center/contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34a.9959.9959 0 0 0-1.41 0l-1.84 1.83 3.75 3.75M3 17.25V21h3.75L17.81 9.94l-3.75-3.75z'/%3E%3C/svg%3E") center/contain no-repeat;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, transform 0.12s;
+}
+.wx-willow-theme .wx-row:hover .row-edit,
+.wx-willow-theme .row-edit:focus-visible { opacity: 1; }
+.wx-willow-theme .row-edit:hover { background: var(--accent); transform: scale(1.12); }
+.wx-willow-theme .row-edit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .wx-willow-theme .row-edit { transition: none; } }
+
+/* ---------- breathing room for bar labels ---------- */
+.wx-willow-theme .wx-bar .wx-content {
+  padding: 0 9px;
+  box-sizing: border-box;
+  max-width: 100%;
+}
+
+/* ---------- Merlin-style epic bars: bracket with down-pointing wings ---------- */
+.wx-willow-theme .wx-bar.wx-summary {
+  border-radius: 3px 3px 0 0;
+  clip-path: polygon(0 0, 100% 0, 100% 100%, calc(100% - 9px) 16px, 9px 16px, 0 100%);
+  border: none;
+}
+.wx-willow-theme .wx-bar.wx-summary .wx-content {
+  line-height: 16px;
+  height: 16px;
+}
+
+/* ---------- epic bands on the chart canvas ---------- */
+.wx-willow-theme .epic-bands {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.wx-willow-theme .epic-band {
+  position: absolute;
+  left: 0;
+  right: 0;
+  box-sizing: border-box;
+  background: var(--epic-row);
+  border-top: 2px solid var(--epic-rail);
+  border-bottom: 1px solid color-mix(in srgb, var(--epic-rail) 45%, transparent);
+}
+
+/* ---------- project span line under the timeline scale ---------- */
+.wx-willow-theme .wx-chart .wx-scale { position: relative; }
+.wx-willow-theme .project-span {
+  position: absolute;
+  bottom: 3px;
+  height: 5px;
+  border-radius: 99px;
+  background: var(--accent);
+  opacity: 0.9;
+  pointer-events: none;
+}
+.wx-willow-theme .project-span::before,
+.wx-willow-theme .project-span::after {
+  content: "";
+  position: absolute;
+  width: 2px;
+  height: 11px;
+  bottom: -3px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+.wx-willow-theme .project-span::before { left: 0; }
+.wx-willow-theme .project-span::after { right: 0; }
+
+/* ---------- task editor: centered blocking modal ---------- */
+.wx-willow-theme .wx-sidearea.wx-pos-right {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  width: auto;
+  height: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 14, 16, 0.5);
+  backdrop-filter: blur(2px);
+  border: none;
+  padding: 24px;
+  box-sizing: border-box;
+}
+.wx-willow-theme .wx-gantt-editor {
+  width: min(540px, 94vw);
+  height: auto;
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-top: 4px solid var(--accent);
+  border-radius: 16px;
+  box-shadow: 0 12px 32px rgba(8, 16, 18, 0.22), 0 32px 80px rgba(8, 16, 18, 0.3);
+  overflow: hidden;
+}
+.wx-willow-theme .wx-gantt-editor .wx-content {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .wx-willow-theme .wx-gantt-editor { animation: modal-in 0.16s ease-out; }
+  @keyframes modal-in { from { opacity: 0; transform: translateY(10px) scale(0.98); } }
+}
+.editor-okay-bar {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: flex-end;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line-soft);
+}
+.editor-okay {
+  font-family: var(--ui-font);
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--accent-ink);
+  background: var(--accent);
+  border: 0;
+  border-radius: 9px;
+  padding: 8px 22px;
+  cursor: pointer;
+}
+.editor-okay:hover { filter: brightness(1.08); }
+.editor-okay:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- custom task-type bar colors ---------- */
+.wx-willow-theme .wx-bar.backend,
+.wx-willow-theme .wx-bar.backend .wx-segment { color: var(--type-ink); background-color: var(--type-backend); border: 1px solid transparent; }
+.wx-willow-theme .wx-bar.backend .wx-progress-percent { background-color: var(--type-backend-deep); }
+.wx-willow-theme .wx-bar.frontend,
+.wx-willow-theme .wx-bar.frontend .wx-segment { color: var(--type-ink); background-color: var(--type-frontend); border: 1px solid transparent; }
+.wx-willow-theme .wx-bar.frontend .wx-progress-percent { background-color: var(--type-frontend-deep); }
+.wx-willow-theme .wx-bar.design,
+.wx-willow-theme .wx-bar.design .wx-segment { color: var(--type-ink); background-color: var(--type-design); border: 1px solid transparent; }
+.wx-willow-theme .wx-bar.design .wx-progress-percent { background-color: var(--type-design-deep); }
+.wx-willow-theme .wx-bar.testing,
+.wx-willow-theme .wx-bar.testing .wx-segment { color: var(--type-ink); background-color: var(--type-testing); border: 1px solid transparent; }
+.wx-willow-theme .wx-bar.testing .wx-progress-percent { background-color: var(--type-testing-deep); }
+
+/* ---------- single fold-all toggle in the Task name header ---------- */
+.wx-willow-theme [data-header-id=":text"] { position: relative; }
+.wx-willow-theme .fold-all {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  background: none;
+  border: 0;
+  border-radius: 7px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.wx-willow-theme .fold-all:hover { background: var(--surface-hover); color: var(--ink); }
+.wx-willow-theme .fold-all:focus-visible { outline: 2px solid var(--accent); }
