@@ -21,6 +21,8 @@
   --type-ink: #1c2a2e;
   --summary-ink: #ffffff;
   --epic-row: rgba(47, 107, 223, 0.07);
+  --who-bg: 55% 88%;
+  --who-fg: 45% 26%;
   --epic-rail: #2f6bdf;
   --type-backend: #a8c3ec;
   --type-backend-deep: #7da3dc;
@@ -57,6 +59,8 @@
     --type-ink: #10181b;
     --summary-ink: #0b1416;
     --epic-row: rgba(91, 141, 239, 0.1);
+    --who-bg: 28% 26%;
+    --who-fg: 60% 76%;
     --epic-rail: #5b8def;
     --type-backend: #a8c3ec;
     --type-backend-deep: #7da3dc;
@@ -91,6 +95,8 @@
   --type-ink: #10181b;
   --summary-ink: #0b1416;
   --epic-row: rgba(91, 141, 239, 0.1);
+  --who-bg: 28% 26%;
+  --who-fg: 60% 76%;
   --epic-rail: #5b8def;
   --type-backend: #a8c3ec;
   --type-backend-deep: #7da3dc;
@@ -381,6 +387,55 @@ body {
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M18 16a3 3 0 0 0-2.4 1.2l-7-4.1a3 3 0 0 0 0-2.2l7-4.1A3 3 0 1 0 15 5a3 3 0 0 0 .1.7l-7 4.1a3 3 0 1 0 0 4.4l7 4.1A3 3 0 1 0 18 16z'/%3E%3C/svg%3E") center/contain no-repeat;
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M18 16a3 3 0 0 0-2.4 1.2l-7-4.1a3 3 0 0 0 0-2.2l7-4.1A3 3 0 1 0 15 5a3 3 0 0 0 .1.7l-7 4.1a3 3 0 1 0 0 4.4l7 4.1A3 3 0 1 0 18 16z'/%3E%3C/svg%3E") center/contain no-repeat;
 }
+
+/* ---------- people roster + assignment picker ---------- */
+.people { position: relative; }
+.people-icon {
+  width: 14px; height: 14px; display: inline-block;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm0 2c-3.3 0-6 1.8-6 4v2h12v-2c0-2.2-2.7-4-6-4zm8-2a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm.5 2c-.9 0-1.7.2-2.4.5 1.2.9 1.9 2.1 1.9 3.5v2H23v-2c0-2.2-2.5-4-5.5-4z'/%3E%3C/svg%3E") center/contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm0 2c-3.3 0-6 1.8-6 4v2h12v-2c0-2.2-2.7-4-6-4zm8-2a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm.5 2c-.9 0-1.7.2-2.4.5 1.2.9 1.9 2.1 1.9 3.5v2H23v-2c0-2.2-2.5-4-5.5-4z'/%3E%3C/svg%3E") center/contain no-repeat;
+}
+.people-pop {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 40;
+  width: 288px; padding: 14px;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 12px; box-shadow: var(--shadow);
+}
+.people-list { list-style: none; margin: 0 0 10px; padding: 0; max-height: 240px; overflow-y: auto; }
+.people-list li { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+.people-list li input {
+  flex: 1; min-width: 0; padding: 5px 8px;
+  border: 1px solid transparent; border-radius: 7px;
+  background: transparent; color: var(--ink); font: inherit; font-size: 13px;
+}
+.people-list li input:hover { border-color: var(--line-soft); }
+.people-list li input:focus { border-color: var(--accent); outline: none; background: var(--surface-alt); }
+.people-del {
+  flex: none; width: 22px; height: 22px; padding: 0;
+  border: 0; border-radius: 6px; background: transparent;
+  color: var(--faint); font-size: 16px; line-height: 1; cursor: pointer;
+}
+.people-del:hover { background: var(--surface-hover); color: var(--danger); }
+
+.who-pop {
+  position: fixed; z-index: 60;
+  width: 228px; padding: 12px;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 12px; box-shadow: var(--shadow);
+}
+.who-pick { list-style: none; margin: 6px 0 0; padding: 0; max-height: 260px; overflow-y: auto; }
+.who-pick-row {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 5px 6px; border: 0; border-radius: 8px;
+  background: transparent; color: var(--ink); font: inherit; font-size: 13px;
+  text-align: left; cursor: pointer;
+}
+.who-pick-row:hover { background: var(--surface-hover); }
+.who-pick-row.on { background: var(--accent-hover); }
+.who-pick-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.who-pick-check { flex: none; color: var(--accent); font-weight: 700; }
+
 .share-pop {
   position: absolute;
   top: calc(100% + 8px);

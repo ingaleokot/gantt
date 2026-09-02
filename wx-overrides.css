@@ -95,6 +95,59 @@
 .wx-willow-theme .tracker-link:hover { text-decoration: underline; }
 .wx-willow-theme .tracker-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
+/* ---------- Who column: assignee initials ---------- */
+.wx-willow-theme .who-chips {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 99px;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+.wx-willow-theme .who-chips:hover { background: var(--surface-hover); }
+.wx-willow-theme .who-chips:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.wx-willow-theme .who-empty {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 21px;
+  height: 21px;
+  border-radius: 99px;
+  border: 1px dashed var(--line);
+  color: var(--faint);
+  font-size: 12px;
+  line-height: 1;
+  opacity: 0;
+}
+.wx-willow-theme .wx-row:hover .who-empty,
+.wx-willow-theme .who-chips:focus-visible .who-empty { opacity: 1; }
+.wx-willow-theme .who-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 21px;
+  height: 21px;
+  padding: 0 5px;
+  border-radius: 99px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: default;
+  color: hsl(var(--who-hue, 200) var(--who-fg));
+  background: hsl(var(--who-hue, 200) var(--who-bg));
+}
+.wx-willow-theme .who-chip.who-more {
+  color: var(--ink);
+  background: var(--surface-alt);
+  border: 1px solid var(--line);
+}
+
 /* ---------- type icons in front of names ---------- */
 /* visual order inside the name cell: toggle, icon, status dot, text, edit button */
 .wx-willow-theme [data-col-id=":text"] .wx-content > .wx-toggle-icon,

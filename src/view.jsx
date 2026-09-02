@@ -61,6 +61,23 @@ function prepareTasks(tasks) {
     return r;
   });
 }
+let rosterRef = [];
+const personById = (id) => rosterRef.find((h) => h.id === id) || null;
+function parseAssignees(v) {
+  return String(v || "").split(/[,;]/).map((x) => x.trim()).filter(Boolean);
+}
+function initialsOf(name) {
+  const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return "";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+function nameHue(name) {
+  const x = String(name || "");
+  let h = 0;
+  for (let i = 0; i < x.length; i++) h = (h * 31 + x.charCodeAt(i)) % 360;
+  return h;
+}
 function trackerId(url) {
   const m = /([A-Za-z][A-Za-z0-9_]*-\d+)\/?(?:[?#].*)?$/.exec(url || "");
   return m ? m[1].toUpperCase() : null;
@@ -70,8 +87,9 @@ function trackerId(url) {
 function loadStore() {
   let raw = null;
   try { raw = JSON.parse(document.getElementById("view-data").textContent); } catch (e) {}
-  const empty = { active: null, projects: [], tasks: [], links: [] };
+  const empty = { active: null, projects: [], tasks: [], links: [], people: [] };
   const s = raw && Array.isArray(raw.projects) ? raw : empty;
+  rosterRef = (s.people || []).filter((h) => h && h.id).map((h) => ({ id: h.id, name: h.name || "" }));
   const projects = s.projects.map((p) => ({
     id: p.id,
     name: p.name,
@@ -86,6 +104,7 @@ function loadStore() {
       if (t.days !== null && t.days !== undefined) o.days = Number(t.days);
       if ((s.tasks || []).some((c) => c.parent === t.id)) o.open = true; /* branches start expanded for viewers */
       if (t.url) o.url = t.url;
+      if (t.assignees) o.assignees = t.assignees;
       o.status = t.status || "todo";
       return o;
     }),
@@ -103,6 +122,7 @@ const VIEWS = {
 const HIGHLIGHT = (d, u) => (u === "day" && (d.getDay() === 0 || d.getDay() === 6) ? "wx-weekend" : "");
 const COLUMNS = [
   { id: "text", header: "Task name", width: 183, flexgrow: 1, sort: true },
+  { id: "who", header: "Who", width: 78, align: "center", sort: false },
   { id: "tracker", header: "ID", width: 100, align: "center", sort: false },
   { id: "start", header: "Start", width: 92, align: "center", sort: true },
   { id: "hours", header: "Hrs", width: 62, align: "center", sort: true },
@@ -159,6 +179,42 @@ function decorate(api, project) {
       let ic = content.querySelector(".type-icon");
       if (!ic) { ic = document.createElement("span"); ic.className = iconCls; content.appendChild(ic); }
       else if (ic.className !== iconCls) ic.className = iconCls;
+    }
+    const whoCell = row.querySelector('[data-col-id=":who"]');
+    if (whoCell) {
+      const assigned = parseAssignees(t.assignees).map(personById).filter(Boolean);
+      let wrap = whoCell.querySelector(".who-chips");
+      if (!assigned.length) {
+        if (wrap) wrap.remove();
+      } else {
+        if (!wrap) {
+          wrap = document.createElement("span");
+          wrap.className = "who-chips";
+          (whoCell.querySelector(".wx-content") || whoCell).appendChild(wrap);
+        }
+        const key = assigned.map((h) => h.id + "\u0000" + h.name).join("|");
+        if (wrap.__key !== key) {
+          wrap.__key = key;
+          wrap.textContent = "";
+          const shown = assigned.slice(0, 3);
+          for (const h of shown) {
+            const chip = document.createElement("span");
+            chip.className = "who-chip";
+            chip.style.setProperty("--who-hue", String(nameHue(h.name)));
+            chip.textContent = initialsOf(h.name);
+            chip.title = h.name;
+            wrap.appendChild(chip);
+          }
+          if (assigned.length > shown.length) {
+            const more = document.createElement("span");
+            more.className = "who-chip who-more";
+            more.textContent = "+" + (assigned.length - shown.length);
+            more.title = assigned.slice(shown.length).map((h) => h.name).join(", ");
+            wrap.appendChild(more);
+          }
+        }
+        wrap.title = assigned.map((h) => h.name).join(", ");
+      }
     }
     const rawUrl = typeof t.url === "string" && /^https?:\/\//i.test(t.url.trim()) ? t.url.trim() : null;
     const cell = row.querySelector('[data-col-id=":tracker"]');

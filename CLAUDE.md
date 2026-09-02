@@ -15,14 +15,17 @@ Read README.md for the full architecture. Key facts and hard-won gotchas below.
 - Edge Function `shared` (verify_jwt: false, source in `edge/shared/index.ts`):
   `/functions/v1/shared/<anything>?raw=1` returns the composed viewer HTML
   (CORS *); without `?raw` returns a pointer note.
-- `hosting/gantt-share.html` — the public share page; user hosts it on a static host.
-  It fetches ?raw=1 and renders it in a full-page srcdoc iframe.
+- `hosting/gantt-share.html` — the public share page; the build copies it to
+  `docs/index.html`, which GitHub Pages serves at
+  https://ingaleokot.github.io/gantt/. It fetches ?raw=1 and renders it in a
+  full-page srcdoc iframe. Never edit `docs/` by hand — `bun build.mjs` rewrites it.
 
 ## Build
 
 - Toolchain is Bun (`bun install`, `bun.lock`). Node/npm are not used and the npm
   lockfile was dropped.
 - `bun build.mjs` → `out/gantt-chart.html` (artifact fragment, no doctype),
+  `docs/index.html` (the GitHub Pages share page),
   `out/view-template.html` (standalone viewer with `"__GANTT_VIEW_DATA__"`
   placeholder), `out/test.html` (harness with stubbed `window.claude`).
 - There is no automated test suite: the Playwright regression scripts were removed.
@@ -30,9 +33,10 @@ Read README.md for the full architecture. Key facts and hard-won gotchas below.
 
 ## Data model (Supabase is the only store — no localStorage, no static data)
 
-Tables: `projects(id,name,view,position)`, `tasks(id, project_id FK, parent_id
+Tables: `people(id,name,position)`, `projects(id,name,view,position)`, `tasks(id, project_id FK, parent_id
 self-FK, text, type, start_date, end_date, duration, hours, days, progress,
-details, open, sort_order, url, status)`, `links(id, project_id, source, target,
+details, open, sort_order, url, status, assignees)` — `assignees` is a
+comma-separated list of `people.id`, resolved to names/initials at render time, `links(id, project_id, source, target,
 type)`, `app_state(id='main', active_project)`, plus `view_page` / `view_chunks`
 (viewer template, base64 chunks, synced by the editor when Share opens and the
 hash differs). RLS enabled with NO policies, no auth yet — auth is planned; the

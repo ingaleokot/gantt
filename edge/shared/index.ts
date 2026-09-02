@@ -40,11 +40,12 @@ Deno.serve(async (req: Request) => {
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     const tpl = new TextDecoder().decode(bytes);
 
-    const [projects, tasks, links, state] = await Promise.all([
+    const [projects, tasks, links, state, people] = await Promise.all([
       rest("projects?select=*&order=position.asc"),
       rest("tasks?select=*&order=sort_order.asc"),
       rest("links?select=*"),
       rest("app_state?id=eq.main&select=active_project"),
+      rest("people?select=*&order=position.asc"),
     ]);
     const data = {
       active: state.length ? state[0].active_project : null,
@@ -53,8 +54,10 @@ Deno.serve(async (req: Request) => {
         id: t.id, project: t.project_id, parent: t.parent_id, text: t.text, type: t.type,
         start: t.start_date, end: t.end_date, duration: t.duration, hours: t.hours, days: t.days,
         progress: t.progress, details: t.details, url: t.url, status: t.status,
+        assignees: t.assignees,
       })),
       links: links.map((l: any) => ({ id: l.id, project: l.project_id, source: l.source, target: l.target, type: l.type })),
+      people: people.map((h: any) => ({ id: h.id, name: h.name })),
     };
     const json = JSON.stringify(data).replace(/</g, "\\u003c");
     const html = tpl.replace('"__GANTT_VIEW_DATA__"', () => json);

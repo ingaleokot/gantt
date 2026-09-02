@@ -122,4 +122,12 @@ window.claude = { use: async (name) => {
 ${fragment}
 </body></html>`;
 writeFileSync("out/test.html", testPage);
+/* GitHub Pages serves docs/ on the default branch; the share page is the only
+   file it needs, generated here so it can never drift from hosting/ */
+mkdirSync("docs", { recursive: true });
+const sharePage = readFileSync("hosting/gantt-share.html", "utf8");
+writeFileSync("docs/index.html", sharePage);
+writeFileSync("docs/.nojekyll", "");
+console.log("docs/index.html bytes:", sharePage.length);
+
 console.log("bundle bytes:", js.length, "| fragment bytes:", fragment.length);

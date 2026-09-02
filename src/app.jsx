@@ -26,6 +26,7 @@ const LEGEND = [
 
 const COLUMNS = [
   { id: "text", header: "Task name", width: 183, flexgrow: 1, sort: true, editor: "text" },
+  { id: "who", header: "Who", width: 78, align: "center", sort: false },
   { id: "tracker", header: "ID", width: 100, align: "center", sort: false },
   { id: "start", header: "Start", width: 92, align: "center", sort: true },
   { id: "hours", header: "Hrs", width: 62, align: "center", sort: true, editor: "text" },
@@ -101,7 +102,7 @@ const EDITOR_ITEMS = [
 /* ---------- initial in-memory store; ALL real data lives in Supabase ---------- */
 function loadData() {
   const p = { id: uid(), name: "Project timeline", view: "day", tasks: [], links: [] };
-  return { version: 2, activeProject: p.id, projects: [p] };
+  return { version: 2, activeProject: p.id, projects: [p], people: [] };
 }
 
 function reviveTask(t) {
@@ -143,7 +144,7 @@ function fmtDate(d) {
 }
 
 /* ---------- serialize widget state back to plain data ---------- */
-const KEEP = ["id", "text", "start", "end", "duration", "hours", "days", "progress", "parent", "type", "open", "details", "url", "status"];
+const KEEP = ["id", "text", "start", "end", "duration", "hours", "days", "progress", "parent", "type", "open", "details", "url", "status", "assignees"];
 function cleanTask(t) {
   const out = {};
   for (const k of KEEP) {
@@ -218,8 +219,9 @@ function sqlBool(b) { return b === true ? "true" : b === false ? "false" : "null
 const LOAD_SQL = `select json_build_object(
   'active', (select active_project from public.app_state where id = 'main'),
   'projects', coalesce((select json_agg(json_build_object('id', p.id, 'name', p.name, 'view', p.view) order by p.position, p.created_at) from public.projects p), '[]'::json),
-  'tasks', coalesce((select json_agg(json_build_object('id', t.id, 'project', t.project_id, 'parent', t.parent_id, 'text', t.text, 'type', t.type, 'start', t.start_date, 'end', t.end_date, 'duration', t.duration, 'hours', t.hours, 'days', t.days, 'progress', t.progress, 'details', t.details, 'open', t.open, 'url', t.url, 'status', t.status) order by t.sort_order) from public.tasks t), '[]'::json),
-  'links', coalesce((select json_agg(json_build_object('id', l.id, 'project', l.project_id, 'source', l.source, 'target', l.target, 'type', l.type)) from public.links l), '[]'::json)
+  'tasks', coalesce((select json_agg(json_build_object('id', t.id, 'project', t.project_id, 'parent', t.parent_id, 'text', t.text, 'type', t.type, 'start', t.start_date, 'end', t.end_date, 'duration', t.duration, 'hours', t.hours, 'days', t.days, 'progress', t.progress, 'details', t.details, 'open', t.open, 'url', t.url, 'status', t.status, 'assignees', t.assignees) order by t.sort_order) from public.tasks t), '[]'::json),
+  'links', coalesce((select json_agg(json_build_object('id', l.id, 'project', l.project_id, 'source', l.source, 'target', l.target, 'type', l.type)) from public.links l), '[]'::json),
+  'people', coalesce((select json_agg(json_build_object('id', pe.id, 'name', pe.name) order by pe.position, pe.name) from public.people pe), '[]'::json)
 ) as store;`;
 
 function buildSaveSql(data) {
@@ -238,12 +240,12 @@ function buildSaveSql(data) {
         sqlStr(t.id), sqlStr(p.id), sqlStr(parent), sqlStr(t.text || ""), sqlStr(t.type || "task"),
         sqlStr(t.start || null), sqlStr(t.end || null), sqlNum(t.duration), sqlNum(t.hours), sqlNum(t.days),
         String(Math.round(Number(t.progress) || 0)), sqlStr(t.details || ""), sqlBool(t.open), String(i),
-        sqlStr(t.url || null), sqlStr(t.status || "todo"),
+        sqlStr(t.url || null), sqlStr(t.status || "todo"), sqlStr(t.assignees || null),
       ].join(",") + ")");
     });
   });
   if (taskRows.length) {
-    sql += "insert into public.tasks (id,project_id,parent_id,text,type,start_date,end_date,duration,hours,days,progress,details,open,sort_order,url,status) values\n" + taskRows.join(",\n") + ";\n";
+    sql += "insert into public.tasks (id,project_id,parent_id,text,type,start_date,end_date,duration,hours,days,progress,details,open,sort_order,url,status,assignees) values\n" + taskRows.join(",\n") + ";\n";
   }
   const linkRows = [];
   data.projects.forEach((p) => {
@@ -255,6 +257,13 @@ function buildSaveSql(data) {
   if (linkRows.length) {
     sql += "insert into public.links (id,project_id,source,target,type) values\n" + linkRows.join(",\n") + " on conflict (id) do nothing;\n";
   }
+  const people = data.people || [];
+  people.forEach((h, i) => {
+    sql += `insert into public.people (id,name,position) values (${sqlStr(h.id)},${sqlStr(h.name || "")},${i}) on conflict (id) do update set name=excluded.name, position=excluded.position, updated_at=now();\n`;
+  });
+  sql += people.length
+    ? `delete from public.people where id not in (${people.map((h) => sqlStr(h.id)).join(",")});\n`
+    : "delete from public.people;\n";
   sql += `insert into public.app_state (id, active_project) values ('main', ${sqlStr(data.activeProject)}) on conflict (id) do update set active_project=excluded.active_project, updated_at=now();`;
   return sql;
 }
@@ -293,13 +302,15 @@ async function dbLoad() {
         if (t.days !== null && t.days !== undefined) o.days = Number(t.days);
         if (t.open !== null && t.open !== undefined) o.open = t.open;
         if (t.url) o.url = t.url;
+        if (t.assignees) o.assignees = t.assignees;
         o.status = t.status || "todo";
         return o;
       }),
       links: (s.links || []).filter((l) => l.project === p.id).map((l) => ({ id: l.id, source: l.source, target: l.target, type: l.type || "e2s" })),
     }));
     const active = projects.some((p) => p.id === s.active) ? s.active : projects[0].id;
-    return { state: "ok", data: { version: 2, activeProject: active, projects } };
+    const people = (s.people || []).filter((x) => x && x.id).map((x) => ({ id: x.id, name: x.name || "" }));
+    return { state: "ok", data: { version: 2, activeProject: active, projects, people } };
   } catch (e) {
     return { state: "err", code: e && e.code };
   }
@@ -455,6 +466,10 @@ function rollupEpics(api) {
    widget, so redo the work whenever the gantt's DOM changes */
 let rowTagObserver = null;
 let retagHook = null;
+/* the row tagger lives outside React; these bridge it back to the app */
+let rosterRef = [];
+let pickHook = null;
+const personById = (id) => rosterRef.find((h) => h.id === id) || null;
 function setAllEpicsOpen(api, open) {
   let list = [];
   try { list = serializeSide(api, "tasks"); } catch (e) { return; }
@@ -495,6 +510,24 @@ function syncFoldAllButton(api) {
   const icon = btn.firstChild;
   const cls = "ci " + (anyOpen ? "ci-collapse" : "ci-expand");
   if (icon.className !== cls) icon.className = cls;
+}
+/* ---------- assignees: a comma-separated list of people ids, shown as initials ---------- */
+function parseAssignees(v) {
+  return String(v || "").split(/[,;]/).map((s) => s.trim()).filter(Boolean);
+}
+/* "Inga Kot" → "IK"; "Inga" → "IN" */
+function initialsOf(name) {
+  const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return "";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+/* stable per-name hue so the same person keeps the same chip color */
+function nameHue(name) {
+  const s = String(name || "");
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
+  return h;
 }
 /* "…/PRODUCT-1234" → "PRODUCT-1234" */
 function trackerId(url) {
@@ -568,6 +601,52 @@ function watchRowTags(api) {
         }
       } else if (ic.className !== iconCls) {
         ic.className = iconCls;
+      }
+      /* Who column: assignee initials from the roster; click opens the picker.
+         The host is appended, never inserted between React-managed nodes. */
+      const whoCell = row.querySelector('[data-col-id=":who"]');
+      if (whoCell) {
+        let host = whoCell.querySelector(".who-chips");
+        if (!host) {
+          host = document.createElement("button");
+          host.className = "who-chips";
+          host.type = "button";
+          host.addEventListener("pointerdown", (e) => e.stopPropagation());
+          host.addEventListener("dblclick", (e) => { e.stopPropagation(); e.preventDefault(); });
+          (whoCell.querySelector(".wx-content") || whoCell).appendChild(host);
+        }
+        const assigned = parseAssignees(t.assignees).map(personById).filter(Boolean);
+        const key = assigned.map((h) => h.id + "\u0000" + h.name).join("|");
+        if (host.__key !== key) {
+          host.__key = key;
+          host.textContent = "";
+          if (!assigned.length) {
+            const ph = document.createElement("span");
+            ph.className = "who-empty";
+            ph.textContent = "+";
+            host.appendChild(ph);
+          }
+          const shown = assigned.slice(0, 3);
+          for (const h of shown) {
+            const chip = document.createElement("span");
+            chip.className = "who-chip";
+            chip.style.setProperty("--who-hue", String(nameHue(h.name)));
+            chip.textContent = initialsOf(h.name);
+            host.appendChild(chip);
+          }
+          if (assigned.length > shown.length) {
+            const more = document.createElement("span");
+            more.className = "who-chip who-more";
+            more.textContent = "+" + (assigned.length - shown.length);
+            host.appendChild(more);
+          }
+        }
+        const label = assigned.length ? assigned.map((h) => h.name).join(", ") : "Assign people";
+        if (host.title !== label) { host.title = label; host.setAttribute("aria-label", label); }
+        host.onclick = (e) => {
+          e.stopPropagation();
+          if (pickHook) pickHook(t.id, host.getBoundingClientRect());
+        };
       }
       const rawUrl = typeof t.url === "string" && /^https?:\/\//i.test(t.url.trim()) ? t.url.trim() : null;
       /* ID column: ticket id extracted from the link, clickable */
@@ -669,6 +748,12 @@ function App() {
   const [exporting, setExporting] = useState(false);
   const [stats, setStats] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [people, setPeople] = useState(() => storeRef.current.people || []);
+  const [peopleOpen, setPeopleOpen] = useState(false);
+  const [newPerson, setNewPerson] = useState("");
+  const peopleRef = useRef(null);
+  const [picker, setPicker] = useState(null); /* { taskId, rect } */
+  const pickerRef = useRef(null);
   const [shareOpen, setShareOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [shareState, setShareState] = useState("idle"); /* idle | sync | ready | err */
@@ -722,7 +807,7 @@ function App() {
     p.view = view;
     setTaskCount(p.tasks.length);
     const s = storeRef.current;
-    const data = { version: 2, activeProject: s.activeProject, projects: s.projects };
+    const data = { version: 2, activeProject: s.activeProject, projects: s.projects, people: s.people || [] };
     setStatus("saving");
     const r = await dbSave(data);
     setDbState(r);
@@ -784,6 +869,7 @@ function App() {
       if (r.data && !dirtyRef.current) {
         undoRef.current = []; redoRef.current = [];
         storeRef.current = r.data;
+        setPeople(r.data.people || []);
         const p = r.data.projects.find((x) => x.id === r.data.activeProject) || r.data.projects[0];
         nameRef.current = p.name;
         setActiveId(p.id);
@@ -1051,6 +1137,88 @@ function App() {
     if (window.__ganttProbe) window.__ganttProbe(a);
   }, [scheduleSave, scheduleSnapshot, seedSnapshot]);
 
+  /* ---------- people roster ---------- */
+  /* the tagger reads the roster from module scope; keep it in step and repaint */
+  useEffect(() => {
+    rosterRef = people;
+    if (retagHook) retagHook();
+  }, [people]);
+
+  useEffect(() => {
+    pickHook = (taskId, rect) => {
+      let ids = [];
+      try { ids = parseAssignees(apiRef.current.getTask(taskId).assignees); } catch (e) { /* unassigned */ }
+      setPicker({ taskId, rect, ids });
+    };
+    return () => { pickHook = null; };
+  }, []);
+
+  const commitPeople = useCallback((next) => {
+    storeRef.current.people = next;
+    setPeople(next);
+    scheduleSave();
+  }, [scheduleSave]);
+
+  const addPerson = useCallback(() => {
+    const name = newPerson.trim();
+    if (!name) return;
+    const next = [...(storeRef.current.people || []), { id: uid(), name }];
+    setNewPerson("");
+    commitPeople(next);
+  }, [newPerson, commitPeople]);
+
+  const renamePerson = useCallback((id, name) => {
+    commitPeople((storeRef.current.people || []).map((h) => (h.id === id ? { ...h, name } : h)));
+  }, [commitPeople]);
+
+  /* removing a person also clears them from every task that referenced them */
+  const removePerson = useCallback((id) => {
+    const strip = (v) => parseAssignees(v).filter((x) => x !== id).join(",") || null;
+    storeRef.current.projects.forEach((pr) => {
+      (pr.tasks || []).forEach((t) => { if (t.assignees) t.assignees = strip(t.assignees); });
+    });
+    const a = apiRef.current;
+    if (a) {
+      try {
+        (a.getState()._tasks || []).forEach((t) => {
+          if (t.assignees && parseAssignees(t.assignees).includes(id)) {
+            a.exec("update-task", { id: t.id, task: { assignees: strip(t.assignees) } });
+          }
+        });
+      } catch (e) { /* the store copy above is still correct */ }
+    }
+    commitPeople((storeRef.current.people || []).filter((h) => h.id !== id));
+  }, [commitPeople]);
+
+  const toggleAssignee = useCallback((taskId, personId) => {
+    const a = apiRef.current;
+    if (!a) return;
+    let t = null;
+    try { t = a.getTask(taskId); } catch (e) {}
+    if (!t) return;
+    const cur = parseAssignees(t.assignees);
+    const next = cur.includes(personId) ? cur.filter((x) => x !== personId) : [...cur, personId];
+    a.exec("update-task", { id: taskId, task: { assignees: next.join(",") || null } });
+    setPicker((cur) => (cur && cur.taskId === taskId ? { ...cur, ids: next } : cur));
+    if (retagHook) setTimeout(() => retagHook(), 0);
+  }, []);
+
+  useEffect(() => {
+    if (!peopleOpen) return undefined;
+    const close = (e) => { if (peopleRef.current && !peopleRef.current.contains(e.target)) setPeopleOpen(false); };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [peopleOpen]);
+
+  useEffect(() => {
+    if (!picker) return undefined;
+    const close = (e) => { if (pickerRef.current && !pickerRef.current.contains(e.target)) setPicker(null); };
+    const esc = (e) => { if (e.key === "Escape") setPicker(null); };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", esc, true);
+    return () => { document.removeEventListener("mousedown", close); document.removeEventListener("keydown", esc, true); };
+  }, [picker]);
+
   /* ---------- project actions ---------- */
   const openProject = (id) => {
     if (id !== storeRef.current.activeProject) {
@@ -1179,6 +1347,43 @@ function App() {
           </span>
         )}
         <div className="spacer" />
+        <div className="people" ref={peopleRef}>
+          <button className="export-btn" type="button" onClick={() => setPeopleOpen((o) => !o)}>
+            <span className="people-icon" aria-hidden="true" />
+            People{people.length ? " · " + people.length : ""}
+          </button>
+          {peopleOpen && (
+            <div className="people-pop">
+              <div className="share-title">People</div>
+              <p className="share-hint">Anyone on this list can be assigned to a task or an epic.</p>
+              {people.length > 0 && (
+                <ul className="people-list">
+                  {people.map((h) => (
+                    <li key={h.id}>
+                      <span className="who-chip" style={{ "--who-hue": nameHue(h.name) }}>{initialsOf(h.name)}</span>
+                      <input
+                        value={h.name}
+                        aria-label="Name"
+                        onChange={(e) => renamePerson(h.id, e.target.value)}
+                      />
+                      <button type="button" className="people-del" title={"Remove " + h.name}
+                        onClick={() => removePerson(h.id)}>×</button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="share-row">
+                <input
+                  value={newPerson}
+                  placeholder="Add a person"
+                  onChange={(e) => setNewPerson(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addPerson(); } }}
+                />
+                <button type="button" className="share-copy" onClick={addPerson}>Add</button>
+              </div>
+            </div>
+          )}
+        </div>
         <div className="share" ref={shareRef}>
           <button className="export-btn" type="button" onClick={() => { setShareOpen((o) => !o); setCopied(false); }}>
             <span className="share-icon" aria-hidden="true" />
@@ -1236,7 +1441,7 @@ function App() {
                 cellWidth={vd.cellWidth}
                 cellHeight={38}
                 scaleHeight={36}
-                gridWidth={620}
+                gridWidth={700}
                 start={range.start}
                 end={range.end}
                 autoScale={true}
@@ -1261,6 +1466,31 @@ function App() {
           </div>
         )}
       </div>
+      {picker && (
+        <div className="who-pop" ref={pickerRef}
+          style={{ left: Math.max(8, Math.min(picker.rect.left - 60, window.innerWidth - 236)), top: picker.rect.bottom + 8 }}>
+          <div className="share-title">Assign</div>
+          {people.length === 0 ? (
+            <p className="share-hint">No people yet — add them under <strong>People</strong> in the header.</p>
+          ) : (
+            <ul className="who-pick">
+              {people.map((h) => {
+                const on = picker.ids.includes(h.id);
+                return (
+                  <li key={h.id}>
+                    <button type="button" className={"who-pick-row" + (on ? " on" : "")}
+                      onClick={() => toggleAssignee(picker.taskId, h.id)}>
+                      <span className="who-chip" style={{ "--who-hue": nameHue(h.name) }}>{initialsOf(h.name)}</span>
+                      <span className="who-pick-name">{h.name}</span>
+                      <span className="who-pick-check" aria-hidden="true">{on ? "\u2713" : ""}</span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   );
 }
