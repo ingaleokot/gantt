@@ -23,9 +23,8 @@
    own `<i class="wxi-…">` elements, which we never render, so there is no React
    slot to fill there. See the header of that file.
 --------------------------------------------------------------------------- */
-import React from "react";
 import { flushSync } from "react-dom";
-import { createRoot } from "react-dom/client";
+import { createRoot, type Root } from "react-dom/client";
 import {
   AppWindow,
   ArrowsInLineVertical,
@@ -38,11 +37,12 @@ import {
   PaintBrush,
   PencilSimple,
   Plus,
+  type Icon,
 } from "@phosphor-icons/react";
 
 /* keys double as the tagger's semantic class suffixes (ti-summary, ci-expand…),
    so a name is enough to pick both the glyph and its CSS hook */
-const GLYPHS = {
+const GLYPHS: Record<string, Icon> = {
   "ti-summary": Crown,
   "ti-backend": HardDrives,
   "ti-frontend": AppWindow,
@@ -56,11 +56,15 @@ const GLYPHS = {
   "who-add": Plus,
 };
 
-const cache = new Map();
-let scratch = null; /* one detached host + root, reused for every glyph */
+/* the tagger stamps the glyph name onto the node it wrote, so a re-run can
+   tell "already showing this one" from "needs rewriting" without reading DOM */
+export type GlyphHost = HTMLElement & { __glyph?: string };
+
+const cache = new Map<string, string>();
+let scratch: { host: HTMLDivElement; root: Root } | null = null; /* one detached host + root, reused for every glyph */
 
 /* the SVG markup for one glyph — rendered at most once per name per session */
-export function glyphMarkup(name) {
+export function glyphMarkup(name: string): string {
   let html = cache.get(name);
   if (html !== undefined) return html;
   const Icon = GLYPHS[name] || GLYPHS["ti-task"];
@@ -71,10 +75,11 @@ export function glyphMarkup(name) {
     }
     /* width/height come off the element so CSS owns the box; fill stays
        currentColor so the per-type colors live in wx-overrides.css */
+    const active = scratch;
     flushSync(() => {
-      scratch.root.render(<Icon width="100%" height="100%" aria-hidden="true" />);
+      active.root.render(<Icon width="100%" height="100%" aria-hidden="true" />);
     });
-    html = scratch.host.innerHTML;
+    html = active.host.innerHTML;
   } catch (e) {
     html = "";
   }
@@ -83,7 +88,7 @@ export function glyphMarkup(name) {
 }
 
 /* idempotent: writes the glyph only when the element is not already showing it */
-export function setGlyph(el, name) {
+export function setGlyph(el: GlyphHost | null | undefined, name: string): void {
   if (!el || el.__glyph === name) return;
   el.__glyph = name;
   el.innerHTML = glyphMarkup(name);

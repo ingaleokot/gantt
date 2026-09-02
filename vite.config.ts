@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { resolve } from "path";
@@ -6,10 +6,10 @@ import { resolve } from "path";
 /* SVAR ships @font-face rules that pull Roboto/Open Sans from its own CDN.
    The app supplies its own faces (and passes fonts={false} to Willow), so
    drop them — otherwise the widget silently restyles itself mid-load. */
-const stripSvarFonts = {
+const stripSvarFonts: Plugin = {
   name: "strip-svar-fontface",
   enforce: "pre",
-  transform(code, id) {
+  transform(code: string, id: string) {
     if (id.includes("@svar-ui") && id.endsWith(".css")) {
       return { code: code.replace(/@font-face\{[^}]*\}/g, ""), map: null };
     }

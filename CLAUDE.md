@@ -23,12 +23,38 @@ the full architecture. Key facts and hard-won gotchas below.
 
 - Toolchain is Bun (`bun install`, `bun.lock`). Node is not installed and
   `/opt/homebrew/bin` is not on PATH by default — prefix shell commands with
-  `export PATH=/opt/homebrew/bin:$PATH`.
+  `export PATH=/opt/homebrew/bin:$PATH`. `node_modules/.bin/tsc` is a Node shim, so
+  run the compiler through Bun (`bun run typecheck`, not `./node_modules/.bin/tsc`).
 - `bun run dev` (Vite, http://localhost:5173/gantt/) runs the real app against cloud
   Supabase. `bun run build` → `dist/` with both entries. `bun run preview` serves it.
 - `.env` (gitignored) holds `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY`,
   read via `import.meta.env`. Never hardcode or commit the values.
-- There is no automated test suite. Verify by hand in `bun run dev`.
+- There is no test suite. `bun run typecheck` is the only automated check — verify
+  behaviour by hand in `bun run dev` and styling in `bun run build && bun run preview`.
+
+## TypeScript
+
+- Everything under `src/` is `.ts`/`.tsx` with **`strict: true`**. There are no `.js`
+  or `.jsx` files left in the app; don't add any.
+- Two configs, and `bun run typecheck` runs `tsc --noEmit` over both:
+  `tsconfig.json` (`include: ["src"]`, `types: ["vite/client"]`, `jsx: "react-jsx"`,
+  `moduleResolution: "bundler"`) and `tsconfig.node.json` (`include: ["vite.config.ts"]`,
+  `types: ["node"]` for `import.meta.dirname` and `"path"`). Keeping them apart is what
+  stops the browser code from seeing Node globals. `edge/shared/index.ts` is Deno source
+  outside the Vite build — it belongs to **neither** config; don't pull it in.
+- Imports inside `src/` are **extensionless** (`./lib/db`, `./icons`). `./icons.jsx`
+  would not resolve now, and `./icons.tsx` is not something Vite likes in source.
+- Vite/esbuild only strips types, so a type error never fails `bun run build`. The
+  typecheck is the gate.
+- `src/vite-env.d.ts` holds the global augmentations: the `VITE_*` env vars,
+  `window.__ganttProbe`, `HTMLElement.__root` (the cached React root on the mount
+  container) and `--*` custom properties on `React.CSSProperties` (the `--who-hue`
+  chips). Add global declarations there, not inline.
+- Shared domain types live in `src/lib/db.ts` (`TaskId`, `StoreTask`, `StoreLink`,
+  `StoreProject`, `StoreData`, `Person`); `app.tsx` and `pdf.ts` import them.
+  `view.tsx` deliberately keeps its own `ViewTask`/`ViewLink`/`Feed` shapes — it must
+  not import from `lib/` at all, because that would drag the Supabase client into the
+  public page.
 
 ## Data model (Supabase is the only store — no localStorage, no static data)
 
@@ -41,11 +67,16 @@ type)`, `people(id,name,position,owner)`, `app_state(id='main', active_project, 
   `owner = session.user.id` or the write is rejected. `tasks`/`links` inherit ownership
   through `project_id` — they have no owner column, don't add one.
 - `tasks.assignees` is a comma-separated list of `people.id`.
-- All persistence lives in `src/lib/db.js` as supabase-js table queries. There is no SQL
+- All persistence lives in `src/lib/db.ts` as supabase-js table queries. There is no SQL
   string building anywhere — don't reintroduce it.
+- `src/lib/database.types.ts` is **generated** from the live cloud project and committed;
+  `src/lib/supabase.ts` passes it to `createClient<Database>(…)` so every `.from("…")`
+  is checked against the real columns. Regenerate after any migration with
+  `supabase gen types typescript --project-id wouvkkaxehwuhtgpersx > src/lib/database.types.ts`
+  (or the Supabase MCP `generate_typescript_types` tool). Never hand-edit it.
 - Deletions are diffed client-side (select ids, then `.in('id', dead)`), never expressed
   as a `not.in.(…)` filter string.
-- `tasks` carries a self-FK, so `db.js` sorts rows parents-first before inserting.
+- `tasks` carries a self-FK, so `db.ts` sorts rows parents-first before inserting.
 
 ## Styling layer (Tailwind v4 + Ark UI + Phosphor)
 
@@ -111,8 +142,8 @@ type)`, `people(id,name,position,owner)`, `app_state(id='main', active_project, 
   `prefers-contrast: more` goes near-solid with `--color-ink` borders. These blocks live
   **unlayered** at the bottom of `style.css` and `wx-overrides.css` so they outrank the
   layered Tailwind utilities that set background/border on the same elements.
-- **Focus is never the unstyled state.** `FOCUS` (a shared class string in `app.jsx` /
-  `Login.jsx`) is spelled into every interactive recipe; widget-owned controls get
+- **Focus is never the unstyled state.** `FOCUS` (a shared class string in `app.tsx` /
+  `Login.tsx`) is spelled into every interactive recipe; widget-owned controls get
   `:focus-visible` rules in `wx-overrides.css`.
 - The Who picker is a **controlled** `Popover.Root` keyed on the task id, anchored to the
   tagger-built cell via `positioning.getAnchorRect`. The key forces a remount so Ark
@@ -120,8 +151,8 @@ type)`, `people(id,name,position,owner)`, `app_state(id='main', active_project, 
   fallback for when the widget re-renders the cell away.
 - **Icons: components first, masks only where SVAR renders the element.** Everything the
   app renders is a `@phosphor-icons/react` component — in JSX for the header and popovers,
-  and through `src/icons.jsx` for the nodes the tagger builds (type icons, row pencil,
-  fold-all chevron, the Who "+"). `icons.jsx` renders each glyph once into a detached
+  and through `src/icons.tsx` for the nodes the tagger builds (type icons, row pencil,
+  fold-all chevron, the Who "+"). `icons.tsx` renders each glyph once into a detached
   React root and caches the SVG string; the tagger re-runs on every mutation, so it must
   never render per row. It deliberately avoids `react-dom/server`, which costs ~220 kB in
   the shared chunk. The **only** CSS-drawn icons are the `<i class="wxi-…">` elements SVAR
@@ -135,6 +166,23 @@ type)`, `people(id,name,position,owner)`, `app_state(id='main', active_project, 
 - SVAR react-gantt 2.x, PRO features reimplemented manually: weekend-skipping
   scheduling (HOURS_PER_DAY=7, `scheduleFromHours` + intercepts) and undo/redo
   (JSON snapshot stacks, not `getHistory()` which is PRO-only).
+- Four places where SVAR's shipped types are wrong or too narrow, each narrowed locally
+  rather than cast to `any` — don't "fix" them by widening the api:
+  - `IApi.getTask` is typed `ITask` (everything optional) but returns a parsed task, so
+    both entries define `ParsedTask` + `GanttApi` and cast the `init(api)` argument once.
+  - `GanttScaleCell` omits the `date` the rendered cells carry, which `xForDate` reads —
+    hence the local `ScaleCell`/`ScaleRow`/`ScaleData` and the cast on `_scales`.
+  - `exec("show-editor", {id})` types `id` as `TID`, but `null` is what closes the
+    editor; that one call site asserts `null as unknown as TID`.
+  - `@svar-ui/gantt-store` does not re-export `IParsedTask`/`ITaskType`/`ISummaryConfig`
+    /`TDurationUnit` through its package index — import only what the index exports and
+    spell the rest out locally.
+- Ids: SVAR's `uid()` is an incrementing **number**, so tasks and links created in-session
+  carry numeric ids while the Postgres columns are `text`. That is why `TaskId` is
+  `string | number` and why the two `insert` calls in `db.ts` carry a commented cast —
+  don't "fix" it with `String(id)` unless you also migrate the data.
+- `MToolbar`/`MContextMenu` are handed `api!`: the api is genuinely null until the widget
+  mounts, and the components cope, but their prop type doesn't model it.
 - DOM decoration (type icons, status dots, tracker pills, epic bands, project span, the
   Who column chips and its picker bridge) happens in a MutationObserver tagger. APPEND
   nodes only — `insertBefore` breaks React reconciliation ("forEach of null" crashes).
@@ -152,7 +200,7 @@ type)`, `people(id,name,position,owner)`, `app_state(id='main', active_project, 
   freshly loaded data. Timing subtlety: the guard relies on `dbLoad()` being a real
   network round-trip. An instantly-resolving data source (a stub, a synchronous cache)
   makes the first mount abort and the row tagger never starts.
-- Vite strips SVAR's `@font-face` rules via a small plugin in `vite.config.js`; the app
+- Vite strips SVAR's `@font-face` rules via a small plugin in `vite.config.ts`; the app
   supplies its own faces and passes `fonts={false}` to Willow. Keep that plugin's
   `enforce: "pre"` and keep it ahead of `tailwindcss()` in the plugin list.
 - Stylesheet import order in the entries is load-bearing: `style.css`, then

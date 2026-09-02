@@ -1,6 +1,7 @@
 import React, { useMemo, useRef, useState, useEffect, useCallback, memo } from "react";
 import { createRoot } from "react-dom/client";
 import { Gantt, Toolbar, ContextMenu, Editor } from "@svar-ui/react-gantt";
+import type { IApi, IColumnConfig, ILink, IScaleConfig, ITask, TID } from "@svar-ui/react-gantt";
 import { Willow as CoreWillow } from "@svar-ui/react-core";
 import { Willow as GridWillow } from "@svar-ui/react-grid";
 import { Menu } from "@ark-ui/react/menu";
@@ -8,11 +9,13 @@ import { Popover } from "@ark-ui/react/popover";
 import { Portal } from "@ark-ui/react/portal";
 import { SegmentGroup } from "@ark-ui/react/segment-group";
 import { CaretDown, Check, DownloadSimple, ShareNetwork, SignOut, Users, X } from "@phosphor-icons/react";
-import { buildGanttPdf } from "./pdf.js";
-import { supabase } from "./lib/supabase.js";
-import { dbLoad, dbSave } from "./lib/db.js";
-import Login from "./Login.jsx";
-import { setGlyph } from "./icons.jsx";
+import type { Session } from "@supabase/supabase-js";
+import { buildGanttPdf } from "./pdf";
+import { supabase } from "./lib/supabase";
+import { dbLoad, dbSave } from "./lib/db";
+import type { Person, StoreData, StoreLink, StoreProject, StoreTask, TaskId } from "./lib/db";
+import Login from "./Login";
+import { setGlyph, type GlyphHost } from "./icons";
 
 /* stylesheet order matters: shell tokens, then the widget theme, then our
    re-skin on top of it */
@@ -23,6 +26,30 @@ import "../icons.css";
 
 const DAY = 24 * 60 * 60 * 1000;
 const uid = () => "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+/* ---------- library types we have to narrow ----------
+   IApi declares getTask as ITask (every field optional), but the store hands
+   back a parsed task with id/parent/$level always present, which is what every
+   caller below relies on. Only that one member is re-declared — the rest of the
+   imperative api keeps the shipped types. */
+type GanttApi = Omit<IApi, "getTask"> & { getTask: (id: TID) => ParsedTask };
+
+/* @svar-ui/gantt-store keeps ParsedTask out of its package index, so the
+   shape the store actually hands back is spelled out here */
+type ParsedTask = ITask & { id: TID; parent: TID; $level: number };
+
+/* the rendered scale cells carry the date each column starts at; the shipped
+   GanttScaleCell type only describes width/value/css, so xForDate works
+   against this narrower local shape instead */
+type ScaleCell = { width: number; date: Date };
+type ScaleRow = { cells: ScaleCell[] };
+type ScaleData = { rows: ScaleRow[] } | null | undefined;
+
+/* store tasks with their dates revived: what the widget is handed */
+interface RevivedTask extends Omit<StoreTask, "start" | "end"> {
+  start?: Date;
+  end?: Date;
+}
 
 export const TASK_TYPES = [
   { id: "task", label: "Task" },
@@ -69,7 +96,7 @@ const SEG_ITEM =
 const BRAND_MARK =
   "block h-3.5 w-3.5 rounded-[4px] bg-[linear-gradient(135deg,var(--color-accent)_0_50%,var(--color-summary-fill)_50%_100%)]";
 
-const COLUMNS = [
+const COLUMNS: IColumnConfig[] = [
   { id: "text", header: "Task name", width: 183, flexgrow: 1, sort: true, editor: "text" },
   { id: "who", header: "Who", width: 78, align: "center", sort: false },
   { id: "tracker", header: "ID", width: 100, align: "center", sort: false },
@@ -81,14 +108,14 @@ const COLUMNS = [
 
 /* ---------- working-time model: estimates in hours, 7h = 1 work day, weekends skipped ---------- */
 const HOURS_PER_DAY = 7;
-const isWeekend = (d) => d.getDay() === 0 || d.getDay() === 6;
-function rollForward(d) {
+const isWeekend = (d: Date) => d.getDay() === 0 || d.getDay() === 6;
+function rollForward(d: Date) {
   const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
   while (isWeekend(x)) x.setDate(x.getDate() + 1);
   return x;
 }
 /* end date (exclusive) after consuming n working days from a working start */
-function addWorkDays(start, n) {
+function addWorkDays(start: Date, n: number) {
   const x = new Date(start.getTime());
   let left = Math.max(1, n);
   while (left > 1) {
@@ -99,7 +126,7 @@ function addWorkDays(start, n) {
   e.setDate(e.getDate() + 1);
   return e;
 }
-function workDaysBetween(s, e) {
+function workDaysBetween(s: Date, e: Date) {
   let c = 0;
   const x = new Date(s.getFullYear(), s.getMonth(), s.getDate());
   while (x < e) {
@@ -108,14 +135,14 @@ function workDaysBetween(s, e) {
   }
   return Math.max(1, c);
 }
-const isBar = (t) => t && t.type !== "summary" && t.type !== "milestone";
+const isBar = (t: { type?: string } | null | undefined) => t && t.type !== "summary" && t.type !== "milestone";
 /* returns corrected {hours, start, end, duration} for a plain task */
-function scheduleFromHours(hours, startLike) {
+function scheduleFromHours(hours: number | undefined, startLike: Date | undefined) {
   const start = rollForward(startLike instanceof Date ? startLike : new Date());
   const h = Math.max(0.5, Math.round((Number(hours) || HOURS_PER_DAY) * 2) / 2);
   const end = addWorkDays(start, Math.ceil(h / HOURS_PER_DAY));
   const days = Math.round((h / HOURS_PER_DAY) * 10) / 10;
-  return { hours: h, days, start, end, duration: Math.round((end - start) / DAY) };
+  return { hours: h, days, start, end, duration: Math.round((+end - +start) / DAY) };
 }
 
 const TOOLBAR_ITEMS = [
@@ -137,28 +164,30 @@ const EDITOR_ITEMS = [
     { id: "done", label: "Done" },
   ] },
   { key: "url", comp: "text", label: "Link (e.g. Yandex Tracker)", config: { placeholder: "https://tracker.yandex.com/PRODUCT-123" } },
-  { key: "start", comp: "date", label: "Start date", config: { format: "%d-%m-%Y" }, isHidden: (t) => t.type === "summary" },
-  { key: "hours", comp: "counter", label: "Estimate (hours)", config: { min: 1 }, isHidden: (t) => !isBar(t) },
-  { key: "days", comp: "text", label: "Estimate (days)", config: { placeholder: "e.g. 1.5" }, isHidden: (t) => !isBar(t) },
-  { key: "progress", comp: "slider", label: "Progress", config: { min: 0, max: 100 }, isHidden: (t) => t.type === "milestone" },
+  { key: "start", comp: "date", label: "Start date", config: { format: "%d-%m-%Y" }, isHidden: (t: ITask) => t.type === "summary" },
+  { key: "hours", comp: "counter", label: "Estimate (hours)", config: { min: 1 }, isHidden: (t: ITask) => !isBar(t) },
+  { key: "days", comp: "text", label: "Estimate (days)", config: { placeholder: "e.g. 1.5" }, isHidden: (t: ITask) => !isBar(t) },
+  { key: "progress", comp: "slider", label: "Progress", config: { min: 0, max: 100 }, isHidden: (t: ITask) => t.type === "milestone" },
   { key: "links", comp: "links", label: "", batch: "links" },
 ];
 
 /* ---------- initial in-memory store; ALL real data lives in Supabase ---------- */
-function loadData() {
-  const p = { id: uid(), name: "Project timeline", view: "day", tasks: [], links: [] };
+function loadData(): StoreData {
+  const p: StoreProject = { id: uid(), name: "Project timeline", view: "day", tasks: [], links: [] };
   return { version: 2, activeProject: p.id, projects: [p], people: [] };
 }
 
-function reviveTask(t) {
-  const out = { ...t };
-  if (out.start) out.start = new Date(out.start + "T00:00:00");
-  if (out.end) out.end = new Date(out.end + "T00:00:00");
+function reviveTask(t: StoreTask): RevivedTask {
+  /* start/end come in as ISO day strings and leave as Dates, so the copy is
+     retyped once here rather than rebuilt field by field */
+  const out = { ...t } as unknown as RevivedTask;
+  if (t.start) out.start = new Date(t.start + "T00:00:00");
+  if (t.end) out.end = new Date(t.end + "T00:00:00");
   return out;
 }
 /* epics recalculate from their children when parsed without dates;
    plain tasks are normalized to the hours model (weekends skipped) */
-function prepareTasks(tasks) {
+function prepareTasks(tasks: StoreTask[]): RevivedTask[] {
   const parents = new Set(tasks.map((t) => t.parent).filter((p) => p !== undefined && p !== null && p !== 0));
   return tasks.map((t) => {
     const r = reviveTask(t);
@@ -169,7 +198,7 @@ function prepareTasks(tasks) {
       /* a childless epic must carry dates or the widget throws */
       r.start = rollForward(new Date());
       r.end = addWorkDays(r.start, 1);
-      r.duration = Math.round((r.end - r.start) / DAY);
+      r.duration = Math.round((+r.end - +r.start) / DAY);
       return r;
     }
     if (isBar(r)) {
@@ -182,58 +211,64 @@ function prepareTasks(tasks) {
     return r;
   });
 }
-function fmtDate(d) {
-  if (!(d instanceof Date) || isNaN(d)) return undefined;
-  const p = (n) => String(n).padStart(2, "0");
+function fmtDate(d: Date | undefined): string | undefined {
+  if (!(d instanceof Date) || isNaN(+d)) return undefined;
+  const p = (n: number) => String(n).padStart(2, "0");
   return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
 }
 
 /* ---------- serialize widget state back to plain data ---------- */
 const KEEP = ["id", "text", "start", "end", "duration", "hours", "days", "progress", "parent", "type", "open", "details", "url", "status", "assignees"];
-function cleanTask(t) {
-  const out = {};
+function cleanTask(t: ITask): StoreTask {
+  const out: Partial<StoreTask> = {};
   for (const k of KEEP) {
     if (t[k] === undefined || t[k] === null) continue;
-    out[k] = t[k];
+    /* the KEEP loop copies by dynamic key, so the write side is untyped and
+       the whole object is asserted once on the way out */
+    (out as Record<string, unknown>)[k] = t[k];
   }
   if (out.start) out.start = fmtDate(t.start);
   if (out.end) out.end = fmtDate(t.end);
   if (out.parent === 0) delete out.parent;
-  return out;
+  return out as StoreTask;
 }
-function extractTasks(api) {
+function extractTasks(api: GanttApi): StoreTask[] {
   const st = api.getState();
   const tasks = st.tasks;
-  const out = [];
-  const seen = new Set();
-  const push = (t) => {
+  const out: StoreTask[] = [];
+  const seen = new Set<TaskId>();
+  const push = (t: ITask) => {
     if (!t || t.id === undefined || t.id === 0 || seen.has(t.id)) return;
     seen.add(t.id);
     out.push(cleanTask(t));
   };
-  const walk = (arr) => { if (arr) arr.forEach((t) => { push(t); walk(t.data); }); };
+  const walk = (arr: ITask[] | undefined) => { if (arr) arr.forEach((t) => { push(t); walk(t.data); }); };
   if (Array.isArray(tasks)) walk(tasks);
   else if (tasks && tasks._pool instanceof Map) tasks._pool.forEach(push);
   else if (tasks && typeof tasks.forEach === "function") tasks.forEach(push);
   return out;
 }
-function extractLinks(api) {
+function extractLinks(api: GanttApi): StoreLink[] {
   const st = api.getState();
   const links = st.links;
-  const out = [];
-  const push = (l) => { if (l && l.id !== undefined) out.push({ id: l.id, source: l.source, target: l.target, type: l.type }); };
+  const out: StoreLink[] = [];
+  const push = (l: ILink) => { if (l && l.id !== undefined) out.push({ id: l.id, source: l.source, target: l.target, type: l.type }); };
   if (Array.isArray(links)) links.forEach(push);
   else if (links && typeof links.map === "function") links.map(push);
   else if (links && typeof links.forEach === "function") links.forEach(push);
   return out;
 }
-function serializeSide(api, kind) {
+function serializeSide(api: GanttApi, kind: "tasks"): StoreTask[];
+function serializeSide(api: GanttApi, kind: "links"): StoreLink[];
+function serializeSide(api: GanttApi, kind: "tasks" | "links"): StoreTask[] | StoreLink[] {
   try {
-    const arr = api.serialize({ data: kind });
+    /* serialize's return type is a union keyed by the runtime `data` option,
+       which the compiler cannot follow — narrow it to the side we asked for */
+    const arr = api.serialize({ data: kind }) as unknown[] | null;
     if (Array.isArray(arr)) {
       return kind === "tasks"
-        ? arr.map(cleanTask)
-        : arr.map((l) => ({ id: l.id, source: l.source, target: l.target, type: l.type }));
+        ? (arr as ITask[]).map(cleanTask)
+        : (arr as ILink[]).map((l) => ({ id: l.id, source: l.source, target: l.target, type: l.type }));
     }
   } catch (e) { /* fall through */ }
   return kind === "tasks" ? extractTasks(api) : extractLinks(api);
@@ -244,11 +279,19 @@ const SHARE_URL = new URL(import.meta.env.BASE_URL + "share/", window.location.o
 
 /* project totals: effort over all tasks, span over all dates */
 const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-const fmtD = (d) => d.getDate() + " " + MON[d.getMonth()];
-function computeStats(api) {
-  let list = [];
+const fmtD = (d: Date) => d.getDate() + " " + MON[d.getMonth()];
+interface Stats {
+  h: number;
+  d: number;
+  min: Date | null;
+  max: Date | null;
+  tasks: number;
+  epics: number;
+}
+function computeStats(api: GanttApi): Stats | null {
+  let list: StoreTask[] = [];
   try { list = serializeSide(api, "tasks"); } catch (e) { return null; }
-  let h = 0, tasks = 0, epics = 0, min = null, max = null;
+  let h = 0, tasks = 0, epics = 0, min: string | null = null, max: string | null = null;
   list.forEach((t) => {
     if (t.type === "summary") { epics++; }
     else if (t.type !== "milestone") { tasks++; h += Number(t.hours) || 0; }
@@ -268,7 +311,7 @@ function computeStats(api) {
 }
 
 /* map a date to an x position using the rendered scale cells */
-function xForDate(sc, date) {
+function xForDate(sc: ScaleData, date: Date): number | null {
   const row = sc && sc.rows && sc.rows[sc.rows.length - 1];
   if (!row || !row.cells.length) return null;
   const t = date.getTime();
@@ -285,12 +328,12 @@ function xForDate(sc, date) {
   }
   return x;
 }
-function renderProjectSpan(api) {
-  const scaleEl = document.querySelector(".gantt-holder .wx-chart > .wx-scale");
+function renderProjectSpan(api: GanttApi) {
+  const scaleEl = document.querySelector<HTMLElement>(".gantt-holder .wx-chart > .wx-scale");
   if (!scaleEl) return;
-  let el = scaleEl.querySelector(":scope > .project-span");
+  let el = scaleEl.querySelector<HTMLElement>(":scope > .project-span");
   const stats = computeStats(api);
-  const sc = api.getState()._scales;
+  const sc = api.getState()._scales as unknown as ScaleData;
   if (!stats || !stats.min || !stats.max || !sc) { if (el) el.remove(); return; }
   const x0 = xForDate(sc, stats.min), x1 = xForDate(sc, stats.max);
   if (x0 === null || x1 === null || x1 - x0 < 2) { if (el) el.remove(); return; }
@@ -306,20 +349,20 @@ function renderProjectSpan(api) {
 
 /* epic estimates roll up from the tasks inside them */
 let ROLLUP_WRITE = false;
-function rollupEpics(api) {
-  let list = [];
+function rollupEpics(api: GanttApi) {
+  let list: StoreTask[] = [];
   try { list = serializeSide(api, "tasks"); } catch (e) { return; }
-  const byParent = {};
+  const byParent: Record<string, StoreTask[]> = {};
   list.forEach((t) => { const p = t.parent === undefined ? 0 : t.parent; (byParent[p] = byParent[p] || []).push(t); });
   /* plan the derived writes first */
-  const writes = [];
+  const writes: { id: TaskId; task: Partial<ITask> }[] = [];
   list.forEach((t) => {
     if (t.type !== "summary" && (byParent[t.id] || []).length) {
       writes.push({ id: t.id, task: { type: "summary" } });
       t.type = "summary";
     }
   });
-  const sumOf = (id) => {
+  const sumOf = (id: TaskId): number => {
     let s = 0;
     (byParent[id] || []).forEach((c) => {
       if (c.type === "summary") s += sumOf(c.id);
@@ -341,14 +384,14 @@ function rollupEpics(api) {
 /* tag grid rows and paint epic bands on the chart so the epic → task
    hierarchy is visible on both sides; rows/bars are re-rendered by the
    widget, so redo the work whenever the gantt's DOM changes */
-let rowTagObserver = null;
-let retagHook = null;
+let rowTagObserver: MutationObserver | null = null;
+let retagHook: (() => void) | null = null;
 /* the row tagger lives outside React; these bridge it back to the app */
-let rosterRef = [];
-let pickHook = null;
-const personById = (id) => rosterRef.find((h) => h.id === id) || null;
-function setAllEpicsOpen(api, open) {
-  let list = [];
+let rosterRef: Person[] = [];
+let pickHook: ((taskId: TID, hostEl: HTMLElement) => void) | null = null;
+const personById = (id: string): Person | null => rosterRef.find((h) => h.id === id) || null;
+function setAllEpicsOpen(api: GanttApi, open: boolean) {
+  let list: StoreTask[] = [];
   try { list = serializeSide(api, "tasks"); } catch (e) { return; }
   const parents = new Set(list.map((t) => t.parent).filter((p) => p !== undefined && p !== null && p !== 0));
   list.forEach((t) => {
@@ -357,10 +400,10 @@ function setAllEpicsOpen(api, open) {
     }
   });
 }
-function syncFoldAllButton(api) {
-  const headerCell = document.querySelector('.gantt-holder [data-header-id=":text"]');
+function syncFoldAllButton(api: GanttApi) {
+  const headerCell = document.querySelector<HTMLElement>('.gantt-holder [data-header-id=":text"]');
   if (!headerCell) return;
-  let btn = headerCell.querySelector(".fold-all");
+  let btn = headerCell.querySelector<HTMLButtonElement>(".fold-all");
   if (!btn) {
     btn = document.createElement("button");
     btn.type = "button";
@@ -371,7 +414,7 @@ function syncFoldAllButton(api) {
     btn.addEventListener("pointerdown", (e) => e.stopPropagation());
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
-      setAllEpicsOpen(api, btn.dataset.next === "expand");
+      setAllEpicsOpen(api, btn!.dataset.next === "expand");
     });
     headerCell.appendChild(btn);
   }
@@ -384,46 +427,51 @@ function syncFoldAllButton(api) {
   } catch (e) {}
   btn.dataset.next = anyOpen ? "collapse" : "expand";
   btn.title = anyOpen ? "Collapse all epics" : "Expand all epics";
-  const icon = btn.firstChild;
+  /* the button is built just above with exactly one <span class="ci"> child */
+  const icon = btn.firstChild as GlyphHost;
   const name = anyOpen ? "ci-collapse" : "ci-expand";
   const cls = "ci " + name;
   if (icon.className !== cls) icon.className = cls;
   setGlyph(icon, name); /* cached Phosphor SVG, rendered once at module scope */
 }
 /* ---------- assignees: a comma-separated list of people ids, shown as initials ---------- */
-function parseAssignees(v) {
+function parseAssignees(v: unknown): string[] {
   return String(v || "").split(/[,;]/).map((s) => s.trim()).filter(Boolean);
 }
 /* "Inga Kot" → "IK"; "Inga" → "IN" */
-function initialsOf(name) {
+function initialsOf(name: string | undefined): string {
   const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return "";
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 /* stable per-name hue so the same person keeps the same chip color */
-function nameHue(name) {
+function nameHue(name: string | undefined): number {
   const s = String(name || "");
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
   return h;
 }
 /* "…/PRODUCT-1234" → "PRODUCT-1234" */
-function trackerId(url) {
+function trackerId(url: string | null | undefined): string | null {
   const m = /([A-Za-z][A-Za-z0-9_]*-\d+)\/?(?:[?#].*)?$/.exec(url || "");
   return m ? m[1].toUpperCase() : null;
 }
-function renderEpicBands(api) {
-  const area = document.querySelector(".gantt-holder .wx-area");
+/* the tagger stamps a signature onto the nodes it owns so a re-run can skip
+   the ones already showing the right thing */
+type KeyedHost = HTMLElement & { __key?: string };
+type BandLayer = HTMLElement & { __html?: string };
+function renderEpicBands(api: GanttApi) {
+  const area = document.querySelector<HTMLElement>(".gantt-holder .wx-area");
   if (!area) return;
-  let layer = area.querySelector(":scope > .epic-bands");
+  let layer = area.querySelector<BandLayer>(":scope > .epic-bands");
   if (!layer) {
     layer = document.createElement("div");
     layer.className = "epic-bands";
     const hol = area.querySelector(":scope > .wx-gantt-holidays");
     if (hol) hol.after(layer); else area.prepend(layer);
   }
-  let rows = [];
+  let rows: ParsedTask[] = [];
   let ch = 38;
   try {
     const st = api.getState();
@@ -441,15 +489,15 @@ function renderEpicBands(api) {
   }
   if (layer.__html !== html) { layer.innerHTML = html; layer.__html = html; }
 }
-function watchRowTags(api) {
+function watchRowTags(api: GanttApi) {
   if (rowTagObserver) { rowTagObserver.disconnect(); rowTagObserver = null; }
   let raf = 0;
   const tag = () => {
     raf = 0;
-    document.querySelectorAll(".gantt-holder .wx-row[data-id]").forEach((row) => {
+    document.querySelectorAll<HTMLElement>(".gantt-holder .wx-row[data-id]").forEach((row) => {
       const raw = row.getAttribute("data-id") || "";
       const id = raw.startsWith(":") ? raw.slice(1) : raw;
-      let t = null;
+      let t: ParsedTask | null = null;
       try { t = api.getTask(id); } catch (e) {}
       if (!t && /^\d+$/.test(id)) { try { t = api.getTask(Number(id)); } catch (e) {} }
       if (!t) return;
@@ -459,9 +507,9 @@ function watchRowTags(api) {
       const status = t.status === "done" || t.status === "progress" ? t.status : "todo";
       ["st-todo", "st-progress", "st-done"].forEach((c) => row.classList.remove(c));
       row.classList.add("st-" + status);
-      const content0 = row.querySelector('[data-col-id=":text"] .wx-content');
+      const content0 = row.querySelector<HTMLElement>('[data-col-id=":text"] .wx-content');
       if (content0) {
-        let dot = content0.querySelector(".status-dot");
+        let dot = content0.querySelector<HTMLElement>(".status-dot");
         if (!dot) { dot = document.createElement("span"); dot.className = "status-dot"; content0.appendChild(dot); }
         const dc = "status-dot sd-" + status;
         if (dot.className !== dc) dot.className = dc;
@@ -471,9 +519,9 @@ function watchRowTags(api) {
          never inserted between React-managed nodes) */
       const typeKey = "ti-" + (t.type || "task");
       const iconCls = "type-icon " + typeKey;
-      let ic = row.querySelector(".type-icon");
+      let ic = row.querySelector<GlyphHost>(".type-icon");
       if (!ic) {
-        const content = row.querySelector('[data-col-id=":text"] .wx-content');
+        const content = row.querySelector<HTMLElement>('[data-col-id=":text"] .wx-content');
         if (content) {
           ic = document.createElement("span");
           ic.className = iconCls;
@@ -485,9 +533,9 @@ function watchRowTags(api) {
       if (ic) setGlyph(ic, typeKey);
       /* Who column: assignee initials from the roster; click opens the picker.
          The host is appended, never inserted between React-managed nodes. */
-      const whoCell = row.querySelector('[data-col-id=":who"]');
+      const whoCell = row.querySelector<HTMLElement>('[data-col-id=":who"]');
       if (whoCell) {
-        let host = whoCell.querySelector(".who-chips");
+        let host = whoCell.querySelector<HTMLButtonElement & KeyedHost>(".who-chips");
         if (!host) {
           host = document.createElement("button");
           host.className = "who-chips";
@@ -496,7 +544,7 @@ function watchRowTags(api) {
           host.addEventListener("dblclick", (e) => { e.stopPropagation(); e.preventDefault(); });
           (whoCell.querySelector(".wx-content") || whoCell).appendChild(host);
         }
-        const assigned = parseAssignees(t.assignees).map(personById).filter(Boolean);
+        const assigned = parseAssignees(t.assignees).map(personById).filter((h): h is Person => !!h);
         const key = assigned.map((h) => h.id + "\u0000" + h.name).join("|");
         if (host.__key !== key) {
           host.__key = key;
@@ -533,35 +581,36 @@ function watchRowTags(api) {
       }
       const rawUrl = typeof t.url === "string" && /^https?:\/\//i.test(t.url.trim()) ? t.url.trim() : null;
       /* ID column: ticket id extracted from the link, clickable */
-      const cell = row.querySelector('[data-col-id=":tracker"]');
+      const cell = row.querySelector<HTMLElement>('[data-col-id=":tracker"]');
       if (cell) {
         const tid = rawUrl ? trackerId(rawUrl) : null;
-        let a2 = cell.querySelector(".tracker-link");
+        let a2 = cell.querySelector<HTMLAnchorElement>(".tracker-link");
         if (tid) {
           if (!a2) {
             a2 = document.createElement("a");
             a2.className = "tracker-link";
             a2.target = "_blank";
             a2.rel = "noopener noreferrer";
-            ["click", "pointerdown"].forEach((ev) => a2.addEventListener(ev, (e) => e.stopPropagation()));
+            ["click", "pointerdown"].forEach((ev) => a2!.addEventListener(ev, (e) => e.stopPropagation()));
             a2.addEventListener("dblclick", (e) => { e.stopPropagation(); e.preventDefault(); });
             (cell.querySelector(".wx-content") || cell).appendChild(a2);
           }
-          if (a2.getAttribute("href") !== rawUrl) { a2.setAttribute("href", rawUrl); a2.title = rawUrl; }
+          /* tid is only non-null when rawUrl was, which the compiler misses */
+          if (a2.getAttribute("href") !== rawUrl) { a2.setAttribute("href", rawUrl!); a2.title = rawUrl!; }
           if (a2.textContent !== tid) a2.textContent = tid;
         } else if (a2) {
           a2.remove();
         }
       }
       /* hover-only edit (pencil) icon on every row — opens that row's editor */
-      let bEl = row.querySelector(".row-edit");
+      let bEl = row.querySelector<GlyphHost & HTMLButtonElement>(".row-edit");
       if (!bEl) {
         bEl = document.createElement("button");
         bEl.className = "row-edit";
         bEl.type = "button";
         bEl.addEventListener("pointerdown", (e) => e.stopPropagation());
         bEl.addEventListener("dblclick", (e) => { e.stopPropagation(); e.preventDefault(); });
-        const content = row.querySelector('[data-col-id=":text"] .wx-content');
+        const content = row.querySelector<HTMLElement>('[data-col-id=":text"] .wx-content');
         if (content) { setGlyph(bEl, "row-edit"); content.appendChild(bEl); } else bEl = null;
       }
       if (bEl) {
@@ -573,10 +622,10 @@ function watchRowTags(api) {
         };
       }
     });
-    document.querySelectorAll(".gantt-holder .wx-bar[data-task-id]").forEach((bar) => {
+    document.querySelectorAll<HTMLElement>(".gantt-holder .wx-bar[data-task-id]").forEach((bar) => {
       const raw = bar.getAttribute("data-task-id") || "";
       const id = raw.startsWith(":") ? raw.slice(1) : raw;
-      let t = null;
+      let t: ParsedTask | null = null;
       try { t = api.getTask(id); } catch (e) {}
       if (!t && /^\d+$/.test(id)) { try { t = api.getTask(Number(id)); } catch (e) {} }
       if (!t) return;
@@ -605,48 +654,69 @@ const MGantt = memo(Gantt);
 const MToolbar = memo(Toolbar);
 const MContextMenu = memo(ContextMenu);
 const MEditor = memo(Editor);
-const HIGHLIGHT = (d, u) => (u === "day" && (d.getDay() === 0 || d.getDay() === 6) ? "wx-weekend" : "");
+const HIGHLIGHT = (d: Date, u: "day" | "hour") => (u === "day" && (d.getDay() === 0 || d.getDay() === 6) ? "wx-weekend" : "");
 const SUMMARY_CFG = { autoConvert: true, autoProgress: true };
 
 /* ---------- view presets ---------- */
-const VIEWS = {
+interface ViewPreset {
+  label: string;
+  cellWidth: number;
+  scales: IScaleConfig[];
+}
+/* keyed by string, not a literal union: the stored `view` is whatever came out
+   of Postgres, and every read below already falls back to "day" */
+const VIEWS: Record<string, ViewPreset> = {
   day:   { label: "Day",   cellWidth: 36,  scales: [{ unit: "month", step: 1, format: "%F %Y" }, { unit: "day", step: 1, format: "%j" }] },
   week:  { label: "Week",  cellWidth: 74,  scales: [{ unit: "month", step: 1, format: "%M %Y" }, { unit: "week", step: 1, format: "w%W" }] },
   month: { label: "Month", cellWidth: 110, scales: [{ unit: "year", step: 1, format: "%Y" }, { unit: "month", step: 1, format: "%M" }] },
 };
 
+type SaveStatus = "idle" | "saving" | "saved" | "local";
+type DbState = { state: "idle" } | { state: "ok" } | { state: "err"; message: string };
+interface Picker {
+  taskId: TID;
+  el: HTMLElement | null;
+  rect: DOMRect | null;
+  ids: string[];
+}
+interface Clipboard {
+  op: "cut" | "copy";
+  id: TID;
+  project: string;
+}
+
 /* ---------- app ---------- */
-function App({ session }) {
+function App({ session }: { session: Session }) {
   const ownerId = session.user.id;
-  const storeRef = useRef(loadData());
+  const storeRef = useRef<StoreData>(loadData());
   const store = storeRef.current;
   const [activeId, setActiveId] = useState(store.activeProject);
   const activeProject = () => storeRef.current.projects.find((p) => p.id === storeRef.current.activeProject) || storeRef.current.projects[0];
 
-  const [api, setApi] = useState(null);
+  const [api, setApi] = useState<GanttApi | null>(null);
   const [view, setView] = useState(VIEWS[activeProject().view] ? activeProject().view : "day");
-  const [status, setStatus] = useState("idle");
+  const [status, setStatus] = useState<SaveStatus>("idle");
   const [taskCount, setTaskCount] = useState(activeProject().tasks.length);
   const [seed, setSeed] = useState(0);
   const [exporting, setExporting] = useState(false);
-  const [stats, setStats] = useState(null);
-  const [people, setPeople] = useState(() => storeRef.current.people || []);
+  const [stats, setStats] = useState<Stats | null>(null);
+  const [people, setPeople] = useState<Person[]>(() => storeRef.current.people || []);
   const [newPerson, setNewPerson] = useState("");
-  const [picker, setPicker] = useState(null); /* { taskId, el, rect, ids } */
-  const pickerKeyRef = useRef("none");        /* last opened row: see the popover below */
-  const lastPickerRef = useRef(null);
+  const [picker, setPicker] = useState<Picker | null>(null); /* { taskId, el, rect, ids } */
+  const pickerKeyRef = useRef("none");                       /* last opened row: see the popover below */
+  const lastPickerRef = useRef<Picker | null>(null);
   const [copied, setCopied] = useState(false);
-  const shareInputRef = useRef(null);
-  const [armDelete, setArmDelete] = useState(null);
-  const [dbState, setDbState] = useState({ state: "idle" });
+  const shareInputRef = useRef<HTMLInputElement>(null);
+  const [armDelete, setArmDelete] = useState<string | null>(null);
+  const [dbState, setDbState] = useState<DbState>({ state: "idle" });
   const [, forceRender] = useState(0);
   const nameRef = useRef(activeProject().name);
-  const clipRef = useRef(null);
-  const undoRef = useRef([]);
-  const redoRef = useRef([]);
-  const snapTimer = useRef(null);
-  const saveTimer = useRef(null);
-  const apiRef = useRef(null);
+  const clipRef = useRef<Clipboard | null>(null);
+  const undoRef = useRef<string[]>([]);
+  const redoRef = useRef<string[]>([]);
+  const snapTimer = useRef<number | null>(null);
+  const saveTimer = useRef<number | null>(null);
+  const apiRef = useRef<GanttApi | null>(null);
   const dirtyRef = useRef(false);
 
   const revivedTasks = useMemo(() => prepareTasks(activeProject().tasks), [seed, activeId]);
@@ -683,7 +753,7 @@ function App({ session }) {
     p.view = view;
     setTaskCount(p.tasks.length);
     const s = storeRef.current;
-    const data = { version: 2, activeProject: s.activeProject, projects: s.projects, people: s.people || [] };
+    const data: StoreData = { version: 2, activeProject: s.activeProject, projects: s.projects, people: s.people || [] };
     setStatus("saving");
     const r = await dbSave(data, ownerId);
     setDbState(r);
@@ -692,7 +762,7 @@ function App({ session }) {
 
   const scheduleSave = useCallback(() => {
     dirtyRef.current = true;
-    clearTimeout(saveTimer.current);
+    clearTimeout(saveTimer.current ?? undefined);
     saveTimer.current = setTimeout(() => { saveTimer.current = null; doSave(); }, 1400);
   }, [doSave]);
 
@@ -718,12 +788,12 @@ function App({ session }) {
     }
   }, [serializeActive]);
   const scheduleSnapshot = useCallback(() => {
-    clearTimeout(snapTimer.current);
+    clearTimeout(snapTimer.current ?? undefined);
     snapTimer.current = setTimeout(() => { snapTimer.current = null; flushSnapshot(); }, 350);
   }, [flushSnapshot]);
-  const restoreSnapshot = useCallback((json) => {
+  const restoreSnapshot = useCallback((json: string) => {
     try {
-      const d = JSON.parse(json);
+      const d = JSON.parse(json) as { t: StoreTask[]; l: StoreLink[] };
       const p = activeProject();
       p.tasks = d.t;
       p.links = d.l;
@@ -741,11 +811,12 @@ function App({ session }) {
       if (!alive) return;
       if (r.state === "err") { setDbState(r); return; }
       setDbState({ state: "ok" });
-      if (r.data && !dirtyRef.current) {
+      const loaded = r.data;
+      if (loaded && !dirtyRef.current) {
         undoRef.current = []; redoRef.current = [];
-        storeRef.current = r.data;
-        setPeople(r.data.people || []);
-        const p = r.data.projects.find((x) => x.id === r.data.activeProject) || r.data.projects[0];
+        storeRef.current = loaded;
+        setPeople(loaded.people || []);
+        const p = loaded.projects.find((x) => x.id === loaded.activeProject) || loaded.projects[0];
         nameRef.current = p.name;
         setActiveId(p.id);
         setView(VIEWS[p.view] ? p.view : "day");
@@ -759,7 +830,7 @@ function App({ session }) {
   /* keyboard shortcuts: ⌘/Ctrl+C copy, +X cut, +V paste (into epics), +Z undo, +Shift+Z redo */
   useEffect(() => {
     if (!api) return;
-    const onKey = async (e) => {
+    const onKey = async (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
       const k = e.key.toLowerCase();
       if (!["c", "v", "x", "z"].includes(k)) return;
@@ -775,12 +846,12 @@ function App({ session }) {
         const u = undoRef.current, r = redoRef.current;
         if (e.shiftKey) {
           if (!r.length) return;
-          const next = r.pop();
+          const next = r.pop()!;
           u.push(next);
           restoreSnapshot(next);
         } else {
           if (u.length < 2) return;
-          r.push(u.pop());
+          r.push(u.pop()!);
           restoreSnapshot(u[u.length - 1]);
         }
         return;
@@ -796,15 +867,16 @@ function App({ session }) {
         if (!clip) return;
         e.preventDefault(); e.stopPropagation();
         if (clip.project !== storeRef.current.activeProject) return; /* clipboard is per project */
-        let srcOk = null;
+        let srcOk: ParsedTask | null = null;
         try { srcOk = api.getTask(clip.id); } catch (err) {}
         if (!srcOk) return;
-        let selTask = null;
+        let selTask: ParsedTask | null = null;
         try { selTask = sel !== null && sel !== undefined ? api.getTask(sel) : null; } catch (err) {}
         if (sel === clip.id && clip.op === "cut") return;
-        const cfg = { id: clip.id };
-        if (selTask && selTask.type === "summary" && sel !== clip.id) { cfg.target = sel; cfg.mode = "child"; }
-        else if (selTask) { cfg.target = sel; cfg.mode = "after"; }
+        const cfg: { id: TID; target?: TID; mode?: "child" | "after" } = { id: clip.id };
+        /* a non-null selTask proves sel was a real id */
+        if (selTask && selTask.type === "summary" && sel !== clip.id) { cfg.target = sel!; cfg.mode = "child"; }
+        else if (selTask) { cfg.target = sel!; cfg.mode = "after"; }
         else { cfg.target = clip.id; cfg.mode = "after"; }
         try {
           await api.exec(clip.op === "cut" ? "move-task" : "copy-task", cfg);
@@ -825,11 +897,14 @@ function App({ session }) {
     if (!api) return;
     const commitAndClose = () => {
       const ed = document.querySelector(".wx-gantt-editor");
-      const ae = document.activeElement;
+      /* activeElement is typed Element, which has no blur — the runtime check
+         below is what actually decides, exactly as before */
+      const ae = document.activeElement as (Element & { blur?: () => void }) | null;
       if (ed && ae && ed.contains(ae) && typeof ae.blur === "function") ae.blur(); /* commit the field being edited */
-      setTimeout(() => { try { api.exec("show-editor", { id: null }); } catch (e) {} }, 60);
+      /* null closes the editor; the shipped type only models opening one */
+      setTimeout(() => { try { api.exec("show-editor", { id: null as unknown as TID }); } catch (e) {} }, 60);
     };
-    const onDown = (e) => {
+    const onDown = (e: MouseEvent) => {
       if (!(e.target instanceof Element)) return;
       const side = e.target.closest(".wx-sidearea.wx-pos-right");
       if (side && !e.target.closest(".wx-gantt-editor")) commitAndClose();
@@ -896,7 +971,9 @@ function App({ session }) {
     }
   }, [exporting, snapshotActive]);
 
-  const init = useCallback((a) => {
+  const init = useCallback((raw: IApi) => {
+    /* the one place the shipped IApi is narrowed (see GanttApi above) */
+    const a = raw as GanttApi;
     apiRef.current = a;
     setApi(a);
 
@@ -905,9 +982,12 @@ function App({ session }) {
       const t = ev.task || (ev.task = {});
       if (t.type === "summary") {
         if (!t.start) {
-          t.start = rollForward(t.start instanceof Date ? t.start : new Date());
+          /* the enclosing guard narrows t.start to undefined, so the Date
+             branch below reads as dead to the compiler but not at runtime */
+          const given = t.start as Date | undefined;
+          t.start = rollForward(given instanceof Date ? given : new Date());
           t.end = addWorkDays(t.start, 1);
-          t.duration = Math.round((t.end - t.start) / DAY);
+          t.duration = Math.round((+t.end - +t.start) / DAY);
         }
         return;
       }
@@ -918,7 +998,7 @@ function App({ session }) {
     a.intercept("update-task", (ev) => {
       const t = ev.task;
       if (!t) return;
-      let prev = {};
+      let prev: ITask = {};
       try { prev = a.getTask(ev.id) || {}; } catch (e) {}
       const merged = { ...prev, ...t };
       if (merged.type === "summary" && !ROLLUP_WRITE) {
@@ -941,7 +1021,7 @@ function App({ session }) {
       if (hoursChanged) hours = nHours;                          /* hours entered → days follow */
       else if (daysChanged) hours = nDays * HOURS_PER_DAY;       /* days entered → hours follow */
       else if (endChanged && !startChanged && merged.start) {
-        hours = workDaysBetween(merged.start, t.end) * HOURS_PER_DAY; /* bar resized */
+        hours = workDaysBetween(merged.start, t.end!) * HOURS_PER_DAY; /* bar resized */
       } else hours = Number(prev.hours);
       if (!hours || isNaN(hours)) hours = Math.max(1, merged.duration || 1) * HOURS_PER_DAY;
       const fixed = scheduleFromHours(hours, merged.start || new Date());
@@ -984,8 +1064,10 @@ function App({ session }) {
 
   useEffect(() => {
     pickHook = (taskId, hostEl) => {
-      let ids = [];
-      try { ids = parseAssignees(apiRef.current.getTask(taskId).assignees); } catch (e) { /* unassigned */ }
+      let ids: string[] = [];
+      /* the ref is guaranteed by the time a row can be clicked; the try/catch
+         is what covers an unassigned or vanished task, as before */
+      try { ids = parseAssignees(apiRef.current!.getTask(taskId).assignees); } catch (e) { /* unassigned */ }
       /* keep a rect snapshot: the widget may re-render the cell away while the
          popover is open, and a detached node measures as 0×0 */
       const rect = hostEl ? hostEl.getBoundingClientRect() : null;
@@ -994,7 +1076,7 @@ function App({ session }) {
     return () => { pickHook = null; };
   }, []);
 
-  const commitPeople = useCallback((next) => {
+  const commitPeople = useCallback((next: Person[]) => {
     storeRef.current.people = next;
     setPeople(next);
     scheduleSave();
@@ -1008,13 +1090,13 @@ function App({ session }) {
     commitPeople(next);
   }, [newPerson, commitPeople]);
 
-  const renamePerson = useCallback((id, name) => {
+  const renamePerson = useCallback((id: string, name: string) => {
     commitPeople((storeRef.current.people || []).map((h) => (h.id === id ? { ...h, name } : h)));
   }, [commitPeople]);
 
   /* removing a person also clears them from every task that referenced them */
-  const removePerson = useCallback((id) => {
-    const strip = (v) => parseAssignees(v).filter((x) => x !== id).join(",") || null;
+  const removePerson = useCallback((id: string) => {
+    const strip = (v: unknown) => parseAssignees(v).filter((x) => x !== id).join(",") || null;
     storeRef.current.projects.forEach((pr) => {
       (pr.tasks || []).forEach((t) => { if (t.assignees) t.assignees = strip(t.assignees); });
     });
@@ -1031,21 +1113,21 @@ function App({ session }) {
     commitPeople((storeRef.current.people || []).filter((h) => h.id !== id));
   }, [commitPeople]);
 
-  const toggleAssignee = useCallback((taskId, personId) => {
+  const toggleAssignee = useCallback((taskId: TID, personId: string) => {
     const a = apiRef.current;
     if (!a) return;
-    let t = null;
+    let t: ParsedTask | null = null;
     try { t = a.getTask(taskId); } catch (e) {}
     if (!t) return;
     const cur = parseAssignees(t.assignees);
     const next = cur.includes(personId) ? cur.filter((x) => x !== personId) : [...cur, personId];
     a.exec("update-task", { id: taskId, task: { assignees: next.join(",") || null } });
     setPicker((cur) => (cur && cur.taskId === taskId ? { ...cur, ids: next } : cur));
-    if (retagHook) setTimeout(() => retagHook(), 0);
+    if (retagHook) setTimeout(() => retagHook!(), 0);
   }, []);
 
   /* ---------- project actions ---------- */
-  const openProject = (id) => {
+  const openProject = (id: string) => {
     if (id !== storeRef.current.activeProject) {
       const prev = snapshotActive();
       prev.view = view;
@@ -1064,7 +1146,7 @@ function App({ session }) {
   const createProject = () => {
     const prev = snapshotActive();
     prev.view = view;
-    const p = { id: uid(), name: "New project", view: "day", tasks: [], links: [] };
+    const p: StoreProject = { id: uid(), name: "New project", view: "day", tasks: [], links: [] };
     storeRef.current.projects.push(p);
     storeRef.current.activeProject = p.id;
     undoRef.current = []; redoRef.current = [];
@@ -1076,7 +1158,7 @@ function App({ session }) {
     setArmDelete(null);
     scheduleSave();
   };
-  const deleteProject = (id) => {
+  const deleteProject = (id: string) => {
     if (armDelete !== id) { setArmDelete(id); return; }
     const s = storeRef.current;
     if (s.projects.length <= 1) return;
@@ -1097,7 +1179,7 @@ function App({ session }) {
     scheduleSave();
   };
 
-  const changeView = (v) => {
+  const changeView = (v: string) => {
     const p = snapshotActive();
     p.view = v;
     setView(v);
@@ -1105,8 +1187,8 @@ function App({ session }) {
     setTimeout(scheduleSave, 0);
   };
 
-  const onName = (e) => {
-    nameRef.current = e.currentTarget.textContent.trim() || "Untitled project";
+  const onName = (e: React.SyntheticEvent<HTMLHeadingElement>) => {
+    nameRef.current = e.currentTarget.textContent?.trim() || "Untitled project";
     activeProject().name = nameRef.current;
     scheduleSave();
   };
@@ -1313,7 +1395,9 @@ function App({ session }) {
         <CoreWillow fonts={false}>
         <GridWillow fonts={false}>
           <div className="toolbar-row flex flex-none items-center border-b border-b-line-soft">
-            <MToolbar api={api} items={TOOLBAR_ITEMS} />
+            {/* api is null until the widget mounts; the toolbar handles that, its
+                prop type just does not model it */}
+            <MToolbar api={api!} items={TOOLBAR_ITEMS} />
             <div className="flex flex-none items-center gap-[14px] px-4 text-tiny whitespace-nowrap text-muted max-[900px]:hidden" aria-hidden="true">
               {LEGEND.map((t) => (
                 <span key={t.id} className="inline-flex items-center gap-[5px]">
@@ -1322,7 +1406,7 @@ function App({ session }) {
               ))}
             </div>
           </div>
-          <MContextMenu api={api} />
+          <MContextMenu api={api!} />
           <div className="gantt-holder min-h-0 flex-1" key={seed + "-" + view + "-" + activeId}>
               <MGantt
                 init={init}
@@ -1397,7 +1481,7 @@ function App({ session }) {
                         <button
                           type="button"
                           className={`press flex w-full cursor-pointer items-center gap-2 rounded-lg border-0 px-1.5 py-[0.3125rem] text-left font-ui text-body text-ink hover:bg-surface-hover ${FOCUS} ${on ? "bg-accent-hover" : "bg-transparent"}`}
-                          onClick={() => toggleAssignee(picker.taskId, h.id)}
+                          onClick={() => toggleAssignee(picker!.taskId, h.id)}
                         >
                           <span className="who-chip" style={{ "--who-hue": nameHue(h.name) }}>{initialsOf(h.name)}</span>
                           <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{h.name}</span>
@@ -1418,7 +1502,7 @@ function App({ session }) {
 
 /* ---------- auth gate: the editor only mounts with a live session ---------- */
 function Root() {
-  const [session, setSession] = useState(undefined); /* undefined = still checking */
+  const [session, setSession] = useState<Session | null | undefined>(undefined); /* undefined = still checking */
 
   useEffect(() => {
     let alive = true;
@@ -1435,6 +1519,6 @@ function Root() {
 
 /* the root is cached on the container so a dev hot-reload of this module
    re-renders instead of creating a second root */
-const container = document.getElementById("app");
+const container = document.getElementById("app") as HTMLElement;
 container.__root = container.__root || createRoot(container);
 container.__root.render(<Root />);

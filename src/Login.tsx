@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Field } from "@ark-ui/react/field";
-import { supabase } from "./lib/supabase.js";
+import { supabase } from "./lib/supabase";
 
 /* Email + password gate. Supabase Auth owns the session; the app only
    renders once onAuthStateChange has handed us one. */
@@ -9,15 +9,17 @@ const FIELD = "flex flex-col gap-1 font-ui text-mini text-muted";
 const INPUT =
   `rounded-lg border border-line bg-surface-alt px-2.5 py-2 font-ui text-body text-ink transition-colors duration-[130ms] ease-out ${FOCUS}`;
 
+type Mode = "signin" | "signup";
+
 export default function Login() {
-  const [mode, setMode] = useState("signin"); /* signin | signup */
+  const [mode, setMode] = useState<Mode>("signin"); /* signin | signup */
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
-  const submit = async (e) => {
+  const submit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (busy) return;
     setBusy(true);
@@ -33,7 +35,9 @@ export default function Login() {
         if (err) throw err;
       }
     } catch (err) {
-      setError(err && err.message ? err.message : "Something went wrong");
+      /* strict mode types a caught value as unknown; Supabase throws AuthError */
+      const e = err as { message?: string } | null;
+      setError(e && e.message ? e.message : "Something went wrong");
     } finally {
       setBusy(false);
     }

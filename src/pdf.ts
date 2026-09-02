@@ -1,7 +1,14 @@
 import { jsPDF } from "jspdf";
+import type { StoreLink, StoreTask, TaskId } from "./lib/db";
 
 const DAY = 24 * 60 * 60 * 1000;
-const C = {
+/* jsPDF's colour setters take three channels, so the palette entries are
+   fixed-length tuples and can be spread straight into them */
+type Rgb = readonly [number, number, number];
+type ColorName =
+  | "ink" | "muted" | "line" | "zebra" | "weekend" | "accent"
+  | "progress" | "summary" | "milestone" | "link" | "today" | "headerBg";
+const C: Record<ColorName, Rgb> = {
   ink: [28, 42, 46],
   muted: [98, 119, 122],
   line: [220, 227, 226],
@@ -16,14 +23,15 @@ const C = {
   headerBg: [241, 245, 244],
 };
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-const TYPE_COLORS = {
+type TypeColor = { bar: Rgb; deep: Rgb; label: string };
+const TYPE_COLORS: Record<string, TypeColor> = {
   backend:  { bar: [168, 195, 236], deep: [125, 163, 220], label: "Backend" },
   frontend: { bar: [165, 218, 216], deep: [111, 191, 187], label: "Frontend" },
   design:   { bar: [212, 188, 228], deep: [181, 146, 206], label: "Design" },
   testing:  { bar: [191, 224, 168], deep: [151, 200, 119], label: "Testing" },
 };
 
-function toDate(v) {
+function toDate(v: unknown): Date | null {
   if (v instanceof Date) return new Date(v.getFullYear(), v.getMonth(), v.getDate());
   if (typeof v === "string") {
     const d = new Date(v.length <= 10 ? v + "T00:00:00" : v);
@@ -31,20 +39,26 @@ function toDate(v) {
   }
   return null;
 }
-function fmtShort(d) { return d.getDate() + " " + MONTHS[d.getMonth()]; }
-function fmtFull(d) { return d.getDate() + " " + MONTHS[d.getMonth()] + " " + d.getFullYear(); }
+function fmtShort(d: Date) { return d.getDate() + " " + MONTHS[d.getMonth()]; }
+function fmtFull(d: Date) { return d.getDate() + " " + MONTHS[d.getMonth()] + " " + d.getFullYear(); }
+
+type LeveledTask = StoreTask & { $level: number };
+/* the rows actually drawn: `_s` is proven by the filter below, and `_e` is
+   always written alongside it in the same map step */
+type PdfRow = LeveledTask & { _s: Date | null; _e: Date | null };
+type PlacedRow = LeveledTask & { _s: Date; _e: Date | null };
 
 /* order tasks as a tree (parents before children), compute levels */
-function orderTasks(tasks) {
-  const kids = new Map();
-  const ids = new Set(tasks.map((t) => t.id));
+function orderTasks(tasks: StoreTask[]): LeveledTask[] {
+  const kids = new Map<TaskId, StoreTask[]>();
+  const ids = new Set<TaskId>(tasks.map((t) => t.id));
   tasks.forEach((t) => {
     const p = t.parent !== undefined && t.parent !== null && ids.has(t.parent) ? t.parent : 0;
     if (!kids.has(p)) kids.set(p, []);
-    kids.get(p).push(t);
+    kids.get(p)!.push(t); /* set on the line above */
   });
-  const out = [];
-  const walk = (pid, level) => {
+  const out: LeveledTask[] = [];
+  const walk = (pid: TaskId, level: number) => {
     (kids.get(pid) || []).forEach((t) => {
       out.push({ ...t, $level: level });
       walk(t.id, level + 1);
@@ -54,16 +68,16 @@ function orderTasks(tasks) {
   return out;
 }
 
-export function buildGanttPdf(name, tasks, links) {
+export function buildGanttPdf(name: string, tasks: StoreTask[], links: StoreLink[]): jsPDF {
   const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
   const PW = 297, PH = 210, M = 12;
-  const rows = orderTasks(tasks).map((t) => {
+  const rows = orderTasks(tasks).map((t): PdfRow => {
     const start = toDate(t.start);
     let end = toDate(t.end);
     if (!end && start) end = new Date(start.getTime() + Math.max(1, t.duration || 1) * DAY);
     if (t.type === "milestone" && start) end = start;
     return { ...t, _s: start, _e: end };
-  }).filter((t) => t._s);
+  }).filter((t): t is PlacedRow => !!t._s);
 
   /* time span */
   let min = Infinity, max = -Infinity;
@@ -76,16 +90,16 @@ export function buildGanttPdf(name, tasks, links) {
   /* geometry */
   const nameW = 46, idW = 19, dateW = 17, hrsW = 12;
   const tableW = nameW + idW + dateW * 2 + hrsW;
-  const tid = (url) => { const m = /([A-Za-z][A-Za-z0-9_]*-\d+)\/?(?:[?#].*)?$/.exec(url || ""); return m ? m[1].toUpperCase() : null; };
+  const tid = (url: string | undefined) => { const m = /([A-Za-z][A-Za-z0-9_]*-\d+)\/?(?:[?#].*)?$/.exec(url || ""); return m ? m[1].toUpperCase() : null; };
   const chartX = M + tableW, chartW = PW - M - chartX;
   const pxDay = chartW / spanDays;
   const topY = 30, scaleH = 13, rowH = 7.4, barH = 4.2;
   const rowsPerPage = Math.floor((PH - M - topY - scaleH) / rowH);
-  const X = (t) => chartX + ((t - min) / DAY) * pxDay;
+  const X = (t: number) => chartX + ((t - min) / DAY) * pxDay;
 
   const pageCount = Math.max(1, Math.ceil(rows.length / rowsPerPage));
 
-  const drawHeader = (page) => {
+  const drawHeader = (page: number) => {
     doc.setFont("helvetica", "bold"); doc.setFontSize(15); doc.setTextColor(...C.ink);
     doc.text(name || "Project timeline", M, 17);
     doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); doc.setTextColor(...C.muted);
@@ -113,7 +127,7 @@ export function buildGanttPdf(name, tasks, links) {
     }
   };
 
-  const drawScale = (nRows) => {
+  const drawScale = (nRows: number) => {
     const gridBottom = topY + scaleH + nRows * rowH;
     /* header band */
     doc.setFillColor(...C.headerBg);
@@ -200,7 +214,7 @@ export function buildGanttPdf(name, tasks, links) {
     }
   };
 
-  const barGeom = new Map(); // id -> {x0,x1,yc,pageIdx}
+  const barGeom = new Map<TaskId | undefined, { x0: number; x1: number; yc: number }>(); // id -> {x0,x1,yc,pageIdx}
 
   for (let p = 0; p < pageCount; p++) {
     if (p > 0) doc.addPage("a4", "landscape");
@@ -233,13 +247,14 @@ export function buildGanttPdf(name, tasks, links) {
         doc.setTextColor(...C.muted);
       }
       doc.text(fmtShort(t._s), M + nameW + idW + 2, yc + 1.05);
-      if (t.type !== "milestone") doc.text(fmtShort(t._e), M + nameW + idW + dateW + 2, yc + 1.05);
+      if (t.type !== "milestone") doc.text(fmtShort(t._e!), M + nameW + idW + dateW + 2, yc + 1.05);
       if (t.type !== "milestone" && t.hours) {
         doc.text(String(t.hours), M + nameW + idW + dateW * 2 + 2, yc + 1.05);
       }
 
       /* bar */
-      const x0 = X(t._s.getTime()), x1 = X(t._e.getTime());
+      /* `_e` is written for every row that has an `_s`, which the filter proved */
+      const x0 = X(t._s.getTime()), x1 = X(t._e!.getTime());
       barGeom.set(t.id, { x0, x1, yc });
       if (t.type === "milestone") {
         const s = 2.1;
@@ -256,7 +271,7 @@ export function buildGanttPdf(name, tasks, links) {
         doc.triangle(x1 - wing, yTop + barH2, x1, yTop + barH2, x1, yTop + barH2 + 2.2, "F");
       } else {
         const w = Math.max(x1 - x0, 1.2);
-        const tc = TYPE_COLORS[t.type];
+        const tc = TYPE_COLORS[t.type || ""];
         doc.setFillColor(...(tc ? tc.bar : C.accent));
         doc.roundedRect(x0, yc - barH / 2, w, barH, 1, 1, "F");
         const pr = Math.max(0, Math.min(100, t.progress || 0)) / 100;

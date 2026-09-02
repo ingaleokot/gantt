@@ -1,10 +1,11 @@
 import React, { useMemo, useRef, useState, useEffect, useCallback, memo } from "react";
 import { createRoot } from "react-dom/client";
 import { Gantt } from "@svar-ui/react-gantt";
+import type { IApi, IColumnConfig, IScaleConfig, ITask, TID } from "@svar-ui/react-gantt";
 import { Willow as CoreWillow } from "@svar-ui/react-core";
 import { Willow as GridWillow } from "@svar-ui/react-grid";
 import { SegmentGroup } from "@ark-ui/react/segment-group";
-import { setGlyph } from "./icons.jsx";
+import { setGlyph, type GlyphHost } from "./icons";
 
 /* same stylesheet order as the editor */
 import "../style.css";
@@ -12,15 +13,70 @@ import "@svar-ui/react-gantt/all.css";
 import "../wx-overrides.css";
 import "../icons.css";
 
+/* ---------- the library shapes this page narrows, same reasons as app.tsx:
+   IApi types getTask as ITask, the store returns a parsed task; the shipped
+   GanttScaleCell omits the `date` the rendered cells carry ---------- */
+type ParsedTask = ITask & { id: TID; parent: TID; $level: number };
+type GanttApi = Omit<IApi, "getTask"> & { getTask: (id: TID) => ParsedTask };
+type ScaleCell = { width: number; date: Date };
+type ScaleRow = { cells: ScaleCell[] };
+type ScaleData = { rows: ScaleRow[] } | null | undefined;
+
+interface Person {
+  id: string;
+  name: string;
+}
+/* the read-only page's own task shape: ids and dates are the text columns the
+   edge function serves, never the numeric ids the editor's widget mints */
+interface ViewTask {
+  id: string;
+  text: string;
+  type: string;
+  progress: number;
+  details: string;
+  parent?: string | number;
+  start?: string;
+  end?: string;
+  duration?: number;
+  hours?: number;
+  days?: number;
+  open?: boolean;
+  url?: string;
+  assignees?: string;
+  /* written just after the object literal in shapeStore, hence optional */
+  status?: string;
+}
+interface ViewLink {
+  id: string;
+  source: string;
+  target: string;
+  type: string;
+}
+interface ViewProject {
+  id?: string;
+  name: string;
+  view?: string;
+  tasks: ViewTask[];
+  links: ViewLink[];
+}
+interface ViewStore {
+  projects: ViewProject[];
+  active: string | null;
+}
+interface RevivedTask extends Omit<ViewTask, "start" | "end"> {
+  start?: Date;
+  end?: Date;
+}
+
 const DAY = 24 * 60 * 60 * 1000;
 const HOURS_PER_DAY = 7;
-const isWeekend = (d) => d.getDay() === 0 || d.getDay() === 6;
-function rollForward(d) {
+const isWeekend = (d: Date) => d.getDay() === 0 || d.getDay() === 6;
+function rollForward(d: Date) {
   const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
   while (isWeekend(x)) x.setDate(x.getDate() + 1);
   return x;
 }
-function addWorkDays(start, n) {
+function addWorkDays(start: Date, n: number) {
   const x = new Date(start.getTime());
   let left = Math.max(1, n);
   while (left > 1) { x.setDate(x.getDate() + 1); if (!isWeekend(x)) left--; }
@@ -28,27 +84,28 @@ function addWorkDays(start, n) {
   e.setDate(e.getDate() + 1);
   return e;
 }
-function workDaysBetween(s, e) {
+function workDaysBetween(s: Date, e: Date) {
   let c = 0;
   const x = new Date(s.getFullYear(), s.getMonth(), s.getDate());
   while (x < e) { if (!isWeekend(x)) c++; x.setDate(x.getDate() + 1); }
   return Math.max(1, c);
 }
-const isBar = (t) => t && t.type !== "summary" && t.type !== "milestone";
-function scheduleFromHours(hours, startLike) {
+const isBar = (t: { type?: string } | null | undefined) => t && t.type !== "summary" && t.type !== "milestone";
+function scheduleFromHours(hours: number | undefined, startLike: Date | undefined) {
   const start = rollForward(startLike instanceof Date ? startLike : new Date());
   const h = Math.max(0.5, Math.round((Number(hours) || HOURS_PER_DAY) * 2) / 2);
   const end = addWorkDays(start, Math.ceil(h / HOURS_PER_DAY));
   const days = Math.round((h / HOURS_PER_DAY) * 10) / 10;
-  return { hours: h, days, start, end, duration: Math.round((end - start) / DAY) };
+  return { hours: h, days, start, end, duration: Math.round((+end - +start) / DAY) };
 }
-function reviveTask(t) {
-  const out = { ...t };
-  if (out.start) out.start = new Date(out.start + "T00:00:00");
-  if (out.end) out.end = new Date(out.end + "T00:00:00");
+function reviveTask(t: ViewTask): RevivedTask {
+  /* start/end come in as ISO day strings and leave as Dates */
+  const out = { ...t } as unknown as RevivedTask;
+  if (t.start) out.start = new Date(t.start + "T00:00:00");
+  if (t.end) out.end = new Date(t.end + "T00:00:00");
   return out;
 }
-function prepareTasks(tasks) {
+function prepareTasks(tasks: ViewTask[]): RevivedTask[] {
   const parents = new Set(tasks.map((t) => t.parent).filter((p) => p !== undefined && p !== null && p !== 0));
   return tasks.map((t) => {
     const r = reviveTask(t);
@@ -57,7 +114,7 @@ function prepareTasks(tasks) {
     if (r.type === "summary" && !r.start) {
       r.start = rollForward(new Date());
       r.end = addWorkDays(r.start, 1);
-      r.duration = Math.round((r.end - r.start) / DAY);
+      r.duration = Math.round((+r.end - +r.start) / DAY);
       return r;
     }
     if (isBar(r)) {
@@ -69,24 +126,24 @@ function prepareTasks(tasks) {
     return r;
   });
 }
-let rosterRef = [];
-const personById = (id) => rosterRef.find((h) => h.id === id) || null;
-function parseAssignees(v) {
+let rosterRef: Person[] = [];
+const personById = (id: string): Person | null => rosterRef.find((h) => h.id === id) || null;
+function parseAssignees(v: unknown): string[] {
   return String(v || "").split(/[,;]/).map((x) => x.trim()).filter(Boolean);
 }
-function initialsOf(name) {
+function initialsOf(name: string | undefined): string {
   const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return "";
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
-function nameHue(name) {
+function nameHue(name: string | undefined): number {
   const x = String(name || "");
   let h = 0;
   for (let i = 0; i < x.length; i++) h = (h * 31 + x.charCodeAt(i)) % 360;
   return h;
 }
-function trackerId(url) {
+function trackerId(url: string | null | undefined): string | null {
   const m = /([A-Za-z][A-Za-z0-9_]*-\d+)\/?(?:[?#].*)?$/.exec(url || "");
   return m ? m[1].toUpperCase() : null;
 }
@@ -94,22 +151,61 @@ function trackerId(url) {
 /* ---------- data comes from the `shared` edge function at runtime ---------- */
 const DATA_URL = import.meta.env.VITE_SUPABASE_URL + "/functions/v1/shared?raw=1";
 
-async function fetchStore() {
+/* the JSON the edge function publishes: the same rows Postgres holds, so every
+   id is text. shapeStore re-checks `projects` before trusting any of it. */
+interface FeedTask {
+  id: string;
+  project?: string;
+  parent?: string | number | null;
+  text?: string;
+  type?: string;
+  progress?: number;
+  details?: string;
+  start?: string;
+  end?: string;
+  duration?: number | null;
+  hours?: number | null;
+  days?: number | null;
+  url?: string;
+  assignees?: string;
+  status?: string;
+}
+interface FeedLink {
+  id: string;
+  project?: string;
+  source: string;
+  target: string;
+  type?: string;
+}
+interface FeedProject {
+  id: string;
+  name: string;
+  view?: string;
+}
+interface Feed {
+  active?: string | null;
+  projects: FeedProject[];
+  tasks?: FeedTask[];
+  links?: FeedLink[];
+  people?: { id: string; name?: string }[];
+}
+
+async function fetchStore(): Promise<Feed> {
   const r = await fetch(DATA_URL, { cache: "no-store" });
   if (!r.ok) throw new Error((await r.text()) || "HTTP " + r.status);
   return r.json();
 }
 
-function shapeStore(raw) {
-  const empty = { active: null, projects: [], tasks: [], links: [], people: [] };
+function shapeStore(raw: Feed | null): ViewStore {
+  const empty: Feed = { active: null, projects: [], tasks: [], links: [], people: [] };
   const s = raw && Array.isArray(raw.projects) ? raw : empty;
   rosterRef = (s.people || []).filter((h) => h && h.id).map((h) => ({ id: h.id, name: h.name || "" }));
-  const projects = s.projects.map((p) => ({
+  const projects: ViewProject[] = s.projects.map((p) => ({
     id: p.id,
     name: p.name,
     view: p.view || "day",
     tasks: (s.tasks || []).filter((t) => t.project === p.id).map((t) => {
-      const o = { id: t.id, text: t.text || "", type: t.type || "task", progress: t.progress || 0, details: t.details || "" };
+      const o: ViewTask = { id: t.id, text: t.text || "", type: t.type || "task", progress: t.progress || 0, details: t.details || "" };
       if (t.parent !== null && t.parent !== undefined) o.parent = t.parent;
       if (t.start) o.start = t.start;
       if (t.end) o.end = t.end;
@@ -124,17 +220,25 @@ function shapeStore(raw) {
     }),
     links: (s.links || []).filter((l) => l.project === p.id).map((l) => ({ id: l.id, source: l.source, target: l.target, type: l.type || "e2s" })),
   }));
-  const active = projects.some((p) => p.id === s.active) ? s.active : projects.length ? projects[0].id : null;
+  /* `some` proves s.active is one of the ids, which the compiler cannot see */
+  const active = projects.some((p) => p.id === s.active) ? s.active! : projects.length ? projects[0].id! : null;
   return { projects, active };
 }
 
-const VIEWS = {
+interface ViewPreset {
+  label: string;
+  cellWidth: number;
+  scales: IScaleConfig[];
+}
+/* keyed by string, not a literal union: the stored `view` is whatever came out
+   of Postgres */
+const VIEWS: Record<string, ViewPreset> = {
   day:   { label: "Day",   cellWidth: 36,  scales: [{ unit: "month", step: 1, format: "%F %Y" }, { unit: "day", step: 1, format: "%j" }] },
   week:  { label: "Week",  cellWidth: 74,  scales: [{ unit: "month", step: 1, format: "%M %Y" }, { unit: "week", step: 1, format: "w%W" }] },
   month: { label: "Month", cellWidth: 110, scales: [{ unit: "year", step: 1, format: "%Y" }, { unit: "month", step: 1, format: "%M" }] },
 };
-const HIGHLIGHT = (d, u) => (u === "day" && (d.getDay() === 0 || d.getDay() === 6) ? "wx-weekend" : "");
-const COLUMNS = [
+const HIGHLIGHT = (d: Date, u: "day" | "hour") => (u === "day" && (d.getDay() === 0 || d.getDay() === 6) ? "wx-weekend" : "");
+const COLUMNS: IColumnConfig[] = [
   { id: "text", header: "Task name", width: 183, flexgrow: 1, sort: true },
   { id: "who", header: "Who", width: 78, align: "center", sort: false },
   { id: "tracker", header: "ID", width: 100, align: "center", sort: false },
@@ -159,11 +263,15 @@ const BRAND_MARK =
   "block h-3.5 w-3.5 rounded-[4px] bg-[linear-gradient(135deg,var(--color-accent)_0_50%,var(--color-summary-fill)_50%_100%)]";
 const BOOT = "grid min-h-screen place-items-center bg-ground font-ui text-body text-muted";
 const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-const fmtD = (d) => d.getDate() + " " + MON[d.getMonth()];
+const fmtD = (d: Date) => d.getDate() + " " + MON[d.getMonth()];
 
 /* ---------- visual decorations (same look as the editor app) ---------- */
-let rowTagObserver = null;
-function xForDate(sc, date) {
+let rowTagObserver: MutationObserver | null = null;
+/* the tagger stamps a signature onto the nodes it owns so a re-run can skip
+   the ones already showing the right thing */
+type KeyedHost = HTMLElement & { __key?: string };
+type BandLayer = HTMLElement & { __html?: string };
+function xForDate(sc: ScaleData, date: Date): number | null {
   const row = sc && sc.rows && sc.rows[sc.rows.length - 1];
   if (!row || !row.cells.length) return null;
   const t = date.getTime();
@@ -180,11 +288,11 @@ function xForDate(sc, date) {
   }
   return x;
 }
-function decorate(api, project) {
-  document.querySelectorAll(".gantt-holder .wx-row[data-id]").forEach((row) => {
+function decorate(api: GanttApi, project: ViewProject) {
+  document.querySelectorAll<HTMLElement>(".gantt-holder .wx-row[data-id]").forEach((row) => {
     const raw = row.getAttribute("data-id") || "";
     const id = raw.startsWith(":") ? raw.slice(1) : raw;
-    let t = null;
+    let t: ParsedTask | null = null;
     try { t = api.getTask(id); } catch (e) {}
     if (!t && /^\d+$/.test(id)) { try { t = api.getTask(Number(id)); } catch (e) {} }
     if (!t) return;
@@ -193,23 +301,23 @@ function decorate(api, project) {
     const status = t.status === "done" || t.status === "progress" ? t.status : "todo";
     ["st-todo", "st-progress", "st-done"].forEach((c) => row.classList.remove(c));
     row.classList.add("st-" + status);
-    const content = row.querySelector('[data-col-id=":text"] .wx-content');
+    const content = row.querySelector<HTMLElement>('[data-col-id=":text"] .wx-content');
     if (content) {
-      let dot = content.querySelector(".status-dot");
+      let dot = content.querySelector<HTMLElement>(".status-dot");
       if (!dot) { dot = document.createElement("span"); dot.className = "status-dot"; content.appendChild(dot); }
       const dc = "status-dot sd-" + status;
       if (dot.className !== dc) dot.className = dc;
       const typeKey = "ti-" + (t.type || "task");
       const iconCls = "type-icon " + typeKey;
-      let ic = content.querySelector(".type-icon");
+      let ic = content.querySelector<GlyphHost>(".type-icon");
       if (!ic) { ic = document.createElement("span"); ic.className = iconCls; content.appendChild(ic); }
       else if (ic.className !== iconCls) ic.className = iconCls;
       setGlyph(ic, typeKey); /* cached Phosphor SVG, rendered once at module scope */
     }
-    const whoCell = row.querySelector('[data-col-id=":who"]');
+    const whoCell = row.querySelector<HTMLElement>('[data-col-id=":who"]');
     if (whoCell) {
-      const assigned = parseAssignees(t.assignees).map(personById).filter(Boolean);
-      let wrap = whoCell.querySelector(".who-chips");
+      const assigned = parseAssignees(t.assignees).map(personById).filter((h): h is Person => !!h);
+      let wrap = whoCell.querySelector<HTMLSpanElement & KeyedHost>(".who-chips");
       if (!assigned.length) {
         if (wrap) wrap.remove();
       } else {
@@ -243,28 +351,29 @@ function decorate(api, project) {
       }
     }
     const rawUrl = typeof t.url === "string" && /^https?:\/\//i.test(t.url.trim()) ? t.url.trim() : null;
-    const cell = row.querySelector('[data-col-id=":tracker"]');
+    const cell = row.querySelector<HTMLElement>('[data-col-id=":tracker"]');
     if (cell) {
       const tid = rawUrl ? trackerId(rawUrl) : null;
-      let a2 = cell.querySelector(".tracker-link");
+      let a2 = cell.querySelector<HTMLAnchorElement>(".tracker-link");
       if (tid) {
         if (!a2) {
           a2 = document.createElement("a");
           a2.className = "tracker-link";
           a2.target = "_blank";
           a2.rel = "noopener noreferrer";
-          ["click", "pointerdown"].forEach((ev) => a2.addEventListener(ev, (e) => e.stopPropagation()));
+          ["click", "pointerdown"].forEach((ev) => a2!.addEventListener(ev, (e) => e.stopPropagation()));
           (cell.querySelector(".wx-content") || cell).appendChild(a2);
         }
-        if (a2.getAttribute("href") !== rawUrl) { a2.setAttribute("href", rawUrl); a2.title = rawUrl; }
+        /* tid is only non-null when rawUrl was, which the compiler misses */
+        if (a2.getAttribute("href") !== rawUrl) { a2.setAttribute("href", rawUrl!); a2.title = rawUrl!; }
         if (a2.textContent !== tid) a2.textContent = tid;
       } else if (a2) a2.remove();
     }
   });
-  document.querySelectorAll(".gantt-holder .wx-bar[data-task-id]").forEach((bar) => {
+  document.querySelectorAll<HTMLElement>(".gantt-holder .wx-bar[data-task-id]").forEach((bar) => {
     const raw = bar.getAttribute("data-task-id") || "";
     const id = raw.startsWith(":") ? raw.slice(1) : raw;
-    let t = null;
+    let t: ParsedTask | null = null;
     try { t = api.getTask(id); } catch (e) {}
     if (!t) return;
     const status = t.status === "done" || t.status === "progress" ? t.status : "todo";
@@ -272,16 +381,16 @@ function decorate(api, project) {
     bar.classList.add("st-" + status);
   });
   /* epic bands */
-  const area = document.querySelector(".gantt-holder .wx-area");
+  const area = document.querySelector<HTMLElement>(".gantt-holder .wx-area");
   if (area) {
-    let layer = area.querySelector(":scope > .epic-bands");
+    let layer = area.querySelector<BandLayer>(":scope > .epic-bands");
     if (!layer) {
       layer = document.createElement("div");
       layer.className = "epic-bands";
       const hol = area.querySelector(":scope > .wx-gantt-holidays");
       if (hol) hol.after(layer); else area.prepend(layer);
     }
-    let rows = [], ch = 38;
+    let rows: ParsedTask[] = [], ch = 38;
     try {
       const st = api.getState();
       ch = st.cellHeight || 38;
@@ -299,17 +408,17 @@ function decorate(api, project) {
     if (layer.__html !== html) { layer.innerHTML = html; layer.__html = html; }
   }
   /* project span line */
-  const scaleEl = document.querySelector(".gantt-holder .wx-chart > .wx-scale");
+  const scaleEl = document.querySelector<HTMLElement>(".gantt-holder .wx-chart > .wx-scale");
   if (scaleEl) {
-    let el = scaleEl.querySelector(":scope > .project-span");
-    let min = null, max = null;
+    let el = scaleEl.querySelector<HTMLElement>(":scope > .project-span");
+    let min: string | null = null, max: string | null = null;
     project.tasks.forEach((t) => {
       if (t.type === "summary") return;
       if (t.start && (!min || t.start < min)) min = t.start;
       const e = t.end || t.start;
       if (e && (!max || e > max)) max = e;
     });
-    const sc = (() => { try { return api.getState()._scales; } catch (e) { return null; } })();
+    const sc = (() => { try { return api.getState()._scales as unknown as ScaleData; } catch (e) { return null; } })();
     if (min && max && sc) {
       const x0 = xForDate(sc, new Date(min + "T00:00:00")), x1 = xForDate(sc, new Date(max + "T00:00:00"));
       if (x0 !== null && x1 !== null && x1 - x0 >= 2) {
@@ -320,7 +429,7 @@ function decorate(api, project) {
     } else if (el) el.remove();
   }
 }
-function watchDecorations(api, project) {
+function watchDecorations(api: GanttApi, project: ViewProject) {
   if (rowTagObserver) { rowTagObserver.disconnect(); rowTagObserver = null; }
   let raf = 0;
   const run = () => {
@@ -339,8 +448,15 @@ function watchDecorations(api, project) {
 
 const MGantt = memo(Gantt);
 
-function computeStats(tasks) {
-  let h = 0, epics = 0, min = null, max = null;
+interface Stats {
+  h: number;
+  d: number;
+  min: Date | null;
+  max: Date | null;
+  epics: number;
+}
+function computeStats(tasks: ViewTask[]): Stats {
+  let h = 0, epics = 0, min: string | null = null, max: string | null = null;
   tasks.forEach((t) => {
     if (t.type === "summary") { epics++; return; }
     if (t.type !== "milestone") h += Number(t.hours) || 0;
@@ -357,13 +473,13 @@ function computeStats(tasks) {
   };
 }
 
-function App({ store }) {
+function App({ store }: { store: ViewStore }) {
   const [activeId, setActiveId] = useState(store.active);
   const [view, setView] = useState("day");
   const [seed, setSeed] = useState(0);
-  const apiRef = useRef(null);
+  const apiRef = useRef<GanttApi | null>(null);
 
-  const project = store.projects.find((p) => p.id === activeId) || store.projects[0] || { name: "Project timeline", tasks: [], links: [] };
+  const project: ViewProject = store.projects.find((p) => p.id === activeId) || store.projects[0] || { name: "Project timeline", tasks: [], links: [] };
   const revivedTasks = useMemo(() => prepareTasks(project.tasks), [activeId, seed]);
   const links = useMemo(() => project.links.slice(), [activeId, seed]);
   const stats = useMemo(() => computeStats(project.tasks), [activeId]);
@@ -380,7 +496,9 @@ function App({ store }) {
     return { start: new Date(min - 7 * DAY), end: new Date(max + 21 * DAY) };
   }, [revivedTasks]);
 
-  const init = useCallback((a) => {
+  const init = useCallback((raw: IApi) => {
+    /* the one place the shipped IApi is narrowed (see GanttApi above) */
+    const a = raw as GanttApi;
     apiRef.current = a;
     setTimeout(() => watchDecorations(a, project), 0);
   }, [activeId, seed]);
@@ -411,7 +529,7 @@ function App({ store }) {
             onValueChange={(d) => { if (d.value) { setActiveId(d.value); setSeed((s) => s + 1); } }}
           >
             {store.projects.map((p) => (
-              <SegmentGroup.Item key={p.id} value={p.id} className={SEG_ITEM}>
+              <SegmentGroup.Item key={p.id} value={p.id!} className={SEG_ITEM}>
                 <SegmentGroup.ItemText>{p.name}</SegmentGroup.ItemText>
                 <SegmentGroup.ItemHiddenInput />
               </SegmentGroup.Item>
@@ -477,10 +595,15 @@ function App({ store }) {
   );
 }
 
+type BootState =
+  | { phase: "loading" }
+  | { phase: "ready"; store: ViewStore }
+  | { phase: "error"; message: string };
+
 /* the page is public and holds no Supabase client: it just pulls the JSON the
    edge function publishes and renders it read-only */
 function Boot() {
-  const [state, setState] = useState({ phase: "loading" });
+  const [state, setState] = useState<BootState>({ phase: "loading" });
 
   useEffect(() => {
     let alive = true;
@@ -497,6 +620,6 @@ function Boot() {
   return <App store={state.store} />;
 }
 
-const container = document.getElementById("app");
+const container = document.getElementById("app") as HTMLElement;
 container.__root = container.__root || createRoot(container);
 container.__root.render(<Boot />);
