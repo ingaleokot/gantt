@@ -27,6 +27,13 @@
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities.css" layer(utilities);
 
+/* This file moved into src/styles/, so say out loud what the scanner should
+   read: everything under src/. Tailwind only keeps class names it can see
+   spelled out verbatim in source, and leaving the base to automatic detection
+   from the stylesheet's own directory would find nothing but CSS. index.html
+   carries no utility classes, so src/ is the whole surface. */
+@source "../";
+
 /* `static` so every token is emitted even when only wx-overrides.css reads it
    through var() — Tailwind cannot see uses that live in another stylesheet. */
 @theme static {

@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import ShareViewer from "../ShareViewer";
+import ShareViewer from "../features/gantt/ShareViewer";
 
 /* Public, read-only, and deliberately ignorant of auth: this route pulls the
    JSON the `shared` edge function publishes and renders it. Nothing it imports

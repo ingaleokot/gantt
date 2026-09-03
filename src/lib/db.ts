@@ -8,7 +8,7 @@ import type { Tables, TablesInsert } from "./database.types";
 
    Writes are PER ROW. `saveStore` diffs the state the user is looking at
    against the snapshot of what is actually in Postgres (React Query holds that
-   snapshot — see lib/store.ts) and emits only the rows that genuinely changed:
+   snapshot — see features/projects/store.tsx) and emits only the rows that genuinely changed:
    insert on add, update on edit, delete on delete. Nothing here ever deletes a
    whole table or a whole project's rows to re-insert them: an interrupted save
    used to lose every task in every loaded project, and a debounce that runs

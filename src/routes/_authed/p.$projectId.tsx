@@ -1,8 +1,8 @@
 import { useEffect } from "react";
 import { Navigate, createFileRoute, useNavigate } from "@tanstack/react-router";
-import Editor from "../../Editor";
-import { signOut } from "../../lib/auth";
-import { useStore } from "../../lib/store";
+import Editor from "../../features/gantt/Editor";
+import { signOut } from "../../features/auth/api/auth";
+import { useStore } from "../../features/projects/store";
 
 /* The editor, deep-linkable. The URL is what says which project is open —
    `app_state.active_project` has degraded to "last opened", written here so

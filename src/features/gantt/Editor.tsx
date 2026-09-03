@@ -9,12 +9,21 @@ import { Portal } from "@ark-ui/react/portal";
 import { SegmentGroup } from "@ark-ui/react/segment-group";
 import { CaretDown, Check, DownloadSimple, ShareNetwork, SignOut, Users, X } from "@phosphor-icons/react";
 import { buildGanttPdf } from "./pdf";
-import type { Person, StoreLink, StoreProject, StoreTask, TaskId } from "./lib/db";
-import { uid, useStore } from "./lib/store";
+import type { Person, StoreLink, StoreProject, StoreTask, TaskId } from "../../lib/db";
+import { uid, useStore } from "../projects/store";
 import { setGlyph, type GlyphHost } from "./icons";
+import { installWxiMasks } from "./lib/wxi-masks";
+import { trackerId } from "./lib/tracker";
+import { initialsOf, nameHue, parseAssignees } from "../people/roster";
 
 /* The stylesheets are imported once by src/main.tsx — the order between them
    is load-bearing, so it lives in one place rather than per screen. */
+
+/* SVAR's own <i class="wxi-…"> icons are masked from custom properties this
+   generates out of @phosphor-icons/react. Idempotent, and it runs as the chunk
+   loads (never inside a render) so the variables are on :root before the widget
+   draws. See ./lib/wxi-masks. */
+installWxiMasks();
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -420,29 +429,9 @@ function syncFoldAllButton(api: GanttApi) {
   if (icon.className !== cls) icon.className = cls;
   setGlyph(icon, name); /* cached Phosphor SVG, rendered once at module scope */
 }
-/* ---------- assignees: a comma-separated list of people ids, shown as initials ---------- */
-function parseAssignees(v: unknown): string[] {
-  return String(v || "").split(/[,;]/).map((s) => s.trim()).filter(Boolean);
-}
-/* "Inga Kot" → "IK"; "Inga" → "IN" */
-function initialsOf(name: string | undefined): string {
-  const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
-  if (!parts.length) return "";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-}
-/* stable per-name hue so the same person keeps the same chip color */
-function nameHue(name: string | undefined): number {
-  const s = String(name || "");
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
-  return h;
-}
-/* "…/PRODUCT-1234" → "PRODUCT-1234" */
-function trackerId(url: string | null | undefined): string | null {
-  const m = /([A-Za-z][A-Za-z0-9_]*-\d+)\/?(?:[?#].*)?$/.exec(url || "");
-  return m ? m[1].toUpperCase() : null;
-}
+/* assignees (a comma-separated list of people ids, shown as initials) and the
+   tracker-id extraction are imported at the top: features/people/roster and
+   ./lib/tracker, shared verbatim with the public viewer. */
 /* the tagger stamps a signature onto the nodes it owns so a re-run can skip
    the ones already showing the right thing */
 type KeyedHost = HTMLElement & { __key?: string };

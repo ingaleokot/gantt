@@ -10,7 +10,10 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as AuthedRouteImport } from './routes/_authed'
+import { Route as ForgotPasswordRouteImport } from './routes/forgot-password'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as ResetPasswordRouteImport } from './routes/reset-password'
+import { Route as SignupRouteImport } from './routes/signup'
 import { Route as AuthedIndexRouteImport } from './routes/_authed/index'
 import { Route as ShareIndexRouteImport } from './routes/share.index'
 import { Route as ShareProjectIdRouteImport } from './routes/share.$projectId'
@@ -20,9 +23,24 @@ const AuthedRoute = AuthedRouteImport.update({
   id: '/_authed',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ForgotPasswordRoute = ForgotPasswordRouteImport.update({
+  id: '/forgot-password',
+  path: '/forgot-password',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ResetPasswordRoute = ResetPasswordRouteImport.update({
+  id: '/reset-password',
+  path: '/reset-password',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SignupRoute = SignupRouteImport.update({
+  id: '/signup',
+  path: '/signup',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AuthedIndexRoute = AuthedIndexRouteImport.update({
@@ -48,13 +66,19 @@ const AuthedPProjectIdRoute = AuthedPProjectIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof AuthedIndexRoute
+  '/forgot-password': typeof ForgotPasswordRoute
   '/login': typeof LoginRoute
+  '/reset-password': typeof ResetPasswordRoute
+  '/signup': typeof SignupRoute
   '/share/$projectId': typeof ShareProjectIdRoute
   '/share/': typeof ShareIndexRoute
   '/p/$projectId': typeof AuthedPProjectIdRoute
 }
 export interface FileRoutesByTo {
+  '/forgot-password': typeof ForgotPasswordRoute
   '/login': typeof LoginRoute
+  '/reset-password': typeof ResetPasswordRoute
+  '/signup': typeof SignupRoute
   '/share/$projectId': typeof ShareProjectIdRoute
   '/': typeof AuthedIndexRoute
   '/share': typeof ShareIndexRoute
@@ -63,7 +87,10 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_authed': typeof AuthedRouteWithChildren
+  '/forgot-password': typeof ForgotPasswordRoute
   '/login': typeof LoginRoute
+  '/reset-password': typeof ResetPasswordRoute
+  '/signup': typeof SignupRoute
   '/share/$projectId': typeof ShareProjectIdRoute
   '/_authed/': typeof AuthedIndexRoute
   '/share/': typeof ShareIndexRoute
@@ -71,13 +98,32 @@ export interface FileRoutesById {
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/login' | '/share/$projectId' | '/share/' | '/p/$projectId'
+  fullPaths:
+    | '/'
+    | '/forgot-password'
+    | '/login'
+    | '/reset-password'
+    | '/signup'
+    | '/share/$projectId'
+    | '/share/'
+    | '/p/$projectId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/login' | '/share/$projectId' | '/' | '/share' | '/p/$projectId'
+  to:
+    | '/forgot-password'
+    | '/login'
+    | '/reset-password'
+    | '/signup'
+    | '/share/$projectId'
+    | '/'
+    | '/share'
+    | '/p/$projectId'
   id:
     | '__root__'
     | '/_authed'
+    | '/forgot-password'
     | '/login'
+    | '/reset-password'
+    | '/signup'
     | '/share/$projectId'
     | '/_authed/'
     | '/share/'
@@ -86,7 +132,10 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   AuthedRoute: typeof AuthedRouteWithChildren
+  ForgotPasswordRoute: typeof ForgotPasswordRoute
   LoginRoute: typeof LoginRoute
+  ResetPasswordRoute: typeof ResetPasswordRoute
+  SignupRoute: typeof SignupRoute
   ShareProjectIdRoute: typeof ShareProjectIdRoute
   ShareIndexRoute: typeof ShareIndexRoute
 }
@@ -100,11 +149,32 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/forgot-password': {
+      id: '/forgot-password'
+      path: '/forgot-password'
+      fullPath: '/forgot-password'
+      preLoaderRoute: typeof ForgotPasswordRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/login': {
       id: '/login'
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/reset-password': {
+      id: '/reset-password'
+      path: '/reset-password'
+      fullPath: '/reset-password'
+      preLoaderRoute: typeof ResetPasswordRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/signup': {
+      id: '/signup'
+      path: '/signup'
+      fullPath: '/signup'
+      preLoaderRoute: typeof SignupRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_authed/': {
@@ -153,7 +223,10 @@ const AuthedRouteWithChildren =
 
 const rootRouteChildren: RootRouteChildren = {
   AuthedRoute: AuthedRouteWithChildren,
+  ForgotPasswordRoute: ForgotPasswordRoute,
   LoginRoute: LoginRoute,
+  ResetPasswordRoute: ResetPasswordRoute,
+  SignupRoute: SignupRoute,
   ShareProjectIdRoute: ShareProjectIdRoute,
   ShareIndexRoute: ShareIndexRoute,
 }

@@ -1,6 +1,6 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
-import { currentSession } from "../lib/auth";
-import AuthedShell from "../AuthedShell";
+import { currentSession } from "../features/auth/api/auth";
+import AuthedShell from "../app/AuthedShell";
 
 /* The auth gate is a redirect, not a conditional render: every route nested
    under this pathless layout is unreachable without a session, and the session

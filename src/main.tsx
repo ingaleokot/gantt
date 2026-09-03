@@ -6,10 +6,10 @@ import { routeTree } from "./routeTree.gen";
 /* stylesheet order matters: shell tokens, then the widget theme, then our
    re-skin on top of it. One entry now serves both the editor and the public
    viewer, so the imports live here rather than in each screen. */
-import "../style.css";
+import "./styles/style.css";
 import "@svar-ui/react-gantt/all.css";
-import "../wx-overrides.css";
-import "../icons.css";
+import "./styles/wx-overrides.css";
+import "./styles/icons.css";
 
 const queryClient = new QueryClient({
   defaultOptions: {

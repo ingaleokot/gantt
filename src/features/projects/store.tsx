@@ -1,7 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { queryOptions, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { cloneStore, deleteProject, fetchStore, insertProject, saveStore, setActiveProject } from "./db";
-import type { Person, StoreData, StoreProject } from "./db";
+import { cloneStore, deleteProject, fetchStore, insertProject, saveStore, setActiveProject } from "../../lib/db";
+import type { Person, StoreData, StoreProject } from "../../lib/db";
 
 /* The write model, in one place.
 

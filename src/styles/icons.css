@@ -1,0 +1,168 @@
+/* Phosphor icon masks for SVAR's own icon markup.
+
+   SVAR injects `<i class="wxi-…">` elements itself — for the toolbar buttons,
+   the tree carets, the editor chrome and the rest. We never render those
+   elements, so there is no React slot to put a <Phosphor /> component into, its
+   shipped types expose no icon slot, and writing into those nodes with
+   innerHTML would put us inside library-managed DOM. A currentColor
+   `mask-image` on `::before` is the one mechanism that reskins them without
+   touching anything SVAR owns. This is the ONLY place in the app that draws an
+   icon with CSS.
+
+   The mask images are NOT files. There is exactly one icon package in this app,
+   @phosphor-icons/react, and `src/features/gantt/lib/wxi-masks.ts` renders each
+   of these glyphs once from its React component, serialises it into an
+   `svg+xml` data URI and publishes it as a custom property on :root. Both gantt
+   screens call `installWxiMasks()` as their chunk loads, so the variables are
+   set before the widget draws its first <i>. (@phosphor-icons/core, the
+   raw-.svg half of the set, used to be a second dependency here purely to feed
+   these rules — it is gone.)
+
+   `mask-image: var(--wxi-…, none)` — the `none` fallback is load-bearing. An
+   unset variable makes the whole declaration invalid at computed-value time,
+   and the ::before would then paint as a solid currentColor square rather than
+   simply going missing.
+
+   The generated SVGs carry an opaque black fill: a mask reads alpha only, so
+   the visible color comes from `background-color` below. */
+[class^="wxi-"]::before, [class*=" wxi-"]::before {
+  content: "";
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.125em;
+  background-color: currentColor;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+}
+/* SVAR renders this one as a deliberate blank */
+.wxi-empty::before { -webkit-mask-image: none; mask-image: none; }
+
+.wxi-plus::before {
+  -webkit-mask-image: var(--wxi-plus, none);
+  mask-image: var(--wxi-plus, none);
+}
+.wxi-close::before {
+  -webkit-mask-image: var(--wxi-close, none);
+  mask-image: var(--wxi-close, none);
+}
+.wxi-check::before {
+  -webkit-mask-image: var(--wxi-check, none);
+  mask-image: var(--wxi-check, none);
+}
+.wxi-angle-down::before {
+  -webkit-mask-image: var(--wxi-angle-down, none);
+  mask-image: var(--wxi-angle-down, none);
+}
+.wxi-angle-up::before {
+  -webkit-mask-image: var(--wxi-angle-up, none);
+  mask-image: var(--wxi-angle-up, none);
+}
+.wxi-angle-left::before {
+  -webkit-mask-image: var(--wxi-angle-left, none);
+  mask-image: var(--wxi-angle-left, none);
+}
+.wxi-angle-right::before {
+  -webkit-mask-image: var(--wxi-angle-right, none);
+  mask-image: var(--wxi-angle-right, none);
+}
+.wxi-angle-dbl-left::before {
+  -webkit-mask-image: var(--wxi-angle-dbl-left, none);
+  mask-image: var(--wxi-angle-dbl-left, none);
+}
+.wxi-angle-dbl-right::before {
+  -webkit-mask-image: var(--wxi-angle-dbl-right, none);
+  mask-image: var(--wxi-angle-dbl-right, none);
+}
+.wxi-menu-right::before {
+  -webkit-mask-image: var(--wxi-menu-right, none);
+  mask-image: var(--wxi-menu-right, none);
+}
+.wxi-menu-left::before {
+  -webkit-mask-image: var(--wxi-menu-left, none);
+  mask-image: var(--wxi-menu-left, none);
+}
+.wxi-menu-down::before {
+  -webkit-mask-image: var(--wxi-menu-down, none);
+  mask-image: var(--wxi-menu-down, none);
+}
+.wxi-edit::before, .wxi-edit-outline::before {
+  -webkit-mask-image: var(--wxi-edit, none);
+  mask-image: var(--wxi-edit, none);
+}
+.wxi-delete::before, .wxi-delete-outline::before {
+  -webkit-mask-image: var(--wxi-delete, none);
+  mask-image: var(--wxi-delete, none);
+}
+.wxi-calendar::before {
+  -webkit-mask-image: var(--wxi-calendar, none);
+  mask-image: var(--wxi-calendar, none);
+}
+.wxi-clock::before {
+  -webkit-mask-image: var(--wxi-clock, none);
+  mask-image: var(--wxi-clock, none);
+}
+.wxi-eye::before {
+  -webkit-mask-image: var(--wxi-eye, none);
+  mask-image: var(--wxi-eye, none);
+}
+.wxi-drag::before {
+  -webkit-mask-image: var(--wxi-drag, none);
+  mask-image: var(--wxi-drag, none);
+}
+.wxi-dots-h::before {
+  -webkit-mask-image: var(--wxi-dots-h, none);
+  mask-image: var(--wxi-dots-h, none);
+}
+.wxi-dots-v::before {
+  -webkit-mask-image: var(--wxi-dots-v, none);
+  mask-image: var(--wxi-dots-v, none);
+}
+.wxi-content-copy::before {
+  -webkit-mask-image: var(--wxi-content-copy, none);
+  mask-image: var(--wxi-content-copy, none);
+}
+.wxi-content-cut::before {
+  -webkit-mask-image: var(--wxi-content-cut, none);
+  mask-image: var(--wxi-content-cut, none);
+}
+.wxi-content-paste::before {
+  -webkit-mask-image: var(--wxi-content-paste, none);
+  mask-image: var(--wxi-content-paste, none);
+}
+.wxi-indent::before {
+  -webkit-mask-image: var(--wxi-indent, none);
+  mask-image: var(--wxi-indent, none);
+}
+.wxi-unindent::before {
+  -webkit-mask-image: var(--wxi-unindent, none);
+  mask-image: var(--wxi-unindent, none);
+}
+.wxi-swap-horizontal::before {
+  -webkit-mask-image: var(--wxi-swap-horizontal, none);
+  mask-image: var(--wxi-swap-horizontal, none);
+}
+.wxi-swap-vertical::before {
+  -webkit-mask-image: var(--wxi-swap-vertical, none);
+  mask-image: var(--wxi-swap-vertical, none);
+}
+.wxi-arrow-up::before {
+  -webkit-mask-image: var(--wxi-arrow-up, none);
+  mask-image: var(--wxi-arrow-up, none);
+}
+.wxi-arrow-down::before {
+  -webkit-mask-image: var(--wxi-arrow-down, none);
+  mask-image: var(--wxi-arrow-down, none);
+}
+.wxi-search::before {
+  -webkit-mask-image: var(--wxi-search, none);
+  mask-image: var(--wxi-search, none);
+}
+.wxi-filter-plus-outline::before, .wxi-filter-multiple-outline::before {
+  -webkit-mask-image: var(--wxi-filter, none);
+  mask-image: var(--wxi-filter, none);
+}

@@ -13,6 +13,12 @@ if (!url || !key) {
 export const SUPABASE_URL = url;
 /* typed against src/lib/database.types.ts, so every .from("…") call below is
    checked against the real columns of the cloud project */
+/* `detectSessionInUrl` is on because /reset-password is reached from an emailed
+   link that carries the recovery token in the URL fragment: the client reads it
+   as it initialises, exchanges it for a session, emits PASSWORD_RECOVERY and
+   scrubs the fragment. Without it that page has no session and updateUser()
+   would have nothing to update. It is inert on every other route — there is
+   nothing to detect in a normal URL. */
 export const supabase = createClient<Database>(url, key, {
-  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
+  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
 });

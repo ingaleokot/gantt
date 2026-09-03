@@ -4,7 +4,7 @@ import type { QueryClient } from "@tanstack/react-query";
 /* Nothing here may import the Supabase client, directly or transitively: the
    route tree is eager (it is what decides which route matches), so anything it
    pulls in ships to the public /share pages too. Auth reaches the tree through
-   lib/auth.ts, which imports the client dynamically. */
+   features/auth/api/auth.ts, which imports the client dynamically. */
 
 export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   component: () => <Outlet />,

@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { Navigate, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { SignOut } from "@phosphor-icons/react";
-import { signOut } from "../../lib/auth";
-import { useStore } from "../../lib/store";
+import { signOut } from "../../features/auth/api/auth";
+import { useStore } from "../../features/projects/store";
 
 /* `/` is only a resolver: it forwards to the project `app_state` remembers as
    last opened, and otherwise shows a genuinely empty account. Nothing is

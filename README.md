@@ -21,31 +21,59 @@ out the read-only link.
 
 The app is TypeScript throughout (`strict: true`); see [TypeScript](#typescript) below.
 
-- `index.html` — the only entry; `src/main.tsx` is its module (router + query client +
-  the four stylesheets, in the order that matters)
-- `src/routes/` — the file-based route tree; `src/routeTree.gen.ts` is generated from it
-- `src/AuthedShell.tsx` — the layout behind the auth gate; mounts the store provider
-- `src/Editor.tsx` — the editor for one project (`/p/$projectId`)
-- `src/ShareViewer.tsx` — the read-only viewer (same look, no editing UI, no Supabase
-  client); it must not import from `src/lib/`
-- `src/Login.tsx` — email + password sign-in / sign-up screen
-- `src/lib/supabase.ts` — the browser Supabase client, `createClient<Database>(…)`
-- `src/lib/auth.ts` — session helpers for the router; imports the client *dynamically*,
-  which is what keeps supabase-js out of the entry bundle and off the public share page
-- `src/lib/db.ts` — all persistence: supabase-js table queries, no SQL strings; the
-  snapshot/draft diff (`saveStore`); also the home of the in-memory `StoreTask` /
-  `StoreLink` / `StoreProject` / `StoreData` shapes
-- `src/lib/store.tsx` — the React Query snapshot, the draft, and the write mutations
-- `src/lib/database.types.ts` — generated from the live schema, never hand-edited
-- `src/pdf.ts` — vector PDF export (jsPDF, A4 landscape); returns a jsPDF doc
-- `style.css` — Tailwind entry and the single `@theme` token source
-- `src/icons.tsx` — Phosphor glyphs for the nodes the row tagger builds in plain JS
-- `src/vite-env.d.ts` — `vite/client` reference plus the three global augmentations the
-  app needs: the `VITE_*` env vars, `window.__ganttProbe`, the `__root` cached on the
-  mount container, and `--*` custom properties in `React.CSSProperties`
-- `wx-overrides.css` — SVAR re-skin (plain CSS)
-- `icons.css` — masks for SVAR's own `<i class="wxi-…">` markup, pointing at
-  `@phosphor-icons/core`'s SVG files
+The tree is **feature-first**: `routes/` holds thin route definitions and nothing else,
+each feature owns its own screens, api and helpers, and `lib/` is what genuinely crosses
+all of them.
+
+```
+src/
+  main.tsx              the only module entry — router, query client, and the four
+                        stylesheets in the order that matters
+  routeTree.gen.ts      generated from routes/ by the router plugin, committed
+  routes/               thin route definitions: a path, a guard, a component
+  app/AuthedShell.tsx   the layout behind the auth gate; mounts the store provider
+  features/
+    auth/
+      api/auth.ts       the only module that calls supabase.auth.* — and it imports
+                        the client *dynamically*, which is what keeps supabase-js out
+                        of the entry bundle and off the public share page
+      components/       SignInPage · SignUpPage · ForgotPasswordPage ·
+                        ResetPasswordPage, plus the AuthCard chrome they share
+      hooks/            useSessionRedirect (both directions), useRecoverySession
+      lib/validate.ts   the field validators the TanStack Form fields use
+    gantt/
+      Editor.tsx        the editor for one project (/p/$projectId)
+      ShareViewer.tsx   the read-only viewer — same look, no editing UI, no Supabase
+                        client; it must not import from src/lib/
+      pdf.ts            vector PDF export (jsPDF, A4 landscape); returns a jsPDF doc
+      icons.ts          Phosphor glyphs for the nodes the row tagger builds in plain JS
+      lib/              render-icon (one detached React root), wxi-masks (the CSS masks
+                        for SVAR's own <i> icons), tracker (PRODUCT-XXXX extraction)
+    people/roster.ts    assignee helpers shared by both gantt screens
+    projects/store.tsx  the React Query snapshot, the draft, and the write mutations
+  lib/
+    supabase.ts         the browser Supabase client, createClient<Database>(…)
+    db.ts               all persistence: supabase-js table queries, no SQL strings;
+                        the snapshot/draft diff (saveStore); home of the StoreTask /
+                        StoreLink / StoreProject / StoreData / Person shapes
+    database.types.ts   generated from the live schema, never hand-edited
+  styles/               style.css (Tailwind entry + the single @theme token source),
+                        wx-overrides.css (SVAR re-skin), icons.css (masks for SVAR's
+                        own <i class="wxi-…"> markup)
+  vite-env.d.ts         vite/client plus the global augmentations the app needs
+```
+
+Two things stayed put on purpose. **`lib/db.ts` is one persistence layer**, not several:
+its `saveStore` diff spans every table in a single pass, and splitting it per feature
+would mean splitting the one thing that must not be split. And **the people roster UI
+lives inside `features/gantt/Editor.tsx`**, because the People popover, the Who column and
+its picker are woven into the MutationObserver row tagger — only the standalone helpers
+(`parseAssignees`, `initialsOf`, `nameHue`) moved out to `features/people/roster.ts`,
+where the viewer can share them instead of keeping a second copy.
+
+Outside `src/`:
+
+- `index.html` — the only HTML entry; `src/main.tsx` is its module
 - `vite.config.ts` — `base: '/gantt/'`, `@tanstack/router-plugin` (route-tree codegen +
   automatic route code-splitting), `@tailwindcss/vite`, a small plugin that strips SVAR's
   CDN `@font-face` rules, and one that copies `dist/index.html` to `dist/404.html`
@@ -59,7 +87,10 @@ The app is TypeScript throughout (`strict: true`); see [TypeScript](#typescript)
 
 | Route | Purpose |
 | --- | --- |
-| `/login` | email + password sign-in; redirects to `/` when a session already exists |
+| `/login` | sign in with email + password; redirects to `/` when a session already exists |
+| `/signup` | create an account; same redirect |
+| `/forgot-password` | request a password-reset email; same redirect |
+| `/reset-password` | set a new password, reached from the link in that email — **not** redirected away by an existing session, because a recovery session is exactly what it arrives with |
 | `/` | resolves to the last opened project and forwards to `/p/$projectId`; with no projects, an empty state with a **New project** button |
 | `/p/$projectId` | the editor — deep-linkable, with `?view=day\|week\|month` as a validated search param |
 | `/share/$projectId` | the public read-only viewer: no auth, and the Supabase client is never loaded |
@@ -71,31 +102,34 @@ is the source of truth for which project is open. `app_state.active_project` is 
 "last opened", used to resolve `/`.
 
 Route components are code-split, and the only module that reaches the Supabase client from
-the eager route tree is `src/lib/auth.ts`, which imports it dynamically. That is what lets
-one HTML entry serve both the editor and a public share page that never downloads
-supabase-js.
+the eager route tree is `src/features/auth/api/auth.ts`, which imports it dynamically.
+That is what lets one HTML entry serve both the editor and a public share page that never
+downloads supabase-js. Verify it after any route change: `bun run build`, then check that
+`dist/assets/index-*.js` names the supabase chunk only inside an `import(...)`.
 
 ## Styling stack
 
 Tailwind CSS v4 + [Ark UI](https://ark-ui.com) + [Phosphor icons](https://phosphoricons.com).
 
-- **Tokens.** `style.css` is the Tailwind entry. Every design token lives in one
+- **Tokens.** `src/styles/style.css` is the Tailwind entry. Every design token lives in one
   `@theme static` block there as `--color-*` / `--font-*` / `--text-*` / `--shadow-*` /
   `--ease-*` / `--dur-*` / `--animate-*`, which gives both the utilities (`bg-surface`,
   `text-ink`, `text-display`, `font-display`, `shadow-pop`) and the CSS variables the
   plain stylesheets read. `static` is required: Tailwind cannot
   see uses that live in another stylesheet and would otherwise tree-shake those variables
   away. There is **no `tailwind.config.js`** — v4 configures itself from CSS.
+  The stylesheets live in `src/styles/`, so `style.css` also carries `@source "../";` —
+  automatic source detection would start from that directory and find nothing but CSS.
 - **Themes.** Three blocks must stay in step: the `@theme` block (light), the
   `@media (prefers-color-scheme: dark) :root:not([data-theme="light"])` block, and
   `:root[data-theme="dark"]`. The two dark blocks are unlayered so they beat the layered
   `@theme` values.
-- **No preflight.** `style.css` imports `tailwindcss/theme.css` and
+- **No preflight.** `src/styles/style.css` imports `tailwindcss/theme.css` and
   `tailwindcss/utilities.css` but not the reset: preflight forces `box-sizing: border-box`
   and zeroes padding on every element, and SVAR's gantt sizes its own DOM with content-box
   widths. Everything the app renders sets its own border/background/padding utilities, so
   the reset buys nothing and would silently reflow the widget.
-- **`wx-overrides.css` stays selector-based CSS.** Most of its ~130 selectors target
+- **`styles/wx-overrides.css` stays selector-based CSS.** Most of its ~130 selectors target
   markup we never render (`.wx-willow-theme .wx-row`, `[data-col-id=":text"] .wx-content`,
   the nodes the MutationObserver tagger builds in plain JS), so there is nothing to put a
   class on. It reads the same `@theme` tokens through `var(--color-…)`, so tokens still
@@ -112,14 +146,24 @@ Tailwind CSS v4 + [Ark UI](https://ark-ui.com) + [Phosphor icons](https://phosph
   switcher, `SegmentGroup` for the Day/Week/Month and project switchers, `Field` for the
   login inputs. The SVAR gantt, its toolbar, context menu and task editor are
   library-owned and stay untouched.
-- **Phosphor icons** for everything the app draws. In JSX that means
-  `@phosphor-icons/react` components directly; for the nodes the MutationObserver tagger
-  builds in plain JS — the type icons, the row pencil, the fold-all chevron and the Who
-  "+" — `src/icons.tsx` renders each component once into a detached React root and caches
-  the SVG markup, which the tagger then assigns. The only CSS-drawn icons left are SVAR's
-  own `<i class="wxi-…">` elements: the app never renders those, so `icons.css` masks them
-  with `url("@phosphor-icons/core/assets/…svg")`, which Vite resolves and inlines from the
-  installed package at build time. There is no icon generation step.
+- **Phosphor icons**, from exactly one package — `@phosphor-icons/react`. Three
+  mechanisms, all fed from it:
+  - **JSX components** for everything the app renders itself: the header, the popovers,
+    the auth cards.
+  - **`src/features/gantt/icons.ts`** for the nodes the MutationObserver tagger builds in
+    plain JS — the type icons, the row pencil, the fold-all chevron and the Who "+". Each
+    component is rendered once into a detached React root (`lib/render-icon.ts`) and its
+    markup cached at module scope, which the tagger then assigns.
+  - **`src/features/gantt/lib/wxi-masks.ts`** for the ~31 `<i class="wxi-…">` elements
+    SVAR injects itself. The app never renders those and must not write into them, so
+    they are reskinned with a `mask-image`. The masks are not files: each glyph is
+    rendered from the same React component, serialised into an `svg+xml` data URI and
+    published as a `--wxi-*` custom property on `:root`, which `styles/icons.css` reads as
+    `mask-image: var(--wxi-plus, none)`.
+
+  `@phosphor-icons/core`, the raw-`.svg` half of the set, used to be a second dependency
+  purely to feed those mask rules. It is gone. There is still no icon generation step and
+  no glyph data in the repo — `bun install` is the only thing that updates any of it.
 
 ## Design language
 
@@ -148,10 +192,42 @@ The shell follows Apple's interface-design guidance, translated to CSS:
 
 ## Auth and access
 
-The editor is gated behind Supabase Auth (email + password). `onAuthStateChange` drives
-the gate: no session → login screen, session → the Gantt. RLS is **owner-scoped**, so
-every insert of `projects`, `people` and `app_state` carries `owner = session.user.id`.
-`tasks` and `links` have no owner column — they inherit ownership through `project_id`.
+The editor is gated behind Supabase Auth (email + password), with four separate pages —
+sign in, sign up, forgot password, reset password — each linking to the others. Forms are
+[TanStack Form](https://tanstack.com/form) over Ark UI `Field`, so validation, error text
+and the busy state are the same everywhere.
+
+Every `supabase.auth.*` call in the app lives in `src/features/auth/api/auth.ts`. The gate
+itself is a `beforeLoad` redirect, which means nothing re-renders when the session changes
+underneath it — so the pages subscribe to `onAuthStateChange` and navigate: to `/` when a
+session appears, to `/login` when one goes away.
+
+Two behaviours are deliberate rather than incidental. **Sign-up does not pretend.** If the
+project requires email confirmation, `signUp` returns no session, and the page says so
+instead of dropping the user somewhere that will not load. And **the reset request never
+reveals whether an account exists** — the same neutral "if that address has an account, we
+sent it a link" either way.
+
+### Password reset
+
+`resetPasswordForEmail(email, { redirectTo })` where `redirectTo` is built from
+`import.meta.env.BASE_URL` against the current origin, so the same code produces
+`http://localhost:5173/gantt/reset-password` in dev and
+`https://ingaleokot.github.io/gantt/reset-password` in production. Supabase's link goes to
+`/auth/v1/verify`, which redirects there with the recovery token in the URL fragment; the
+client is created with `detectSessionInUrl: true`, so loading it exchanges the fragment
+for a session and emits `PASSWORD_RECOVERY`. `/reset-password` then takes the new password
+twice and calls `updateUser({ password })`. An expired or reused link arrives as
+`#error=…&error_code=otp_expired` instead, and the page says so and offers a fresh one.
+
+> **Both redirect URLs must be allow-listed** in the Supabase dashboard, under
+> Authentication → URL Configuration → Redirect URLs. Supabase silently falls back to the
+> project's Site URL for any `redirectTo` it does not recognise, and the reset mail then
+> points at the wrong page.
+
+RLS is **owner-scoped**, so every insert of `projects`, `people` and `app_state` carries
+`owner = session.user.id`. `tasks` and `links` have no owner column — they inherit
+ownership through `project_id`.
 
 ## Storage (Supabase)
 

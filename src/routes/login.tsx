@@ -1,30 +1,22 @@
-import { useEffect } from "react";
-import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
-import Login from "../Login";
-import { currentSession, watchSession } from "../lib/auth";
+import { createFileRoute, redirect } from "@tanstack/react-router";
+import SignInPage from "../features/auth/components/SignInPage";
+import { currentSession } from "../features/auth/api/auth";
+import { useRedirectWhenSignedIn } from "../features/auth/hooks/useSessionRedirect";
 
 /* the other half of the gate in _authed.tsx: a live session has no business
-   sitting on the sign-in screen */
+   sitting on the sign-in screen.
+
+   Nothing here reaches lib/supabase at the top level — the route tree is eager,
+   and features/auth/api/auth.ts is the seam that imports the client inside each
+   call instead. */
 export const Route = createFileRoute("/login")({
   beforeLoad: async () => {
     if (await currentSession()) throw redirect({ to: "/" });
   },
-  component: LoginScreen,
+  component: LoginRoute,
 });
 
-function LoginScreen() {
-  const navigate = useNavigate();
-  /* the gate is a redirect now, not a conditional render, so something has to
-     move once Supabase hands over a session — from this form, from a sign-up
-     that returns one straight away, or from another tab */
-  useEffect(() => {
-    let stop: (() => void) | null = null;
-    let alive = true;
-    watchSession((s) => { if (s) void navigate({ to: "/", replace: true }); }).then((off) => {
-      if (alive) stop = off; else off();
-    });
-    return () => { alive = false; if (stop) stop(); };
-  }, [navigate]);
-
-  return <Login />;
+function LoginRoute() {
+  useRedirectWhenSignedIn();
+  return <SignInPage />;
 }

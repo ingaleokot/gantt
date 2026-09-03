@@ -6,10 +6,17 @@ import { Willow as CoreWillow } from "@svar-ui/react-core";
 import { Willow as GridWillow } from "@svar-ui/react-grid";
 import { SegmentGroup } from "@ark-ui/react/segment-group";
 import { setGlyph, type GlyphHost } from "./icons";
+import { installWxiMasks } from "./lib/wxi-masks";
+import { trackerId } from "./lib/tracker";
+import { initialsOf, nameHue, parseAssignees } from "../people/roster";
 
 /* The stylesheets are imported once by src/main.tsx, in the order that matters.
    This module must not reach lib/ — pulling the Supabase client into the
    public page is exactly what the split is there to prevent. */
+
+/* the masks for SVAR's own <i class="wxi-…"> icons, generated once from
+   @phosphor-icons/react as this chunk loads — see ./lib/wxi-masks */
+installWxiMasks();
 
 /* ---------- the library shapes this page narrows, same reasons as app.tsx:
    IApi types getTask as ITask, the store returns a parsed task; the shipped
@@ -126,25 +133,8 @@ function prepareTasks(tasks: ViewTask[]): RevivedTask[] {
 }
 let rosterRef: Person[] = [];
 const personById = (id: string): Person | null => rosterRef.find((h) => h.id === id) || null;
-function parseAssignees(v: unknown): string[] {
-  return String(v || "").split(/[,;]/).map((x) => x.trim()).filter(Boolean);
-}
-function initialsOf(name: string | undefined): string {
-  const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
-  if (!parts.length) return "";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-}
-function nameHue(name: string | undefined): number {
-  const x = String(name || "");
-  let h = 0;
-  for (let i = 0; i < x.length; i++) h = (h * 31 + x.charCodeAt(i)) % 360;
-  return h;
-}
-function trackerId(url: string | null | undefined): string | null {
-  const m = /([A-Za-z][A-Za-z0-9_]*-\d+)\/?(?:[?#].*)?$/.exec(url || "");
-  return m ? m[1].toUpperCase() : null;
-}
+/* parseAssignees / initialsOf / nameHue live in features/people/roster.ts and
+   trackerId in ./lib/tracker — both editor and viewer had the same copy. */
 
 /* ---------- data comes from the `shared` edge function at runtime ---------- */
 const DATA_URL = import.meta.env.VITE_SUPABASE_URL + "/functions/v1/shared?raw=1";

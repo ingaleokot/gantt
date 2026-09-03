@@ -1,5 +1,5 @@
 import { jsPDF } from "jspdf";
-import type { StoreLink, StoreTask, TaskId } from "./lib/db";
+import type { StoreLink, StoreTask, TaskId } from "../../lib/db";
 
 const DAY = 24 * 60 * 60 * 1000;
 /* jsPDF's colour setters take three channels, so the palette entries are
