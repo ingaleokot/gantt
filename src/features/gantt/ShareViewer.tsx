@@ -1,5 +1,4 @@
 import { useMemo, useRef, useState, useEffect, useCallback, memo } from "react";
-import { useNavigate } from "@tanstack/react-router";
 import { Gantt } from "@svar-ui/react-gantt";
 import type { IApi, IColumnConfig, IScaleConfig, ITask, TID } from "@svar-ui/react-gantt";
 import { Willow as CoreWillow } from "@svar-ui/react-core";
@@ -137,7 +136,11 @@ const personById = (id: string): Person | null => rosterRef.find((h) => h.id ===
    trackerId in ./lib/tracker — both editor and viewer had the same copy. */
 
 /* ---------- data comes from the `shared` edge function at runtime ---------- */
-const DATA_URL = import.meta.env.VITE_SUPABASE_URL + "/functions/v1/shared?raw=1";
+/* One project per request. The endpoint refuses to answer without a target,
+   so a link can never expose anything but the timeline it points at. */
+const dataUrl = (projectId: string) =>
+  import.meta.env.VITE_SUPABASE_URL +
+  "/functions/v1/shared?raw=1&project=" + encodeURIComponent(projectId);
 
 /* the JSON the edge function publishes: the same rows Postgres holds, so every
    id is text. shapeStore re-checks `projects` before trusting any of it. */
@@ -178,8 +181,8 @@ interface Feed {
   people?: { id: string; name?: string }[];
 }
 
-async function fetchStore(): Promise<Feed> {
-  const r = await fetch(DATA_URL, { cache: "no-store" });
+async function fetchStore(projectId: string): Promise<Feed> {
+  const r = await fetch(dataUrl(projectId), { cache: "no-store" });
   if (!r.ok) throw new Error((await r.text()) || "HTTP " + r.status);
   return r.json();
 }
@@ -461,7 +464,7 @@ function computeStats(tasks: ViewTask[]): Stats {
   };
 }
 
-function Board({ store, activeId, onOpenProject }: { store: ViewStore; activeId: string | null; onOpenProject: (id: string) => void }) {
+function Board({ store, activeId }: { store: ViewStore; activeId: string | null }) {
   const [view, setView] = useState("day");
   const [seed, setSeed] = useState(0);
   const apiRef = useRef<GanttApi | null>(null);
@@ -509,23 +512,6 @@ function Board({ store, activeId, onOpenProject }: { store: ViewStore; activeId:
           </span>
         )}
         <div className="flex-1" />
-        {store.projects.length > 1 && (
-          <SegmentGroup.Root
-            className={SEG_ROOT}
-            aria-label="Projects"
-            value={project.id}
-            /* the switcher navigates: which project is on screen is the URL's
-               business here too, so a viewer can link to one */
-            onValueChange={(d) => { if (d.value) onOpenProject(d.value); }}
-          >
-            {store.projects.map((p) => (
-              <SegmentGroup.Item key={p.id} value={p.id!} className={SEG_ITEM}>
-                <SegmentGroup.ItemText>{p.name}</SegmentGroup.ItemText>
-                <SegmentGroup.ItemHiddenInput />
-              </SegmentGroup.Item>
-            ))}
-          </SegmentGroup.Root>
-        )}
         <SegmentGroup.Root
           className={SEG_ROOT}
           aria-label="Timeline scale"
@@ -596,17 +582,17 @@ type BootState =
    reports as active, which is what the links handed out before still use. */
 export default function ShareViewer({ projectId }: { projectId: string | null }) {
   const [state, setState] = useState<BootState>({ phase: "loading" });
-  const navigate = useNavigate();
 
   useEffect(() => {
+    if (!projectId) { setState({ phase: "error", message: "this link does not name a timeline" }); return; }
     let alive = true;
-    fetchStore()
+    fetchStore(projectId)
       .then((raw) => { if (alive) setState({ phase: "ready", store: shapeStore(raw) }); })
       .catch((e: unknown) => {
         if (alive) setState({ phase: "error", message: e instanceof Error ? e.message : String(e) });
       });
     return () => { alive = false; };
-  }, []);
+  }, [projectId]);
 
   if (state.phase === "loading") return <div className={BOOT}>Loading timeline…</div>;
   if (state.phase === "error") {
@@ -623,7 +609,6 @@ export default function ShareViewer({ projectId }: { projectId: string | null })
       key={known || store.active || "none"}
       store={store}
       activeId={known || store.active}
-      onOpenProject={(id) => { void navigate({ to: "/share/$projectId", params: { projectId: id } }); }}
     />
   );
 }
