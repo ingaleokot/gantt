@@ -1,0 +1,1 @@
+import{j as r}from"./index-BvlMJh-a.js";import{S as o}from"./ShareViewer-CENbPs_y.js";import"./roster-DYE71-ED.js";import"./runtime-BJDWNVM4.js";import"./IconBase.es-CXzIHenD.js";function n(){return r.jsx(o,{projectId:null})}export{n as component};
