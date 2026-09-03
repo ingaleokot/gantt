@@ -24,6 +24,8 @@ export type TaskId = string | number;
 export interface Person {
   id: string;
   name: string;
+  /* as above: what `people.position` holds, carried on the snapshot side only */
+  position?: number;
 }
 
 /* the in-memory task shape: dates are ISO day strings here and only become
@@ -44,6 +46,10 @@ export interface StoreTask {
   url?: string;
   assignees?: string | null;
   status?: string;
+  /* what `tasks.sort_order` actually holds for this row. Only the snapshot side
+     carries it — the draft's order is its array order — and it exists so the
+     diff can see that the two disagree. See rowsOf(). */
+  sortOrder?: number;
 }
 
 export interface StoreLink {
@@ -59,6 +65,9 @@ export interface StoreProject {
   view: string;
   tasks: StoreTask[];
   links: StoreLink[];
+  /* what `projects.position` actually holds — the snapshot's copy of reality,
+     which the draft's array index is measured against */
+  position?: number;
 }
 
 export interface StoreData {
@@ -72,8 +81,6 @@ export interface StoreData {
 
 export const EMPTY_STORE: StoreData = { version: 2, activeProject: "", projects: [], people: [] };
 
-const STATE_ID = "main";
-
 /* plain data all the way down, so a structural copy is enough. The draft the
    editor mutates and the snapshot the diff reads must never share objects. */
 export function cloneStore(s: StoreData): StoreData {
@@ -85,16 +92,50 @@ export function cloneStore(s: StoreData): StoreData {
       id: p.id,
       name: p.name,
       view: p.view,
+      position: p.position,
       tasks: p.tasks.map((t) => ({ ...t })),
       links: p.links.map((l) => ({ ...l })),
     })),
   };
 }
 
+/* A save has just written index-derived ordering to Postgres, so the snapshot
+   it becomes must say so — otherwise every later diff would keep re-reporting
+   the stored values it has already replaced, and rewrite them forever. */
+export function normalizeOrder(s: StoreData): StoreData {
+  s.projects.forEach((p, i) => {
+    p.position = i;
+    p.tasks.forEach((t, j) => { t.sortOrder = j; });
+  });
+  s.people.forEach((h, i) => { h.position = i; });
+  return s;
+}
+
 /* every call site throws rather than returning a result object: React Query is
    what carries the failure to the UI now */
 function check(error: { message?: string } | null, what: string): void {
   if (error) throw new Error(what + ": " + (error.message || "Supabase request failed"));
+}
+
+/* An `update … eq(id)` against a row that is no longer there is not an error to
+   PostgREST: it matches nothing, returns 204 and reports success. The write
+   went nowhere and the UI used to say "Saved". Ask for the affected ids back
+   and treat an empty answer as what it is — the row was changed or deleted
+   somewhere else, and this tab is looking at a timeline that has moved on. */
+export class StoreConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "StoreConflictError";
+  }
+}
+export const isConflict = (e: unknown): boolean => e instanceof StoreConflictError;
+
+function missing(rows: { id: unknown }[] | null, what: string, id: string): void {
+  if (rows && rows.length) return;
+  throw new StoreConflictError(
+    `This ${what} (${id}) is no longer in the database — it was changed or deleted somewhere else. ` +
+    "Your copy is still on screen; reload to see the current timeline.",
+  );
 }
 
 /* ---------- read ---------- */
@@ -118,18 +159,30 @@ function toTask(t: Tables<"tasks">): StoreTask {
   if (t.url) o.url = t.url;
   if (t.assignees) o.assignees = t.assignees;
   o.status = t.status || "todo";
+  if (t.sort_order !== null && t.sort_order !== undefined) o.sortOrder = t.sort_order;
   return o;
 }
 
 /* one round trip per table; the result is both what the app renders and the
    snapshot every later diff is measured against */
 export async function fetchStore(): Promise<StoreData> {
+  /* every ordered read carries `id` as a secondary key. `position` and
+     `sort_order` are not unique — two projects really do sit on position 0
+     today — and Postgres is free to return tied rows in any order it likes, so
+     without a tie-break the list could reorder itself between two loads of the
+     same unchanged data. */
   const [projects, tasks, links, people, state] = await Promise.all([
-    supabase.from("projects").select("id,name,view,position").order("position", { ascending: true }),
-    supabase.from("tasks").select("*").order("sort_order", { ascending: true }),
+    supabase.from("projects").select("id,name,view,position")
+      .order("position", { ascending: true }).order("id", { ascending: true }),
+    supabase.from("tasks").select("*")
+      .order("sort_order", { ascending: true }).order("id", { ascending: true }),
     supabase.from("links").select("id,project_id,source,target,type"),
-    supabase.from("people").select("id,name,position").order("position", { ascending: true }),
-    supabase.from("app_state").select("id,active_project").eq("id", STATE_ID).maybeSingle(),
+    supabase.from("people").select("id,name,position")
+      .order("position", { ascending: true }).order("id", { ascending: true }),
+    /* no `id` filter: RLS already scopes app_state to this account's row, and
+       that is the one identity the table has both before and after the
+       migration that re-keys it on `owner` (see setActiveProject) */
+    supabase.from("app_state").select("id,active_project").limit(1).maybeSingle(),
   ]);
   check(projects.error, "projects");
   check(tasks.error, "tasks");
@@ -141,6 +194,7 @@ export async function fetchStore(): Promise<StoreData> {
     id: p.id,
     name: p.name,
     view: p.view || "day",
+    position: p.position ?? undefined,
     tasks: (tasks.data || []).filter((t) => t.project_id === p.id).map(toTask),
     links: (links.data || [])
       .filter((l) => l.project_id === p.id)
@@ -151,7 +205,7 @@ export async function fetchStore(): Promise<StoreData> {
   const active = list.some((p) => p.id === wanted) ? wanted! : "";
   const roster: Person[] = (people.data || [])
     .filter((x) => x && x.id)
-    .map((x) => ({ id: x.id, name: x.name || "" }));
+    .map((x) => ({ id: x.id, name: x.name || "", position: x.position ?? undefined }));
   return { version: 2, activeProject: active, projects: list, people: roster };
 }
 
@@ -259,21 +313,36 @@ interface Rows {
   links: Map<string, LinkRow>;
   people: Map<string, PersonRow>;
 }
-function rowsOf(store: StoreData, ownerId: string, skip: Set<string>): Rows {
+/* `ordering` is the whole point of the split. The draft is measured by its
+   ARRAY INDEX, because the order the user sees is the order it should have.
+   The snapshot is measured by the values Postgres actually returned, because
+   that is what the draft has to be compared against. Deriving both sides from
+   the index — which is what this used to do — made ordering drift structurally
+   invisible: two projects stored on position 0 stayed there forever, because
+   position 0 and position 1 were never what the diff was looking at. */
+function rowsOf(store: StoreData, ownerId: string, skip: Set<string>, ordering: "index" | "stored"): Rows {
   const projects = new Map<string, ProjectRow>();
   const tasks = new Map<string, TaskRow>();
   const links = new Map<string, LinkRow>();
   const people = new Map<string, PersonRow>();
+  const stored = ordering === "stored";
   store.projects.forEach((p, i) => {
     if (skip.has(p.id)) return;
-    projects.set(p.id, { id: p.id, name: p.name || "Untitled project", view: p.view || "day", position: i, owner: ownerId });
-    (p.tasks || []).forEach((t, j) => tasks.set(key(t.id), taskRow(t, p.id, j)));
+    const pos = stored && p.position !== undefined ? p.position : i;
+    projects.set(p.id, { id: p.id, name: p.name || "Untitled project", view: p.view || "day", position: pos, owner: ownerId });
+    (p.tasks || []).forEach((t, j) => {
+      const order = stored && t.sortOrder !== undefined ? t.sortOrder : j;
+      tasks.set(key(t.id), taskRow(t, p.id, order));
+    });
     (p.links || []).forEach((l) => {
       if (l.id === undefined || l.source === undefined || l.target === undefined) return;
       links.set(key(l.id), { id: l.id, project_id: p.id, source: l.source, target: l.target, type: l.type || "e2s" });
     });
   });
-  (store.people || []).forEach((h, i) => people.set(h.id, { id: h.id, name: h.name || "", position: i, owner: ownerId }));
+  (store.people || []).forEach((h, i) => {
+    const pos = stored && h.position !== undefined ? h.position : i;
+    people.set(h.id, { id: h.id, name: h.name || "", position: pos, owner: ownerId });
+  });
   return { projects, tasks, links, people };
 }
 
@@ -287,18 +356,27 @@ function chunk<T>(xs: T[], n: number): T[][] {
 }
 const CHUNK = 150;
 
-/* ESCAPE (x4 below): the id columns are text in Postgres while the widget can
-   hand us numeric ids; the values go over the wire exactly as they always did
-   and PostgREST coerces them, so only the declared type is bent here. */
+/* A save is a sequence of requests, and any one of them can be the last one
+   that lands: a dropped connection, a 500, a closed laptop. What follows must
+   therefore be safe to run again from the top.
+
+   `insert` was not. One failed step after a successful insert left rows in
+   Postgres that the snapshot did not know about, so every later save re-sent
+   the same ids and Postgres answered `23505 duplicate key` — for ever, until
+   the page was reloaded. Every row here carries its full primary key, so an
+   `upsert` writes exactly the same thing the insert would have and re-running
+   it is a no-op. Nothing is ever written that the diff did not ask for. */
 async function writeTasks(c: Write<TaskRow>) {
   if (c.insert.length) {
-    const { error } = await supabase.from("tasks").insert(parentsFirst(c.insert) as unknown as TablesInsert<"tasks">[]);
+    const { error } = await supabase.from("tasks").upsert(parentsFirst(c.insert) as unknown as TablesInsert<"tasks">[]);
     check(error, "insert tasks");
   }
   if (c.update.length === 1) {
     const row = c.update[0];
-    const { error } = await supabase.from("tasks").update(row as unknown as TablesInsert<"tasks">).eq("id", key(row.id));
+    const { data, error } = await supabase
+      .from("tasks").update(row as unknown as TablesInsert<"tasks">).eq("id", key(row.id)).select("id");
     check(error, "update task");
+    missing(data, "task", key(row.id));
   } else if (c.update.length) {
     /* a roll-up, a reorder or an undo touches many rows at once: one upsert of
        exactly those rows, still per row, still nothing else touched */
@@ -308,13 +386,15 @@ async function writeTasks(c: Write<TaskRow>) {
 }
 async function writeLinks(c: Write<LinkRow>) {
   if (c.insert.length) {
-    const { error } = await supabase.from("links").insert(c.insert as unknown as TablesInsert<"links">[]);
+    const { error } = await supabase.from("links").upsert(c.insert as unknown as TablesInsert<"links">[]);
     check(error, "insert links");
   }
   if (c.update.length === 1) {
     const row = c.update[0];
-    const { error } = await supabase.from("links").update(row as unknown as TablesInsert<"links">).eq("id", key(row.id));
+    const { data, error } = await supabase
+      .from("links").update(row as unknown as TablesInsert<"links">).eq("id", key(row.id)).select("id");
     check(error, "update link");
+    missing(data, "link", key(row.id));
   } else if (c.update.length) {
     const { error } = await supabase.from("links").upsert(c.update as unknown as TablesInsert<"links">[]);
     check(error, "update links");
@@ -322,12 +402,14 @@ async function writeLinks(c: Write<LinkRow>) {
 }
 async function writeProjects(c: Write<ProjectRow>) {
   if (c.insert.length) {
-    const { error } = await supabase.from("projects").insert(c.insert);
+    const { error } = await supabase.from("projects").upsert(c.insert);
     check(error, "insert projects");
   }
   if (c.update.length === 1) {
-    const { error } = await supabase.from("projects").update(c.update[0]).eq("id", c.update[0].id);
+    const { data, error } = await supabase
+      .from("projects").update(c.update[0]).eq("id", c.update[0].id).select("id");
     check(error, "update project");
+    missing(data, "project", c.update[0].id);
   } else if (c.update.length) {
     const { error } = await supabase.from("projects").upsert(c.update);
     check(error, "update projects");
@@ -335,12 +417,14 @@ async function writeProjects(c: Write<ProjectRow>) {
 }
 async function writePeople(c: Write<PersonRow>) {
   if (c.insert.length) {
-    const { error } = await supabase.from("people").insert(c.insert);
+    const { error } = await supabase.from("people").upsert(c.insert);
     check(error, "insert people");
   }
   if (c.update.length === 1) {
-    const { error } = await supabase.from("people").update(c.update[0]).eq("id", c.update[0].id);
+    const { data, error } = await supabase
+      .from("people").update(c.update[0]).eq("id", c.update[0].id).select("id");
     check(error, "update person");
+    missing(data, "person", c.update[0].id);
   } else if (c.update.length) {
     const { error } = await supabase.from("people").upsert(c.update);
     check(error, "update people");
@@ -361,21 +445,66 @@ export interface SaveCounts {
   deleted: number;
 }
 
-/* `prev` is what Postgres holds; `next` is what the user is looking at. */
-export async function saveStore(next: StoreData, prev: StoreData, ownerId: string): Promise<SaveCounts> {
-  if (!ownerId) throw new Error("Not signed in");
+interface StorePlan {
+  projects: Change<ProjectRow>;
+  tasks: Change<TaskRow>;
+  links: Change<LinkRow>;
+  people: Change<PersonRow>;
+  deadProjects: string[];
+}
 
+/* `prev` is what Postgres holds; `next` is what the user is looking at. */
+function planWrites(next: StoreData, prev: StoreData, ownerId: string): StorePlan {
   const nextIds = new Set(next.projects.map((p) => p.id));
   const deadProjects = prev.projects.map((p) => p.id).filter((id) => !nextIds.has(id));
   const skip = new Set(deadProjects);
 
-  const a = rowsOf(prev, ownerId, skip);
-  const b = rowsOf(next, ownerId, skip);
+  const a = rowsOf(prev, ownerId, skip, "stored");
+  const b = rowsOf(next, ownerId, skip, "index");
 
-  const projects = diffRows(a.projects, b.projects, PROJECT_KEYS);
-  const tasks = diffRows(a.tasks, b.tasks, TASK_KEYS);
-  const links = diffRows(a.links, b.links, LINK_KEYS);
-  const people = diffRows(a.people, b.people, PERSON_KEYS);
+  return {
+    projects: diffRows(a.projects, b.projects, PROJECT_KEYS),
+    tasks: diffRows(a.tasks, b.tasks, TASK_KEYS),
+    links: diffRows(a.links, b.links, LINK_KEYS),
+    people: diffRows(a.people, b.people, PERSON_KEYS),
+    deadProjects,
+  };
+}
+
+const planSize = (p: StorePlan): number =>
+  p.projects.insert.length + p.projects.update.length +
+  p.tasks.insert.length + p.tasks.update.length +
+  p.links.insert.length + p.links.update.length +
+  p.people.insert.length + p.people.update.length +
+  p.projects.dead.length + p.tasks.dead.length + p.links.dead.length + p.people.dead.length +
+  p.deadProjects.length;
+
+/* how many rows a save would write right now — 0 means the draft and the
+   snapshot agree, which is what makes it safe to adopt a newer snapshot */
+export function pendingWrites(next: StoreData, prev: StoreData, ownerId: string): number {
+  return planSize(planWrites(next, prev, ownerId));
+}
+
+/* do two *stored* states differ? Both sides read their own ordering, so this
+   answers "has Postgres moved on since we loaded it", not "has the user
+   edited anything". */
+export function storesDiffer(a: StoreData, b: StoreData, ownerId: string): boolean {
+  const none = new Set<string>();
+  const x = rowsOf(a, ownerId, none, "stored");
+  const y = rowsOf(b, ownerId, none, "stored");
+  return planSize({
+    projects: diffRows(x.projects, y.projects, PROJECT_KEYS),
+    tasks: diffRows(x.tasks, y.tasks, TASK_KEYS),
+    links: diffRows(x.links, y.links, LINK_KEYS),
+    people: diffRows(x.people, y.people, PERSON_KEYS),
+    deadProjects: [],
+  }) > 0;
+}
+
+export async function saveStore(next: StoreData, prev: StoreData, ownerId: string): Promise<SaveCounts> {
+  if (!ownerId) throw new Error("Not signed in");
+
+  const { projects, tasks, links, people, deadProjects } = planWrites(next, prev, ownerId);
 
   /* order matters. Parents before children (the tasks self-FK), tasks before
      the links that point at them, and every re-parenting written before any
@@ -419,11 +548,34 @@ export async function deleteProject(id: string): Promise<void> {
 }
 
 /* `app_state.active_project` is only "last opened" now — the URL is what says
-   which project is on screen. One upsert, and only when it actually moved. */
+   which project is on screen.
+
+   It used to be a global singleton keyed `id = 'main'`: every account upserted
+   the same row, so the second account to try collided on the primary key with
+   a row it is not allowed to see, and RLS rejected the write. Sign-up is open,
+   so that was reachable.
+
+   The row is identified by its OWNER here, never by a fixed id — the one
+   column that names it both under today's `primary key (id)` and under the
+   migration that re-keys the table on `owner` (the SQL is in the report).
+   Update-then-insert rather than an upsert for the same reason: an upsert has
+   to name a conflict target, and the conflict target is exactly what the
+   migration changes. Nothing here writes another account's row under either
+   schema, and it needs no coordination with the migration to be correct. */
 export async function setActiveProject(id: string, ownerId: string): Promise<void> {
   if (!ownerId) throw new Error("Not signed in");
-  const { error } = await supabase
+  const value = id || null;
+  const upd = await supabase
     .from("app_state")
-    .upsert({ id: STATE_ID, active_project: id || null, owner: ownerId });
-  check(error, "app_state");
+    .update({ active_project: value })
+    .eq("owner", ownerId)
+    .select("owner");
+  check(upd.error, "app_state");
+  if (upd.data && upd.data.length) return;
+  /* no row for this account yet — `id` is this account's own uuid, so it can
+     never be the id another account is using */
+  const ins = await supabase
+    .from("app_state")
+    .insert({ id: ownerId, active_project: value, owner: ownerId });
+  check(ins.error, "app_state");
 }

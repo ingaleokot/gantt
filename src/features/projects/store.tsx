@@ -1,6 +1,9 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { queryOptions, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { cloneStore, deleteProject, fetchStore, insertProject, saveStore, setActiveProject } from "../../lib/db";
+import {
+  cloneStore, deleteProject, fetchStore, insertProject, isConflict, normalizeOrder,
+  pendingWrites, saveStore, setActiveProject, storesDiffer,
+} from "../../lib/db";
 import type { Person, StoreData, StoreProject } from "../../lib/db";
 
 /* The write model, in one place.
@@ -18,13 +21,25 @@ import type { Person, StoreData, StoreProject } from "../../lib/db";
    the insert lost it. The diff keeps the bulk operations that legitimately
    touch many rows (epic roll-ups, reordering, snapshot undo/redo) working:
    they simply produce many changed rows, which is one upsert of exactly those
-   rows instead of a wipe. */
+   rows instead of a wipe.
+
+   What a failed save must never do is go quiet. A save that fails leaves work
+   that exists only in this tab, so: every write it issues is idempotent and
+   the whole diff is retried on a backoff, `flushSave` reports whether it
+   actually succeeded so sign-out and delete can ask before discarding, and the
+   tab refuses to close without asking while anything is still pending. And
+   because nothing pushes changes here, coming back to the tab is when it looks
+   at Postgres again — adopting a newer state when there is nothing to lose,
+   and saying so rather than overwriting when there is. */
 
 export const STORE_KEY = ["store"] as const;
 export const storeQuery = queryOptions({
   queryKey: STORE_KEY,
   queryFn: fetchStore,
   staleTime: Infinity,
+  /* the reconcile below refetches on focus deliberately and compares before
+     it adopts anything — React Query's own refetch would replace the snapshot
+     under a draft that is mid-edit */
   refetchOnWindowFocus: false,
 });
 
@@ -32,6 +47,8 @@ export const uid = () => "p" + Date.now().toString(36) + Math.random().toString(
 
 /* long enough to batch a drag, short enough that nothing is lost on a reload */
 const SAVE_DEBOUNCE = 1400;
+/* a failed save is retried on its own; the user should not have to poke it */
+const RETRY_BACKOFF = [2000, 5000, 15000, 30000];
 
 export type SaveStatus = "idle" | "saving" | "saved" | "local";
 
@@ -43,10 +60,16 @@ export interface StoreApi {
   people: Person[];
   status: SaveStatus;
   error: string | null;
+  /* something is true but not an error: the timeline moved somewhere else */
+  warning: string | null;
+  /* bumped when a newer snapshot is adopted from Postgres, so the editor can
+     remount the widget around it instead of showing stale rows */
+  storeRev: number;
   /* re-render everything reading the draft (project names, roster) */
   bump: () => void;
   scheduleSave: () => void;
-  flushSave: () => Promise<void>;
+  /* resolves true when everything is in Postgres, false when it is not */
+  flushSave: () => Promise<boolean>;
   createProject: (name: string) => Promise<string>;
   removeProject: (id: string) => Promise<void>;
   /* records "last opened" so `/` can resolve to it next time */
@@ -68,8 +91,13 @@ export function StoreProvider({ ownerId, children }: { ownerId: string; children
   const query = useQuery(storeQuery);
   const draftRef = useRef<StoreData | null>(null);
   const [rev, setRev] = useState(0);
+  const [storeRev, setStoreRev] = useState(0);
+  const [warning, setWarning] = useState<string | null>(null);
   const bump = useCallback(() => setRev((r) => r + 1), []);
   const saveTimer = useRef<number | null>(null);
+  const retryTimer = useRef<number | null>(null);
+  const retryStep = useRef(0);
+  const inFlight = useRef(0);
 
   /* seed the draft from the first successful load and never again: from here
      on the draft leads and the snapshot follows it */
@@ -87,28 +115,141 @@ export function StoreProvider({ ownerId, children }: { ownerId: string; children
       if (!draft || !prev) throw new Error("Store not loaded");
       const desired = cloneStore(draft);
       await saveStore(desired, prev, ownerId);
-      return desired;
+      /* the ordering that was just written is now what Postgres holds */
+      return normalizeOrder(desired);
     },
-    onSuccess: (desired) => { qc.setQueryData(STORE_KEY, desired); },
+    onSuccess: (desired) => {
+      qc.setQueryData(STORE_KEY, desired);
+      retryStep.current = 0;
+      setWarning(null);
+    },
+    /* deliberately no snapshot rewrite on failure. A save is a sequence of
+       requests and any of them can be the last that lands, but every write it
+       issues is now an upsert of a row that carries its own primary key, so
+       running the whole diff again from the unchanged snapshot re-sends
+       exactly what did not land and rewrites what did with the same values.
+       Re-reading Postgres here instead would pull in rows another tab created
+       — rows the draft has never seen — and the next diff would read them as
+       deletions. */
   });
 
-  const flushSave = useCallback(async () => {
+  /* the mutation object is rebuilt on every render; the callbacks below must
+     reach the current one without being rebuilt themselves */
+  const syncRef = useRef(sync);
+  syncRef.current = sync;
+
+  const clearRetry = useCallback(() => {
+    if (retryTimer.current !== null) { clearTimeout(retryTimer.current); retryTimer.current = null; }
+  }, []);
+
+  const flushSave = useCallback(async (): Promise<boolean> => {
     if (saveTimer.current !== null) { clearTimeout(saveTimer.current); saveTimer.current = null; }
-    if (!draftRef.current || !qc.getQueryData<StoreData>(STORE_KEY)) return;
-    try { await sync.mutateAsync(); } catch { /* the failure is on sync.error */ }
-  }, [qc, sync.mutateAsync]);
+    clearRetry();
+    if (!draftRef.current || !qc.getQueryData<StoreData>(STORE_KEY)) return false;
+    /* counted here rather than read off `sync.isPending`: that flag only turns
+       true once React has re-rendered, and the request is already in the air
+       by then — a window in which the unload guard would have said "nothing
+       pending" while a save was mid-flight */
+    inFlight.current += 1;
+    try {
+      await syncRef.current.mutateAsync();
+      return true;
+    } catch {
+      /* the message is on sync.error and in the status pill; the caller gets
+         the one bit it needs — this did not reach Postgres */
+      return false;
+    } finally {
+      inFlight.current -= 1;
+    }
+  }, [qc, clearRetry]);
+
+  /* a failed save retries itself on a backoff rather than waiting for the next
+     keystroke, which may never come */
+  const armRetry = useCallback(() => {
+    clearRetry();
+    const wait = RETRY_BACKOFF[Math.min(retryStep.current, RETRY_BACKOFF.length - 1)];
+    retryStep.current += 1;
+    retryTimer.current = window.setTimeout(() => {
+      retryTimer.current = null;
+      void flushSave();
+    }, wait);
+  }, [clearRetry, flushSave]);
+
+  useEffect(() => {
+    if (sync.isError && saveTimer.current === null && retryTimer.current === null) armRetry();
+  }, [sync.isError, sync.failureCount, armRetry]);
 
   const scheduleSave = useCallback(() => {
     if (saveTimer.current !== null) clearTimeout(saveTimer.current);
+    clearRetry();
     saveTimer.current = window.setTimeout(() => { saveTimer.current = null; void flushSave(); }, SAVE_DEBOUNCE);
-  }, [flushSave]);
+  }, [flushSave, clearRetry]);
 
-  /* leaving the tab with a debounce pending would otherwise drop it */
+  /* has anything failed to reach Postgres, or not been sent yet? */
+  const pending = useCallback(
+    () => saveTimer.current !== null || retryTimer.current !== null || inFlight.current > 0
+      || syncRef.current.isPending || syncRef.current.isError,
+    [],
+  );
+
+  /* leaving the tab with a debounce pending would otherwise drop it — and so
+     would leaving it with a save that has already failed, which is the case
+     the old `saveTimer.current !== null` guard never covered */
   useEffect(() => {
-    const onHide = () => { if (document.hidden && saveTimer.current !== null) void flushSave(); };
+    const onHide = () => { if (document.hidden && pending()) void flushSave(); };
     document.addEventListener("visibilitychange", onHide);
     return () => document.removeEventListener("visibilitychange", onHide);
-  }, [flushSave]);
+  }, [flushSave, pending]);
+
+  /* and closing it outright must at least ask */
+  useEffect(() => {
+    const onUnload = (e: BeforeUnloadEvent) => {
+      if (!pending()) return;
+      e.preventDefault();
+      /* older browsers want the assignment; the string itself is never shown */
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onUnload);
+    return () => window.removeEventListener("beforeunload", onUnload);
+  }, [pending]);
+
+  /* ---------- another tab ----------
+     Nothing pushes changes here, so coming back to the tab is the moment to
+     look. If this tab has no unsaved work, the newer state is simply adopted.
+     If it does, it is NOT adopted — that would throw the user's edits away —
+     and they are told the timeline moved instead of being left to discover it
+     when a save quietly writes over someone else's. */
+  useEffect(() => {
+    let cancelled = false;
+    const look = async () => {
+      const draft = draftRef.current;
+      const snap = qc.getQueryData<StoreData>(STORE_KEY);
+      /* only a request genuinely in flight is a reason not to look; a save
+         that has already failed is the case where looking matters most */
+      if (!draft || !snap || syncRef.current.isPending) return;
+      let fresh: StoreData;
+      try { fresh = await fetchStore(); } catch { return; }
+      if (cancelled || !storesDiffer(snap, fresh, ownerId)) return;
+      if (pendingWrites(draft, snap, ownerId) === 0 && !syncRef.current.isError) {
+        qc.setQueryData(STORE_KEY, fresh);
+        draftRef.current = cloneStore(fresh);
+        setWarning(null);
+        setStoreRev((n) => n + 1);
+        bump();
+      } else {
+        setWarning("This timeline changed somewhere else. Your unsaved edits are still here — reload to see the other version.");
+      }
+    };
+    const onFocus = () => { void look(); };
+    const onVisible = () => { if (!document.hidden) void look(); };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [qc, ownerId, bump]);
 
   const create = useMutation({
     scope: { id: "gantt-store-write" },
@@ -119,7 +260,7 @@ export function StoreProvider({ ownerId, children }: { ownerId: string; children
       const p: StoreProject = { id: uid(), name, view: "day", tasks: [], links: [] };
       await insertProject(p, draft.projects.length, ownerId);
       draft.projects.push(p);
-      const mirror: StoreProject = { id: p.id, name: p.name, view: p.view, tasks: [], links: [] };
+      const mirror: StoreProject = { id: p.id, name: p.name, view: p.view, position: draft.projects.length - 1, tasks: [], links: [] };
       qc.setQueryData(STORE_KEY, { ...prev, projects: [...prev.projects, mirror] });
       return p.id;
     },
@@ -152,12 +293,20 @@ export function StoreProvider({ ownerId, children }: { ownerId: string; children
   });
 
   const createProject = useCallback(async (name: string) => {
-    await flushSave();
+    /* a project is created against the snapshot, so anything still only in the
+       draft has to land first. If it cannot, ask rather than carry on. */
+    const ok = await flushSave();
+    if (!ok && !window.confirm(
+      "Your latest changes have not reached the database yet. Create a new project anyway?",
+    )) throw new Error("Cancelled — nothing was created.");
     return create.mutateAsync(name);
   }, [flushSave, create.mutateAsync]);
 
   const removeProject = useCallback(async (id: string) => {
-    await flushSave();
+    const ok = await flushSave();
+    if (!ok && !window.confirm(
+      "Your latest changes have not reached the database yet, and deleting a project cannot be undone. Delete it anyway?",
+    )) return;
     await remove.mutateAsync(id);
   }, [flushSave, remove.mutateAsync]);
 
@@ -168,7 +317,15 @@ export function StoreProvider({ ownerId, children }: { ownerId: string; children
   }, [qc, opened.mutate]);
 
   const status: SaveStatus = sync.isPending ? "saving" : sync.isError ? "local" : sync.isSuccess ? "saved" : "idle";
-  const error = sync.error ? msg(sync.error) : create.error ? msg(create.error) : remove.error ? msg(remove.error) : null;
+  /* every write mutation reports here, `opened` included — it was the one
+     whose failure had nowhere to go, which is exactly why the app_state
+     collision below it could never be seen */
+  const error = sync.error ? msg(sync.error)
+    : create.error ? msg(create.error)
+    : remove.error ? msg(remove.error)
+    : opened.error ? "Could not record which project was open: " + msg(opened.error)
+    : null;
+  const conflict = sync.error && isConflict(sync.error);
   const draft = draftRef.current;
 
   /* the value is rebuilt whenever the draft is bumped, so consumers reading
@@ -182,6 +339,8 @@ export function StoreProvider({ ownerId, children }: { ownerId: string; children
       people: draft.people,
       status,
       error,
+      warning: conflict ? null : warning,
+      storeRev,
       bump,
       scheduleSave,
       flushSave,
@@ -191,7 +350,7 @@ export function StoreProvider({ ownerId, children }: { ownerId: string; children
     };
     /* `rev` is the dependency that matters: the draft object keeps its
        identity while its contents change, so bump() is what re-publishes it */
-  }, [rev, draft, ownerId, status, error, bump, scheduleSave, flushSave, createProject, removeProject, markOpened]);
+  }, [rev, draft, ownerId, status, error, warning, conflict, storeRev, bump, scheduleSave, flushSave, createProject, removeProject, markOpened]);
 
   if (query.isError) {
     return (

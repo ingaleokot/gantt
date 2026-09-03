@@ -79,16 +79,34 @@ export function buildGanttPdf(name: string, tasks: StoreTask[], links: StoreLink
     return { ...t, _s: start, _e: end };
   }).filter((t): t is PlacedRow => !!t._s);
 
-  /* time span */
-  let min = Infinity, max = -Infinity;
-  rows.forEach((t) => { min = Math.min(min, t._s.getTime()); max = Math.max(max, (t._e || t._s).getTime()); });
+  /* An end date is EXCLUSIVE everywhere in this app: a one-day task starting
+     on the 7th ends on the 8th. The screen already subtracts a day before it
+     shows one; the PDF did not, so every printed end — and the range in the
+     header — read a day late. Milestones are exempt: `_e` was collapsed onto
+     `_s` above, and there is no span to close. */
+  const lastDay = (t: PlacedRow): Date =>
+    t.type === "milestone" || !t._e || t._e.getTime() <= t._s.getTime()
+      ? t._s
+      : new Date(t._e.getTime() - DAY);
+
+  /* time span. The geometry keeps the exclusive end — that is where the bar
+     actually stops — while the printed dates use the inclusive one. */
+  let min = Infinity, max = -Infinity, lastPrinted = -Infinity;
+  rows.forEach((t) => {
+    min = Math.min(min, t._s.getTime());
+    max = Math.max(max, (t._e || t._s).getTime());
+    lastPrinted = Math.max(lastPrinted, lastDay(t).getTime());
+  });
+  const firstPrinted = min;
   if (!isFinite(min)) { const today = Date.now(); min = today; max = today + 30 * DAY; }
   min -= 2 * DAY; max += 3 * DAY;
   const spanDays = Math.max(7, Math.round((max - min) / DAY));
   const unit = spanDays <= 62 ? "day" : spanDays <= 260 ? "week" : "month";
 
   /* geometry */
-  const nameW = 46, idW = 19, dateW = 17, hrsW = 12;
+  /* the hours column is EFFORT, not the length of the bar beside it, so it
+     says so — which needs a few more millimetres than "HRS" did */
+  const nameW = 46, idW = 19, dateW = 17, hrsW = 17;
   const tableW = nameW + idW + dateW * 2 + hrsW;
   const tid = (url: string | undefined) => { const m = /([A-Za-z][A-Za-z0-9_]*-\d+)\/?(?:[?#].*)?$/.exec(url || ""); return m ? m[1].toUpperCase() : null; };
   const chartX = M + tableW, chartW = PW - M - chartX;
@@ -103,7 +121,10 @@ export function buildGanttPdf(name: string, tasks: StoreTask[], links: StoreLink
     doc.setFont("helvetica", "bold"); doc.setFontSize(15); doc.setTextColor(...C.ink);
     doc.text(name || "Project timeline", M, 17);
     doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); doc.setTextColor(...C.muted);
-    const meta = fmtFull(new Date(min + 2 * DAY)) + "  –  " + fmtFull(new Date(max - 3 * DAY))
+    /* the same two dates the app header shows: first start, last inclusive end */
+    const from = isFinite(firstPrinted) ? new Date(firstPrinted) : new Date(min + 2 * DAY);
+    const to = isFinite(lastPrinted) ? new Date(lastPrinted) : new Date(max - 3 * DAY);
+    const meta = fmtFull(from) + "  –  " + fmtFull(to)
       + "     ·     exported " + fmtFull(new Date())
       + (pageCount > 1 ? "     ·     page " + page + " of " + pageCount : "");
     doc.text(meta, M, 22.5);
@@ -139,7 +160,7 @@ export function buildGanttPdf(name: string, tasks: StoreTask[], links: StoreLink
     doc.text("ID", M + nameW + 2, topY + 8.6);
     doc.text("START", M + nameW + idW + 2, topY + 8.6);
     doc.text("END", M + nameW + idW + dateW + 2, topY + 8.6);
-    doc.text("HRS", M + nameW + idW + dateW * 2 + 2, topY + 8.6);
+    doc.text("EFFORT h", M + nameW + idW + dateW * 2 + 2, topY + 8.6);
 
     /* weekend / unit shading + bottom scale labels */
     doc.setFontSize(6.6);
@@ -247,7 +268,7 @@ export function buildGanttPdf(name: string, tasks: StoreTask[], links: StoreLink
         doc.setTextColor(...C.muted);
       }
       doc.text(fmtShort(t._s), M + nameW + idW + 2, yc + 1.05);
-      if (t.type !== "milestone") doc.text(fmtShort(t._e!), M + nameW + idW + dateW + 2, yc + 1.05);
+      if (t.type !== "milestone") doc.text(fmtShort(lastDay(t)), M + nameW + idW + dateW + 2, yc + 1.05);
       if (t.type !== "milestone" && t.hours) {
         doc.text(String(t.hours), M + nameW + idW + dateW * 2 + 2, yc + 1.05);
       }

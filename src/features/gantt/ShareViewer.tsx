@@ -234,8 +234,11 @@ const COLUMNS: IColumnConfig[] = [
   { id: "who", header: "Who", width: 78, align: "center", sort: false },
   { id: "tracker", header: "ID", width: 100, align: "center", sort: false },
   { id: "start", header: "Start", width: 92, align: "center", sort: true },
-  { id: "hours", header: "Hrs", width: 62, align: "center", sort: true },
-  { id: "days", header: "Days", width: 58, align: "center", sort: true },
+  /* "Effort", not "Hrs"/"Days" — the editor labels the same two columns the
+     same way. They are how much work a row contains, and on an epic they are
+     the sum of its tasks' work, which is nothing like the length of its bar. */
+  { id: "hours", header: "Effort h", width: 84, align: "center", sort: true },
+  { id: "days", header: "Effort d", width: 78, align: "center", sort: true },
 ];
 /* `dot` is a complete literal class string: Tailwind's scanner only sees class
    names spelled out in the source, never ones assembled at runtime */
@@ -507,7 +510,7 @@ function Board({ store, activeId }: { store: ViewStore; activeId: string | null 
         {stats && stats.min && stats.max && (
           <span className="pl-1 text-mini whitespace-nowrap text-muted tabular-nums max-[1100px]:hidden">
             {fmtD(stats.min)} – {fmtD(new Date(stats.max.getTime() - DAY))}
-            {" · "}<strong className="font-semibold text-ink">{stats.h}h</strong> / {stats.d}d
+            {" · effort "}<strong className="font-semibold text-ink">{stats.h}h</strong> / {stats.d}d
             {stats.epics > 0 && " · " + stats.epics + (stats.epics === 1 ? " epic" : " epics")}
           </span>
         )}

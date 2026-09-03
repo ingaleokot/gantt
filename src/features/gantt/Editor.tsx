@@ -101,8 +101,12 @@ const COLUMNS: IColumnConfig[] = [
   { id: "who", header: "Who", width: 78, align: "center", sort: false },
   { id: "tracker", header: "ID", width: 100, align: "center", sort: false },
   { id: "start", header: "Start", width: 92, align: "center", sort: true },
-  { id: "hours", header: "Hrs", width: 62, align: "center", sort: true, editor: "text" },
-  { id: "days", header: "Days", width: 58, align: "center", sort: true, editor: "text" },
+  /* "Effort", not "Hrs"/"Days": these are how much work the row contains, and
+     for an epic they are the sum of its tasks' work — a number that sits next
+     to a calendar bar of a completely different length. Labelling them by unit
+     alone read as duration. The arithmetic is untouched. */
+  { id: "hours", header: "Effort h", width: 84, align: "center", sort: true, editor: "text" },
+  { id: "days", header: "Effort d", width: 78, align: "center", sort: true, editor: "text" },
   { id: "add-task", header: "", width: 37, align: "center", sort: false, resize: false },
 ];
 
@@ -165,8 +169,9 @@ const EDITOR_ITEMS = [
   ] },
   { key: "url", comp: "text", label: "Link (e.g. Yandex Tracker)", config: { placeholder: "https://tracker.yandex.com/PRODUCT-123" } },
   { key: "start", comp: "date", label: "Start date", config: { format: "%d-%m-%Y" }, isHidden: (t: ITask) => t.type === "summary" },
-  { key: "hours", comp: "counter", label: "Estimate (hours)", config: { min: 1 }, isHidden: (t: ITask) => !isBar(t) },
-  { key: "days", comp: "text", label: "Estimate (days)", config: { placeholder: "e.g. 1.5" }, isHidden: (t: ITask) => !isBar(t) },
+  /* effort, not elapsed time — 7 h of effort is one working day of it */
+  { key: "hours", comp: "counter", label: "Effort (hours of work)", config: { min: 1 }, isHidden: (t: ITask) => !isBar(t) },
+  { key: "days", comp: "text", label: "Effort (working days, 7 h each)", config: { placeholder: "e.g. 1.5" }, isHidden: (t: ITask) => !isBar(t) },
   { key: "progress", comp: "slider", label: "Progress", config: { min: 0, max: 100 }, isHidden: (t: ITask) => t.type === "milestone" },
   { key: "links", comp: "links", label: "", batch: "links" },
 ];
@@ -185,6 +190,12 @@ function prepareTasks(tasks: StoreTask[]): RevivedTask[] {
   const parents = new Set(tasks.map((t) => t.parent).filter((p) => p !== undefined && p !== null && p !== 0));
   return tasks.map((t) => {
     const r = reviveTask(t);
+    /* `open` belongs to a branch and nothing else. A leaf that carries it —
+       an epic emptied of its tasks, then reloaded — sends the store's tree
+       walker into `null.forEach` and takes the whole editor down before it
+       draws. Only what has children may keep it, which is what the read-only
+       viewer already derives rather than trusts. */
+    if (!parents.has(r.id)) delete r.open;
     /* anything with tasks under it is an epic */
     if (parents.has(r.id) && r.type !== "summary") r.type = "summary";
     if (r.type === "summary" && parents.has(r.id)) { delete r.start; delete r.end; delete r.duration; return r; }
@@ -201,6 +212,10 @@ function prepareTasks(tasks: StoreTask[]): RevivedTask[] {
       }
       const fixed = scheduleFromHours(r.hours, r.start || new Date());
       r.hours = fixed.hours; r.start = fixed.start; r.end = fixed.end; r.duration = fixed.duration;
+      /* a row stored before `days` existed has none; derive it from the hours
+         exactly as the viewer does, so the same task never reads differently
+         on the two pages */
+      if (!r.days) r.days = fixed.days;
     }
     return r;
   });
@@ -342,6 +357,41 @@ function renderProjectSpan(api: GanttApi) {
   el.style.width = Math.round(x1 - x0) + "px";
 }
 
+/* ---------- what a bar drag actually commits ----------
+   The widget does not hand the intercept the dates the user dragged to. On
+   pointer-up it reads the task back UNCHANGED and sends those values together
+   with a separate `diff` in whole scale units, and its own handler is what
+   applies the diff afterwards:
+
+     mode "move"  → task {start, end} (both current) + diff  → shift both
+     mode "start" → task {start}      (current)      + diff  → left edge moves
+     mode "end"   → task {end}        (current)      + diff  → right edge moves
+
+   The intercept runs BEFORE that handler, so comparing ev.task.start/end to
+   the stored task always said "unchanged" and the resize branch below was
+   unreachable. Worse, writing a normalized {start, end} pair into ev.task made
+   the store take its two-endpoint path for every mode, so dragging either edge
+   moved the whole bar instead of resizing it.
+
+   So a drag is left alone on the way in and normalized on the way out, in the
+   `update-task` handler that runs after the store has applied the diff. The
+   mode is read off the shape of the event, which is the only place it survives.
+   Moving keeps the estimate and re-rolls the start off a weekend; resizing
+   takes the new span as the new estimate and snaps it back onto working days. */
+type DragMode = "move" | "start" | "end";
+function dragModeOf(ev: { diff?: number; task?: Partial<ITask> | null }): DragMode | null {
+  if (!ev.diff || !ev.task) return null;
+  const hasStart = ev.task.start !== undefined;
+  const hasEnd = ev.task.end !== undefined;
+  if (hasStart && hasEnd) return "move";
+  if (hasStart) return "start";
+  if (hasEnd) return "end";
+  return null;
+}
+/* set by the intercept, consumed by the handler that runs after the store has
+   applied the diff — the only place the drag's mode is still known */
+let pendingDrag: { id: TID; mode: DragMode; hours: number } | null = null;
+
 /* epic estimates roll up from the tasks inside them */
 let ROLLUP_WRITE = false;
 function rollupEpics(api: GanttApi) {
@@ -365,7 +415,13 @@ function rollupEpics(api: GanttApi) {
     });
     return s;
   };
-  list.filter((t) => t.type === "summary").forEach((e) => {
+  /* An epic with nothing under it has no roll-up to compute: the sum would be
+     0, and because the update-task intercept refuses manual hours on a summary
+     the user could never put the number back. Converting a task to an epic used
+     to erase its estimate that way, silently and permanently. Leave a childless
+     epic's stored estimate exactly where it is — the moment it gains a task the
+     roll-up takes over again. */
+  list.filter((t) => t.type === "summary" && (byParent[String(t.id)] || []).length > 0).forEach((e) => {
     const h = Math.round(sumOf(e.id) * 2) / 2;
     const d = Math.round((h / HOURS_PER_DAY) * 10) / 10;
     if (Number(e.hours) !== h || Number(e.days) !== d) writes.push({ id: e.id, task: { hours: h, days: d } });
@@ -689,6 +745,11 @@ export default function GanttEditor({
   const [seed, setSeed] = useState(0);
   const [exporting, setExporting] = useState(false);
   const [stats, setStats] = useState<Stats | null>(null);
+  /* editor-side failures that used to be swallowed: a refused PDF download, a
+     widget that would not serialize, an unreadable undo entry. They belong
+     next to the save status, because "Saved" on its own is a half-truth while
+     any of them is true. */
+  const [notice, setNotice] = useState<string | null>(null);
   const people = st.people;
   const [newPerson, setNewPerson] = useState("");
   const [picker, setPicker] = useState<Picker | null>(null); /* { taskId, el, rect, ids } */
@@ -704,8 +765,11 @@ export default function GanttEditor({
   const snapTimer = useRef<number | null>(null);
   const apiRef = useRef<GanttApi | null>(null);
 
-  const revivedTasks = useMemo(() => prepareTasks(activeProject().tasks), [seed, activeProject]);
-  const links = useMemo(() => activeProject().links.slice(), [seed, activeProject]);
+  /* `st.storeRev` is in here for the same reason it is in the holder's key: an
+     adopted snapshot replaces the draft object wholesale, and neither `seed`
+     nor `projectId` moves when it does */
+  const revivedTasks = useMemo(() => prepareTasks(activeProject().tasks), [seed, activeProject, st.storeRev]);
+  const links = useMemo(() => activeProject().links.slice(), [seed, activeProject, st.storeRev]);
 
   const range = useMemo(() => {
     const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -727,7 +791,13 @@ export default function GanttEditor({
       try {
         p.tasks = serializeSide(a, "tasks");
         p.links = serializeSide(a, "links");
-      } catch (e) { /* keep previous */ }
+      } catch (e) {
+        /* the draft now silently lags what is on screen, and the save that
+           follows would report "Saved" for edits it never captured. Say so
+           instead of quietly substituting the previous draft. */
+        console.error("gantt: could not read the widget's state", e);
+        setNotice("Could not read your latest edits from the timeline, so they are not being saved. Reload the page.");
+      }
     }
     p.name = nameRef.current;
     return p;
@@ -741,10 +811,15 @@ export default function GanttEditor({
     stRef.current.scheduleSave();
   }, [snapshotActive]);
 
-  /* ---------- snapshot-based undo/redo (the library's history is pro-only) ---------- */
+  /* ---------- snapshot-based undo/redo (the library's history is pro-only) ----------
+     The payload is everything a step can change, not just the two lists it used
+     to hold. Removing a person mutates the roster AND strips that id from every
+     task, so a snapshot of tasks alone let undo put the assignment back while
+     the person stayed deleted — and the next save wrote that dangling id to
+     Postgres. Renaming the project is in here for the same reason. */
   const serializeActive = useCallback(() => {
     const p = snapshotActive();
-    return JSON.stringify({ t: p.tasks, l: p.links });
+    return JSON.stringify({ t: p.tasks, l: p.links, h: stRef.current.draft.people, n: p.name });
   }, [snapshotActive]);
   const seedSnapshot = useCallback(() => {
     const s = serializeActive();
@@ -768,16 +843,26 @@ export default function GanttEditor({
   }, [flushSnapshot]);
   const restoreSnapshot = useCallback((json: string) => {
     try {
-      const d = JSON.parse(json) as { t: StoreTask[]; l: StoreLink[] };
+      const d = JSON.parse(json) as { t: StoreTask[]; l: StoreLink[]; h?: Person[]; n?: string };
       const p = activeProject();
       p.tasks = d.t;
       p.links = d.l;
+      /* the roster moves with the step that changed it, so an undone removal
+         puts the person back rather than leaving tasks pointing at nobody */
+      if (Array.isArray(d.h)) stRef.current.draft.people = d.h;
+      if (typeof d.n === "string") { p.name = d.n; nameRef.current = d.n; }
       setTaskCount(d.t.length);
       setSeed((s) => s + 1);
+      stRef.current.bump();
       /* a restored snapshot is a bulk change: the diff turns it into the rows
          that actually differ from what is stored, not a rewrite */
       stRef.current.scheduleSave();
-    } catch (e) {}
+    } catch (e) {
+      /* an entry that will not parse is a bug in what we wrote, and swallowing
+         it leaves the user pressing undo at a stack that does nothing */
+      console.error("gantt: undo entry could not be read", e);
+      setNotice("That undo step could not be restored — the history entry was unreadable.");
+    }
   }, [activeProject]);
 
   /* keyboard shortcuts: ⌘/Ctrl+C copy, +X cut, +V paste (into epics), +Z undo, +Shift+Z redo */
@@ -902,12 +987,16 @@ export default function GanttEditor({
     if (exporting) return;
     const p = snapshotActive();
     setExporting(true);
+    setNotice(null);
     try {
       const doc = buildGanttPdf(p.name, p.tasks, p.links);
       const safe = (p.name || "gantt").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "gantt";
       doc.save(safe + ".pdf"); /* plain browser download */
     } catch (e) {
-      /* nothing to fall back to — the browser refused the download */
+      /* there is nothing to fall back to, but the button going quiet and
+         nothing arriving is the worst of both — say what happened */
+      console.error("gantt: PDF export failed", e);
+      setNotice("The PDF could not be created: " + (e instanceof Error ? e.message : String(e)));
     } finally {
       setExporting(false);
     }
@@ -949,6 +1038,13 @@ export default function GanttEditor({
         return;
       }
       if (!isBar(merged)) return;
+      /* a bar drag: hand it to the store untouched and finish the job in the
+         `update-task` handler below, once the diff has actually been applied */
+      const mode = dragModeOf(ev);
+      if (mode) {
+        pendingDrag = { id: ev.id, mode, hours: Number(prev.hours) || 0 };
+        return;
+      }
       if (merged.type !== prev.type && isBar(merged) && !merged.hours) {
         /* converted from milestone/summary: give it a default estimate */
         t.hours = HOURS_PER_DAY;
@@ -968,6 +1064,33 @@ export default function GanttEditor({
       if (!hours || isNaN(hours)) hours = Math.max(1, merged.duration || 1) * HOURS_PER_DAY;
       const fixed = scheduleFromHours(hours, merged.start || new Date());
       t.hours = fixed.hours; t.days = fixed.days; t.start = fixed.start; t.end = fixed.end; t.duration = fixed.duration;
+    });
+
+    /* the second half of the drag fix: by the time this runs the store has
+       applied `diff`, so the task carries the dates the user actually dragged
+       to. Registered before the generic handlers below so the correction and
+       the save it triggers happen in one pass. */
+    a.on("update-task", (ev) => {
+      const drag = pendingDrag;
+      pendingDrag = null;
+      if (!drag || drag.id !== ev.id) return;
+      let t: ParsedTask | null = null;
+      try { t = a.getTask(ev.id); } catch (e) { return; }
+      if (!t || !isBar(t) || !(t.start instanceof Date)) return;
+      const end = t.end instanceof Date ? t.end : t.start;
+      /* a move carries the estimate with it; a resize IS the new estimate */
+      const hours = drag.mode === "move" ? drag.hours : workDaysBetween(t.start, end) * HOURS_PER_DAY;
+      const fixed = scheduleFromHours(hours || undefined, t.start);
+      const unchanged =
+        +t.start === +fixed.start && +end === +fixed.end &&
+        Number(t.hours) === fixed.hours && Number(t.days) === fixed.days;
+      if (unchanged) return; /* also what stops this from re-entering forever */
+      try {
+        a.exec("update-task", {
+          id: ev.id,
+          task: { hours: fixed.hours, days: fixed.days, start: fixed.start, end: fixed.end, duration: fixed.duration },
+        });
+      } catch (e) { /* the widget rejected it; the bar keeps the dragged dates */ }
     });
 
     const finalEvents = [
@@ -1024,15 +1147,21 @@ export default function GanttEditor({
     stRef.current.draft.people = next;
     stRef.current.bump();
     scheduleSave();
-  }, [scheduleSave]);
+    /* a roster change is an undoable step like any other; without this the
+       stack has no entry that knows the roster ever looked different */
+    scheduleSnapshot();
+  }, [scheduleSave, scheduleSnapshot]);
 
   const addPerson = useCallback(() => {
     const name = newPerson.trim();
     if (!name) return;
+    /* a discrete act, so pin the state it starts from rather than hoping the
+       debounced snapshot already fired */
+    flushSnapshot();
     const next = [...stRef.current.draft.people, { id: uid(), name }];
     setNewPerson("");
     commitPeople(next);
-  }, [newPerson, commitPeople]);
+  }, [newPerson, commitPeople, flushSnapshot]);
 
   const renamePerson = useCallback((id: string, name: string) => {
     commitPeople(stRef.current.draft.people.map((h) => (h.id === id ? { ...h, name } : h)));
@@ -1040,6 +1169,9 @@ export default function GanttEditor({
 
   /* removing a person also clears them from every task that referenced them */
   const removePerson = useCallback((id: string) => {
+    /* before anything moves: this one step changes both the roster and every
+       task that referenced it, and undo has to be able to come back to both */
+    flushSnapshot();
     const strip = (v: unknown) => parseAssignees(v).filter((x) => x !== id).join(",") || null;
     stRef.current.draft.projects.forEach((pr) => {
       (pr.tasks || []).forEach((t) => { if (t.assignees) t.assignees = strip(t.assignees); });
@@ -1055,7 +1187,7 @@ export default function GanttEditor({
       } catch (e) { /* the store copy above is still correct */ }
     }
     commitPeople(stRef.current.draft.people.filter((h) => h.id !== id));
-  }, [commitPeople]);
+  }, [commitPeople, flushSnapshot]);
 
   const toggleAssignee = useCallback((taskId: TID, personId: string) => {
     const a = apiRef.current;
@@ -1119,7 +1251,20 @@ export default function GanttEditor({
   let statusText = {
     idle: "", saving: "Saving…", saved: "Saved · Supabase", local: "Not saved — Supabase unavailable",
   }[st.status];
-  if (statusText && st.error) statusText += " · " + st.error;
+  /* only a failed save belongs on the save pill; a failed create, delete or
+     "last opened" write is its own thing and gets its own pill below */
+  if (st.status === "local" && st.error) statusText += " · " + st.error;
+  /* everything the user has to be told, in the order it matters: a write that
+     failed, a timeline that moved under them, then anything the editor itself
+     could not do */
+  const alerts: { key: string; text: string; dismiss?: () => void }[] = [
+    /* a failed save already reads on the pill above; these are the ones that
+       had nowhere to go: a failed create/delete/"last opened" write, a
+       timeline that moved elsewhere, and the editor's own failures */
+    st.status !== "local" && st.error ? { key: "store", text: st.error } : null,
+    st.warning ? { key: "remote", text: st.warning } : null,
+    notice ? { key: "editor", text: notice, dismiss: () => setNotice(null) } : null,
+  ].filter((x): x is { key: string; text: string; dismiss?: () => void } => !!x);
   const projects = st.projects;
 
   return (
@@ -1202,10 +1347,36 @@ export default function GanttEditor({
             }
           >{statusText}</span>
         )}
+        {/* not decoration: each of these is something that did not happen.
+            Clicking one dismisses it — the underlying state re-raises it if it
+            is still true. */}
+        {alerts.map((a) =>
+          a.dismiss ? (
+            <button
+              key={a.key}
+              type="button"
+              title={a.text + " — click to dismiss"}
+              onClick={a.dismiss}
+              className={`press max-w-[34vw] cursor-pointer overflow-hidden rounded-full border border-danger bg-surface px-2.5 py-[0.1875rem] text-left text-mini text-ellipsis whitespace-nowrap text-danger ${FOCUS}`}
+            >{a.text}</button>
+          ) : (
+            /* not dismissible: it clears itself when the thing it reports does */
+            <span
+              key={a.key}
+              role="status"
+              title={a.text}
+              className="max-w-[34vw] overflow-hidden rounded-full border border-danger bg-surface px-2.5 py-[0.1875rem] text-mini text-ellipsis whitespace-nowrap text-danger"
+            >{a.text}</span>
+          ),
+        )}
         {stats && stats.min && stats.max && (
+          /* hours and days are EFFORT — the work inside the bar — not the
+             length of the bar. An epic's pair is the sum of its tasks' effort
+             sitting next to a calendar span that is nothing like it, so the
+             word has to be on screen. */
           <span className="pl-1 text-mini whitespace-nowrap text-muted tabular-nums max-[1100px]:hidden">
             {fmtD(stats.min)} – {fmtD(new Date(stats.max.getTime() - DAY))}
-            {" · "}<strong className="font-semibold text-ink">{stats.h}h</strong> / {stats.d}d
+            {" · effort "}<strong className="font-semibold text-ink">{stats.h}h</strong> / {stats.d}d
             {stats.epics > 0 && " · " + stats.epics + (stats.epics === 1 ? " epic" : " epics")}
           </span>
         )}
@@ -1321,7 +1492,11 @@ export default function GanttEditor({
             </div>
           </div>
           <MContextMenu api={api!} />
-          <div className="gantt-holder min-h-0 flex-1" key={seed + "-" + view + "-" + projectId}>
+          {/* `storeRev` joins the key so that when the store adopts a newer
+              snapshot from Postgres (another tab wrote while this one was
+              idle) the widget remounts around it instead of showing rows that
+              no longer exist */}
+          <div className="gantt-holder min-h-0 flex-1" key={seed + "-" + view + "-" + projectId + "-" + st.storeRev}>
               <MGantt
                 init={init}
                 tasks={revivedTasks}

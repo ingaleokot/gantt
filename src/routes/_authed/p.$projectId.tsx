@@ -51,7 +51,13 @@ function EditorRoute() {
         if (id === projectId) await navigate({ to: "/", replace: true });
       }}
       onSignOut={async () => {
-        await st.flushSave();
+        /* signing out throws the draft away with the page. flushSave used to
+           swallow its own failure, so unsaved work went with it in silence —
+           it now reports, and this asks before discarding anything. */
+        const saved = await st.flushSave();
+        if (!saved && !window.confirm(
+          "Your latest changes have not reached the database yet, and signing out discards them. Sign out anyway?",
+        )) return;
         await signOut();
         await navigate({ to: "/login", replace: true });
       }}
