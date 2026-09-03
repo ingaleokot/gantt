@@ -1,1 +1,0 @@
-import{f as s,r as a,h as r}from"./index-RLln3-OA.js";function u(){const i=s();a.useEffect(()=>{let n=!0,t=null;return r(e=>{e&&i({to:"/",replace:!0})}).then(e=>{n?t=e:e()}),()=>{n=!1,t&&t()}},[i])}function o(){const i=s();a.useEffect(()=>{let n=!0,t=null;return r(e=>{e||i({to:"/login",replace:!0})}).then(e=>{n?t=e:e()}),()=>{n=!1,t&&t()}},[i])}export{u as a,o as u};

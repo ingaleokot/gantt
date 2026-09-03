@@ -1,1 +1,0 @@
-import{l as o,j as t}from"./index-RLln3-OA.js";import{S as e}from"./ShareViewer-BIzgHMP1.js";import"./roster-BjfQo9Dk.js";import"./runtime-BkPx7E5X.js";import"./IconBase.es-DFNWYMHI.js";function n(){const{projectId:r}=o.useParams();return t.jsx(e,{projectId:r})}export{n as component};
