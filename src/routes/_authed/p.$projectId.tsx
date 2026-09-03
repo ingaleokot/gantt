@@ -41,15 +41,6 @@ function EditorRoute() {
       projectId={projectId}
       view={view ?? (isView(project.view) ? project.view : "day")}
       onView={(v) => { void navigate({ to: "/p/$projectId", params: { projectId }, search: { view: isView(v) ? v : undefined }, replace: true }); }}
-      onOpenProject={(id) => { void navigate({ to: "/p/$projectId", params: { projectId: id }, search: {} }); }}
-      onNewProject={async () => {
-        const id = await st.createProject("New project");
-        await navigate({ to: "/p/$projectId", params: { projectId: id }, search: {} });
-      }}
-      onDeleteProject={async (id) => {
-        await st.removeProject(id);
-        if (id === projectId) await navigate({ to: "/", replace: true });
-      }}
       onSignOut={async () => {
         /* signing out throws the draft away with the page. flushSave used to
            swallow its own failure, so unsaved work went with it in silence —

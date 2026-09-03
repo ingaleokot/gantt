@@ -4,7 +4,7 @@ import {
   cloneStore, deleteProject, fetchStore, insertProject, isConflict, normalizeOrder,
   pendingWrites, saveStore, setActiveProject, storesDiffer,
 } from "../../lib/db";
-import type { Person, StoreData, StoreProject } from "../../lib/db";
+import type { Person, StoreData, StoreLink, StoreProject, StoreTask } from "../../lib/db";
 
 /* The write model, in one place.
 
@@ -45,6 +45,50 @@ export const storeQuery = queryOptions({
 
 export const uid = () => "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
+/* ---------- duplicating a project ----------
+   A copy is rows the user asked for, so it is built here and written the same
+   way anything else is: the project row through the same single insert a new
+   project uses, and its tasks and links by the diff, as inserts. Nothing is
+   copied in Postgres and nothing existing is touched.
+
+   Every id is minted fresh, and `parent`, `source` and `target` are rewritten
+   through the map — a copy that pointed at the original's rows would re-parent
+   them the moment it was saved, and deleting the copy would then cascade into
+   the original. Links whose ends did not both come along are dropped. */
+function copyRows(p: StoreProject): { tasks: StoreTask[]; links: StoreLink[] } {
+  let n = 0;
+  const mint = () => "c" + Date.now().toString(36) + (n++).toString(36) + Math.random().toString(36).slice(2, 5);
+  const map = new Map<string, string>();
+  (p.tasks || []).forEach((t) => map.set(String(t.id), mint()));
+  const tasks = (p.tasks || []).map((t) => {
+    const c: StoreTask = { ...t, id: map.get(String(t.id)) as string };
+    /* `sortOrder` is the snapshot's record of what Postgres holds for the row
+       it was copied from; these rows have never been stored, so their order is
+       their array index and the field must not claim otherwise */
+    delete c.sortOrder;
+    const parent = t.parent === undefined || t.parent === null ? null : map.get(String(t.parent));
+    if (parent) c.parent = parent; else delete c.parent;
+    return c;
+  });
+  const links: StoreLink[] = [];
+  (p.links || []).forEach((l) => {
+    const source = l.source === undefined || l.source === null ? undefined : map.get(String(l.source));
+    const target = l.target === undefined || l.target === null ? undefined : map.get(String(l.target));
+    if (!source || !target) return;
+    links.push({ id: mint(), source, target, type: l.type || "e2s" });
+  });
+  return { tasks, links };
+}
+
+/* "Plan" → "Plan copy" → "Plan copy 2": distinct at a glance in a list where
+   two projects may already share a name */
+function copyName(name: string, taken: string[]): string {
+  const base = (name || "Untitled project") + " copy";
+  if (!taken.includes(base)) return base;
+  for (let i = 2; i < 500; i++) if (!taken.includes(base + " " + i)) return base + " " + i;
+  return base;
+}
+
 /* long enough to batch a drag, short enough that nothing is lost on a reload */
 const SAVE_DEBOUNCE = 1400;
 /* a failed save is retried on its own; the user should not have to poke it */
@@ -71,7 +115,11 @@ export interface StoreApi {
   /* resolves true when everything is in Postgres, false when it is not */
   flushSave: () => Promise<boolean>;
   createProject: (name: string) => Promise<string>;
+  /* a copy of one project's rows, written as inserts; resolves to its id */
+  duplicateProject: (id: string) => Promise<string>;
   removeProject: (id: string) => Promise<void>;
+  /* one project row, one `update … eq(id)` once the debounce fires */
+  renameProject: (id: string, name: string) => void;
   /* records "last opened" so `/` can resolve to it next time */
   markOpened: (id: string) => void;
 }
@@ -253,13 +301,19 @@ export function StoreProvider({ ownerId, children }: { ownerId: string; children
 
   const create = useMutation({
     scope: { id: "gantt-store-write" },
-    mutationFn: async (name: string) => {
+    /* `seed` is only ever set by a duplicate. The project row is inserted here;
+       its tasks and links go into the draft alone and reach Postgres as the
+       inserts the next diff emits — which is also what makes a failed copy
+       retry itself instead of leaving half a project behind. */
+    mutationFn: async ({ name, seed }: { name: string; seed?: { tasks: StoreTask[]; links: StoreLink[] } }) => {
       const draft = draftRef.current;
       const prev = qc.getQueryData<StoreData>(STORE_KEY);
       if (!draft || !prev) throw new Error("Store not loaded");
-      const p: StoreProject = { id: uid(), name, view: "day", tasks: [], links: [] };
+      const p: StoreProject = { id: uid(), name, view: "day", tasks: seed ? seed.tasks : [], links: seed ? seed.links : [] };
       await insertProject(p, draft.projects.length, ownerId);
       draft.projects.push(p);
+      /* the mirror is what Postgres now holds — the project row and nothing
+         under it, so the diff sees the seeded rows as the inserts they are */
       const mirror: StoreProject = { id: p.id, name: p.name, view: p.view, position: draft.projects.length - 1, tasks: [], links: [] };
       qc.setQueryData(STORE_KEY, { ...prev, projects: [...prev.projects, mirror] });
       return p.id;
@@ -299,8 +353,34 @@ export function StoreProvider({ ownerId, children }: { ownerId: string; children
     if (!ok && !window.confirm(
       "Your latest changes have not reached the database yet. Create a new project anyway?",
     )) throw new Error("Cancelled — nothing was created.");
-    return create.mutateAsync(name);
+    return create.mutateAsync({ name });
   }, [flushSave, create.mutateAsync]);
+
+  const duplicateProject = useCallback(async (id: string) => {
+    const ok = await flushSave();
+    if (!ok && !window.confirm(
+      "Your latest changes have not reached the database yet, so the copy would be made from an older version. Duplicate anyway?",
+    )) throw new Error("Cancelled — nothing was copied.");
+    const draft = draftRef.current;
+    const src = draft && draft.projects.find((p) => p.id === id);
+    if (!draft || !src) throw new Error("That project is no longer here.");
+    const name = copyName(src.name, draft.projects.map((p) => p.name));
+    const newId = await create.mutateAsync({ name, seed: copyRows(src) });
+    /* the copied rows exist only in the draft until this lands */
+    scheduleSave();
+    return newId;
+  }, [flushSave, create.mutateAsync, scheduleSave]);
+
+  /* renaming is an edit like any other: the draft leads, and the debounced diff
+     turns it into the one project row that changed */
+  const renameProject = useCallback((id: string, name: string) => {
+    const draft = draftRef.current;
+    const p = draft && draft.projects.find((x) => x.id === id);
+    if (!p || p.name === name) return;
+    p.name = name;
+    bump();
+    scheduleSave();
+  }, [bump, scheduleSave]);
 
   const removeProject = useCallback(async (id: string) => {
     const ok = await flushSave();
@@ -345,12 +425,14 @@ export function StoreProvider({ ownerId, children }: { ownerId: string; children
       scheduleSave,
       flushSave,
       createProject,
+      duplicateProject,
       removeProject,
+      renameProject,
       markOpened,
     };
     /* `rev` is the dependency that matters: the draft object keeps its
        identity while its contents change, so bump() is what re-publishes it */
-  }, [rev, draft, ownerId, status, error, warning, conflict, storeRev, bump, scheduleSave, flushSave, createProject, removeProject, markOpened]);
+  }, [rev, draft, ownerId, status, error, warning, conflict, storeRev, bump, scheduleSave, flushSave, createProject, duplicateProject, removeProject, renameProject, markOpened]);
 
   if (query.isError) {
     return (

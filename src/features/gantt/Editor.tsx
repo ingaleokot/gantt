@@ -3,11 +3,11 @@ import { Gantt, Toolbar, ContextMenu, Editor as TaskEditor } from "@svar-ui/reac
 import type { IApi, IColumnConfig, ILink, IScaleConfig, ITask, TID } from "@svar-ui/react-gantt";
 import { Willow as CoreWillow } from "@svar-ui/react-core";
 import { Willow as GridWillow } from "@svar-ui/react-grid";
-import { Menu } from "@ark-ui/react/menu";
 import { Popover } from "@ark-ui/react/popover";
 import { Portal } from "@ark-ui/react/portal";
 import { SegmentGroup } from "@ark-ui/react/segment-group";
-import { CaretDown, Check, DownloadSimple, ShareNetwork, SignOut, Users, X } from "@phosphor-icons/react";
+import { Link } from "@tanstack/react-router";
+import { CaretLeft, Check, DownloadSimple, ShareNetwork, SignOut, Users, X } from "@phosphor-icons/react";
 import { buildGanttPdf } from "./pdf";
 import type { Person, StoreLink, StoreProject, StoreTask, TaskId } from "../../lib/db";
 import { uid, useStore } from "../projects/store";
@@ -15,6 +15,7 @@ import { setGlyph, type GlyphHost } from "./icons";
 import { installWxiMasks } from "./lib/wxi-masks";
 import { trackerId } from "./lib/tracker";
 import { initialsOf, nameHue, parseAssignees } from "../people/roster";
+import { HOURS_PER_DAY } from "../projects/summary";
 
 /* The stylesheets are imported once by src/main.tsx — the order between them
    is load-bearing, so it lives in one place rather than per screen. */
@@ -110,8 +111,9 @@ const COLUMNS: IColumnConfig[] = [
   { id: "add-task", header: "", width: 37, align: "center", sort: false, resize: false },
 ];
 
-/* ---------- working-time model: estimates in hours, 7h = 1 work day, weekends skipped ---------- */
-const HOURS_PER_DAY = 7;
+/* ---------- working-time model: estimates in hours, 7h = 1 work day, weekends skipped ----------
+   The ratio lives in features/projects/summary.ts because the projects list
+   totals effort too, and two copies of it would be two answers. */
 const isWeekend = (d: Date) => d.getDay() === 0 || d.getDay() === 6;
 function rollForward(d: Date) {
   const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
@@ -720,15 +722,15 @@ export interface EditorProps {
   /* resolved from ?view= first, the project's stored scale second */
   view: string;
   onView: (v: string) => void;
-  onOpenProject: (id: string) => void;
-  onNewProject: () => Promise<void>;
-  onDeleteProject: (id: string) => Promise<void>;
   onSignOut: () => Promise<void>;
 }
 
-/* ---------- the editor for one project ---------- */
+/* ---------- the editor for one project ----------
+   There is no project switcher here any more: the open project's view does not
+   carry tabs for every other one. `/` is the list, and the mark at the top left
+   is the way back to it. */
 export default function GanttEditor({
-  projectId, view, onView, onOpenProject, onNewProject, onDeleteProject, onSignOut,
+  projectId, view, onView, onSignOut,
 }: EditorProps) {
   /* the draft the whole app shares; mutate it, then scheduleSave() diffs it
      against what Postgres holds and writes only the rows that moved */
@@ -757,7 +759,6 @@ export default function GanttEditor({
   const lastPickerRef = useRef<Picker | null>(null);
   const [copied, setCopied] = useState(false);
   const shareInputRef = useRef<HTMLInputElement>(null);
-  const [armDelete, setArmDelete] = useState<string | null>(null);
   const nameRef = useRef(activeProject().name);
   const clipRef = useRef<Clipboard | null>(null);
   const undoRef = useRef<string[]>([]);
@@ -1202,27 +1203,6 @@ export default function GanttEditor({
     if (retagHook) setTimeout(() => retagHook!(), 0);
   }, []);
 
-  /* ---------- project actions: the URL is what changes, not local state ----------
-     every one of them serializes the widget into the draft first, so nothing
-     in flight is lost when this component unmounts on the navigation */
-  const openProject = (id: string) => {
-    setArmDelete(null);
-    if (id === projectId) return;
-    scheduleSave();
-    onOpenProject(id);
-  };
-  const createProject = () => {
-    setArmDelete(null);
-    scheduleSave();
-    void onNewProject();
-  };
-  const deleteProject = (id: string) => {
-    if (armDelete !== id) { setArmDelete(id); return; }
-    setArmDelete(null);
-    scheduleSave();
-    void onDeleteProject(id);
-  };
-
   const changeView = (v: string) => {
     const p = snapshotActive();
     p.view = v;
@@ -1265,79 +1245,38 @@ export default function GanttEditor({
     st.warning ? { key: "remote", text: st.warning } : null,
     notice ? { key: "editor", text: notice, dismiss: () => setNotice(null) } : null,
   ].filter((x): x is { key: string; text: string; dismiss?: () => void } => !!x);
-  const projects = st.projects;
 
   return (
     <div className="flex h-full flex-col">
       {/* the topbar is a material, not a painted strip: a translucent layer with
           a bright top edge, closed off by a soft scroll edge instead of a rule */}
       <header className="material-chrome edge-fade relative z-10 flex flex-none items-center gap-3 pt-2.5 pr-[18px] pb-2.5 pl-4">
-        <div aria-hidden="true"><span className={BRAND_MARK} /></div>
+        {/* the way back to the list. It is a real link, so the browser's own
+            open-in-a-new-tab still works, and it serializes the widget into the
+            draft on the way out — leaving the editor must not lose the edit
+            that is still sitting in the debounce. */}
+        <Link
+          to="/"
+          onClick={() => scheduleSave()}
+          className={`press inline-flex flex-none cursor-pointer items-center gap-1.5 rounded-[9px] border border-transparent bg-transparent px-2 py-1.5 font-ui text-small font-medium text-muted no-underline hover:border-line hover:bg-surface hover:text-ink ${FOCUS}`}
+          title="All projects"
+        >
+          <span className={BRAND_MARK} aria-hidden="true" />
+          <CaretLeft size={11} weight="bold" aria-hidden="true" />
+          <span className="max-[820px]:sr-only">Projects</span>
+        </Link>
         {/* the title carries no `press`: it is a text field, so a scale on
             pointer-down would fight the caret rather than confirm a commit */}
-        <div className="flex items-center gap-0.5">
-          <h1
-            key={projectId}
-            className="m-0 max-w-[46vw] min-w-[60px] overflow-hidden rounded-[7px] px-2 py-[0.1875rem] font-display text-display font-semibold text-ellipsis whitespace-nowrap outline-none transition-colors duration-[130ms] ease-out hover:bg-surface-hover focus-visible:bg-surface focus-visible:shadow-[0_0_0_2px_var(--color-accent)]"
-            contentEditable
-            suppressContentEditableWarning
-            spellCheck={false}
-            onInput={onName}
-            onBlur={onName}
-            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); } }}
-          >{activeProject().name}</h1>
-          <Menu.Root
-            positioning={{ placement: "bottom-start", gutter: 6 }}
-            onOpenChange={(e) => { if (!e.open) setArmDelete(null); }}
-            onSelect={(d) => (d.value === "::new" ? createProject() : openProject(d.value))}
-          >
-            <Menu.Trigger
-              className={`press press-sm flex h-6 w-6 cursor-pointer items-center justify-center rounded-md border-0 bg-transparent p-0 text-muted hover:bg-surface-hover hover:text-ink ${FOCUS}`}
-              aria-label="Switch project"
-            >
-              <CaretDown size={12} weight="bold" aria-hidden="true" />
-            </Menu.Trigger>
-            <Portal>
-              <Menu.Positioner style={{ zIndex: 40 }}>
-                <Menu.Content className={`${POP} min-w-[240px] rounded-[11px] p-1.5`}>
-                  <div className="px-2.5 pt-[0.3125rem] pb-1 text-label font-semibold text-faint uppercase">Projects</div>
-                  {projects.map((p) => (
-                    <div key={p.id} className="group flex items-center gap-0.5 rounded-lg transition-colors duration-[130ms] ease-out hover:bg-surface-hover">
-                      <Menu.Item
-                        value={p.id}
-                        className={`press flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-lg border-0 bg-transparent px-2 py-[0.4375rem] text-left font-ui text-body text-ink data-[highlighted]:bg-surface-hover ${FOCUS}`}
-                      >
-                        <span
-                          className={`h-[7px] w-[7px] flex-none rounded-full ${p.id === projectId ? "bg-accent" : "bg-line"}`}
-                          aria-hidden="true"
-                        />
-                        <span className={`flex-1 overflow-hidden text-ellipsis whitespace-nowrap ${p.id === projectId ? "font-semibold text-accent" : ""}`}>{p.name}</span>
-                        <span className="text-tiny text-faint tabular-nums">{p.tasks.length || ""}</span>
-                      </Menu.Item>
-                      {/* two-step confirm, not a modal: the second click deletes.
-                          Deleting the last project is allowed now — `/` has a
-                          real empty state instead of inventing one. */}
-                      <button
-                        className={
-                          armDelete === p.id
-                            ? `press press-sm flex-none cursor-pointer rounded-[7px] border-0 bg-transparent px-2 py-[0.3125rem] font-ui text-tiny leading-none font-semibold text-danger opacity-100 ${FOCUS}`
-                            : `press press-sm flex-none cursor-pointer rounded-[7px] border-0 bg-transparent px-2 py-[0.3125rem] font-ui text-copy leading-none text-faint opacity-0 group-hover:opacity-100 hover:text-danger focus-visible:opacity-100 ${FOCUS}`
-                        }
-                        type="button"
-                        onClick={(e) => { e.stopPropagation(); deleteProject(p.id); }}
-                        title={armDelete === p.id ? "Click again to delete" : "Delete project"}
-                      >{armDelete === p.id ? "Sure?" : <X size={13} aria-hidden="true" />}</button>
-                    </div>
-                  ))}
-                  <Menu.Item
-                    value="::new"
-                    className={`press mt-1 block w-full cursor-pointer rounded-b-lg border-0 border-t border-t-line-soft bg-transparent px-2.5 py-[0.4375rem] text-left font-ui text-body font-medium text-accent hover:rounded-lg hover:bg-accent-hover data-[highlighted]:rounded-lg data-[highlighted]:bg-accent-hover ${FOCUS}`}
-                  >+ New project</Menu.Item>
-                </Menu.Content>
-              </Menu.Positioner>
-            </Portal>
-          </Menu.Root>
-        </div>
+        <h1
+          key={projectId}
+          className="m-0 max-w-[46vw] min-w-[60px] overflow-hidden rounded-[7px] px-2 py-[0.1875rem] font-display text-display font-semibold text-ellipsis whitespace-nowrap outline-none transition-colors duration-[130ms] ease-out hover:bg-surface-hover focus-visible:bg-surface focus-visible:shadow-[0_0_0_2px_var(--color-accent)]"
+          contentEditable
+          suppressContentEditableWarning
+          spellCheck={false}
+          onInput={onName}
+          onBlur={onName}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); } }}
+        >{activeProject().name}</h1>
         {statusText && (
           <span
             className={

@@ -39,7 +39,9 @@ src/
     gantt/            Editor · ShareViewer · pdf · icons · lib/ (render-icon,
                       wxi-masks, tracker)
     people/           roster.ts — the assignee helpers both gantt screens share
-    projects/         store.tsx — the snapshot/draft write model and project CRUD
+    projects/         store.tsx — the snapshot/draft write model and project CRUD ·
+                      ProjectsPage.tsx (the `/` list) · summary.ts (per-project totals,
+                      type-only imports so it stays free of supabase)
   lib/                supabase client · db.ts (all persistence) · database.types.ts
   styles/             style.css · wx-overrides.css · icons.css
 ```
@@ -116,7 +118,7 @@ File-based routes in `src/routes/`, `autoCodeSplitting: true`.
 | `/signup` | `routes/signup.tsx` | create an account; same redirect |
 | `/forgot-password` | `routes/forgot-password.tsx` | request a reset email; same redirect |
 | `/reset-password` | `routes/reset-password.tsx` | set a new password from the emailed link — **no redirect**, see below |
-| `/` | `routes/_authed/index.tsx` | resolves to `app_state.active_project` (or the first project) and forwards to `/p/$projectId`; with no projects it renders the empty state and a **New project** button |
+| `/` | `routes/_authed/index.tsx` | the projects list (`features/projects/ProjectsPage.tsx`): every project the account owns, and where they are created, renamed, duplicated and deleted; with no projects, an empty state and a **New project** button |
 | `/p/$projectId` | `routes/_authed/p.$projectId.tsx` | the editor, deep-linkable, `?view=day\|week\|month` as a validated search param |
 | `/share/$projectId` | `routes/share.$projectId.tsx` | public read-only viewer — no auth, no Supabase client |
 | `/share` | `routes/share.index.tsx` | the same viewer on the feed's active project, so links handed out before the viewer was deep-linkable still work |
@@ -147,10 +149,18 @@ File-based routes in `src/routes/`, `autoCodeSplitting: true`.
   `bun run build` and a look at whether `assets/index-*.js` references the supabase chunk
   through `import(...)` only.
 - The URL is the source of truth for which project is open. `app_state.active_project` is
-  only "last opened", written by `p.$projectId` on mount and read by `/`.
-- The project switcher and the viewer's project segments **navigate**; they do not set
-  state. The editor is keyed on `projectId`, so a switch remounts it with a clean widget,
-  undo stack and row tagger.
+  only "last opened", written by `p.$projectId` on mount; `/` marks that card **Last
+  opened** and nothing redirects on it. It used to: `/` forwarded to that project, which
+  is exactly why a projects list could not exist — the route that would have shown it
+  always bounced. Don't put the redirect back.
+- **The editor has no project switcher.** The dropdown of every other project (an Ark
+  `Menu` with a hover-revealed delete inside it) is gone; `/` is the list, and the mark at
+  the editor's top left is a `<Link to="/">` back to it. The one `SegmentGroup` left in
+  `Editor.tsx` is the **Day/Week/Month scale** — keep it. The link calls `scheduleSave()`
+  on click so the debounce still in flight is not lost on the way out.
+- The viewer's project segments **navigate**; they do not set state. The editor is keyed
+  on `projectId`, so opening another project remounts it with a clean widget, undo stack
+  and row tagger.
 
 ## Auth (`src/features/auth/`)
 
@@ -266,6 +276,59 @@ the delete and the insert lost the lot. Nothing may go back to that shape:
 Ids compare through `key()` (`String(id)`), because SVAR mints ids the text columns store
 back as strings. Comparing raw would re-insert every in-session row on the next save.
 
+## The projects page (`/`)
+
+`features/projects/ProjectsPage.tsx` is the front door. It talks to nothing itself —
+create, rename, duplicate and delete are all `store.tsx` mutations — and
+`features/projects/summary.ts` computes each card's counts, effort and span from the
+draft, with **type-only imports from `lib/db`** so it stays free of the Supabase client.
+
+Two projects can share a name (the account really does have two "Viory — New platform /
+MVP"), so the card carries what tells them apart: tasks, epics, effort, the date span and
+its length, plus the year on any date outside the current one. `summary.ts` counts the
+way the editor's own header does — an epic contributes no effort of its own (its hours
+are the roll-up of its children) and a milestone is neither a task nor effort — so the
+list and the editor never disagree.
+
+Rules the interaction review left behind, all load-bearing in the markup:
+
+- **nothing is hover-revealed.** Duplicate and delete are always-visible icon buttons
+  with an `aria-label` that names the project (and, for duplicate, how many rows it will
+  copy). The old switcher hid delete behind `group-hover`, which does not exist on touch.
+- **the destructive step says what it costs** — "…and everything in it — 4 rows,
+  including 2 tasks and 1 epic?" — as a two-step confirm inside the card, with focus
+  moved to **Keep it**, and Escape backing out.
+- **no silent no-ops.** Writes queue on one mutation scope, so while any row is mid-write
+  every card's actions are disabled rather than swallowing the click; an emptied name
+  falls back to "Untitled project" on blur rather than vanishing.
+- **the header wraps** instead of overflowing, and the list scrolls — the editor header's
+  own failure below 1100px is not repeated here.
+
+### Duplicating a project
+
+`duplicateProject(id)` in `store.tsx`. It is not a server-side copy and it touches
+nothing that already exists — it is the ordinary write path, given rows:
+
+1. `flushSave()` first, so the copy is made from what Postgres actually holds; if that
+   fails the user is asked before a copy is taken of an older version.
+2. `copyRows()` mints a **fresh id for every task and link** and rewrites `parent`,
+   `source` and `target` through that map. This is the part that matters: a copy still
+   pointing at the original's rows would re-parent them on the first save, and deleting
+   the copy would then cascade into the original. Links that lost an endpoint are
+   dropped, and `sortOrder` is stripped — it records what Postgres holds for a row that
+   has never been stored.
+3. `copyName()` gives "Plan copy", then "Plan copy 2" — a list that already has duplicate
+   names must not gain two identical copies.
+4. The project row goes in through the same single `insertProject` a new project uses
+   (with `owner`, or RLS rejects it); its tasks and links go into the **draft only**, and
+   the snapshot gets a mirror project with no rows under it. So the next diff sees them
+   as the inserts they are — `parentsFirst` orders them for the tasks self-FK — and a
+   copy interrupted halfway retries itself instead of leaving half a project behind.
+
+Verified against a stubbed PostgREST: one duplicate emits exactly `POST projects` (1
+row), `POST tasks` (4 rows, epic first), `POST links` (1 row), and **no delete of any
+kind**.
+
 ## Styling layer (Tailwind v4 + Ark UI + Phosphor)
 
 - **One token source.** `src/styles/style.css` is the Tailwind entry and holds every token in a
@@ -296,8 +359,9 @@ back as strings. Comparing raw would re-insert every in-session row on the next 
   `bun run build && bun run preview`.
 - Two `rounded-*` utilities on one element race inside `@layer utilities` (source order
   doesn't decide the winner) — set the radius once per element.
-- Ark owns the shell primitives: `Popover` (Share, People, Who picker), `Menu` (project
-  switcher), `SegmentGroup` (Day/Week/Month, viewer project switcher), `Field` (login).
+- Ark owns the shell primitives: `Popover` (Share, People, Who picker), `SegmentGroup`
+  (Day/Week/Month, viewer project switcher), `Field` (login). `Menu` is no longer used
+  anywhere — it was the editor's project switcher.
   The SVAR gantt, MToolbar, MContextMenu and MEditor are library-owned — leave them alone.
 
 ### Design conventions (the Apple-design pass)

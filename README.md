@@ -8,7 +8,9 @@ under `/gantt/`. The shell is Tailwind CSS v4 + Ark UI + Phosphor icons.
 
 ## What it does
 
-Multiple projects, epics with auto-rolled-up dates/hours/days, four task types
+A projects list as the front door — counts, effort and timeline on every card, so two
+projects sharing a name are still told apart — with create, rename, duplicate and
+delete; epics with auto-rolled-up dates/hours/days, four task types
 (backend / frontend / design / testing) with pastel colors, Merlin-style epic bars,
 hour-based estimates (7 h = 1 work day) that skip weekends, bidirectional hours/days
 editing, statuses (not started / in progress / done), a people roster with per-task and
@@ -50,7 +52,11 @@ src/
       lib/              render-icon (one detached React root), wxi-masks (the CSS masks
                         for SVAR's own <i> icons), tracker (PRODUCT-XXXX extraction)
     people/roster.ts    assignee helpers shared by both gantt screens
-    projects/store.tsx  the React Query snapshot, the draft, and the write mutations
+    projects/
+      store.tsx       the React Query snapshot, the draft, and the write mutations
+      ProjectsPage.tsx  the projects list at `/` — open, create, rename, duplicate,
+                      delete; it talks to store.tsx, never to Supabase
+      summary.ts      per-project counts, effort and span, from type-only imports
   lib/
     supabase.ts         the browser Supabase client, createClient<Database>(…)
     db.ts               all persistence: supabase-js table queries, no SQL strings;
@@ -91,15 +97,21 @@ Outside `src/`:
 | `/signup` | create an account; same redirect |
 | `/forgot-password` | request a password-reset email; same redirect |
 | `/reset-password` | set a new password, reached from the link in that email — **not** redirected away by an existing session, because a recovery session is exactly what it arrives with |
-| `/` | resolves to the last opened project and forwards to `/p/$projectId`; with no projects, an empty state with a **New project** button |
+| `/` | the projects list: every project the account owns, with what it takes to tell two same-named ones apart, and where projects are created, renamed, duplicated and deleted; with no projects, an empty state with a **New project** button |
 | `/p/$projectId` | the editor — deep-linkable, with `?view=day\|week\|month` as a validated search param |
 | `/share/$projectId` | the public read-only viewer: no auth, and the Supabase client is never loaded |
 | `/share` | the same viewer on whichever project the feed reports as active (the shape of the old share link) |
 
 The auth gate is a `beforeLoad` redirect on a pathless `_authed` layout rather than a
-conditional render, and the project switcher navigates instead of setting state — the URL
-is the source of truth for which project is open. `app_state.active_project` is now only
-"last opened", used to resolve `/`.
+conditional render, and opening a project navigates instead of setting state — the URL is
+the source of truth for which project is open.
+
+`/` used to forward to `app_state.active_project`, which is why there was no projects
+list: the route that would have shown one always redirected away, and the only way
+between projects was a dropdown in the editor's header. That dropdown is gone. `/` is now
+the list; the editor's top-left mark is a link back to it; and `active_project` has
+degraded to nothing more than the **Last opened** badge on a card. The one segmented
+control left in the editor header is the Day/Week/Month scale.
 
 Route components are code-split, and the only module that reaches the Supabase client from
 the eager route tree is `src/features/auth/api/auth.ts`, which imports it dynamically.
@@ -142,9 +154,10 @@ Tailwind CSS v4 + [Ark UI](https://ark-ui.com) + [Phosphor icons](https://phosph
   `bun run build && bun run preview`, not just `bun run dev`.
 - **Ark UI** owns the shell interaction primitives: `Popover` for Share, the People
   manager and the Who picker (dismissal, focus and placement, replacing the hand-rolled
-  `mousedown` listeners and `getBoundingClientRect()` math), `Menu` for the project
-  switcher, `SegmentGroup` for the Day/Week/Month and project switchers, `Field` for the
-  login inputs. The SVAR gantt, its toolbar, context menu and task editor are
+  `mousedown` listeners and `getBoundingClientRect()` math), `SegmentGroup` for the
+  Day/Week/Month scale and the viewer's project switcher, `Field` for the login inputs.
+  `Menu` is no longer used at all — it was the editor's project switcher, and the
+  projects list replaced it. The SVAR gantt, its toolbar, context menu and task editor are
   library-owned and stay untouched.
 - **Phosphor icons**, from exactly one package — `@phosphor-icons/react`. Three
   mechanisms, all fed from it:
@@ -260,7 +273,12 @@ laptop — lost it. Nothing in `src/lib/db.ts` may delete by anything other than
 every row looks new and every stored row looks deleted.
 
 Creating and deleting a project, and recording the last opened one, are their own
-single-row mutations rather than something the diff infers. All the write mutations share
+single-row mutations rather than something the diff infers. **Duplicating** a project is
+the same machinery given rows: the project row is one insert, and its tasks and links are
+minted with fresh ids — with `parent`, `source` and `target` rewritten through the id map
+so the copy can never re-parent or cascade into the original — then written by the
+ordinary diff as inserts, parents before children. Nothing is copied server-side, and
+nothing that already exists is touched. All the write mutations share
 one TanStack Query scope, so they queue instead of racing each other's snapshot.
 
 ## Share flow
