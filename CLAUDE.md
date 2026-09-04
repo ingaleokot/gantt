@@ -492,6 +492,22 @@ kind**.
   There is one entry, so all four are imported by `src/main.tsx` in that order and nowhere
   else — don't move them back into the screens.
 - PDF export uses jsPDF's plain browser download: `buildGanttPdf(...)` returns the doc
-  and the caller calls `doc.save(name)`.
+  and the caller calls `doc.save(name)`. It is **async**, and three things about it are
+  load-bearing:
+  - **jsPDF is `await import("jspdf")`, never a static import.** A static one put 386 kB
+    in the editor's route chunk (`p._projectId-*.js` was 511 kB, now 126 kB) on every
+    project open. `pdf.ts` imports only `type { jsPDF }` at module scope; verify after
+    any change that the built editor chunk mentions jspdf solely as `import("./jspdf…")`.
+  - **Text is drawn in DejaVu Sans, embedded from `features/gantt/fonts/`.** jsPDF's
+    built-in Helvetica is a WinAnsi Type1 face, so a Cyrillic name printed as one wrong
+    Latin glyph per byte ("Поиск" → "> 8 A :"). The two `.ttf` faces are Vite assets
+    (`new URL("./fonts/…", import.meta.url)`), fetched on the first export and held in a
+    module-scope promise — never bundled. If the fetch fails the export still runs in
+    Helvetica with a console warning. Don't reintroduce `setFont("helvetica", …)`.
+  - **Every table cell is clipped to its column by `fitText`**, which measures against the
+    font actually set and ellipsizes. Only the TASK column used to truncate, so
+    `PRODUCT-2907` (19.8 mm) ran through the 19 mm ID column into START. Column widths are
+    sized to their widest content; scale labels are dropped rather than allowed to hang
+    over the chart's edge rules.
 - The artifact integration is gone: no `window.claude`, no `mcp`/`downloads`/`publish`
   capability, no `view_page`/`view_chunks` template chunking. Don't bring any of it back.

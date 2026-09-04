@@ -33,7 +33,7 @@ const pagesFallback: Plugin = {
 };
 
 export default defineConfig({
-  base: "/gantt/",
+  base: process.env.VITE_BASE_PATH || "/gantt/",
   /* tanstackRouter regenerates src/routeTree.gen.ts and must run before the
      React plugin; stripSvarFonts keeps enforce:"pre" so it rewrites SVAR's CSS
      before Tailwind and Vite's own CSS pipeline see it */

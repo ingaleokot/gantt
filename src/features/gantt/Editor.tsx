@@ -990,7 +990,8 @@ export default function GanttEditor({
     setExporting(true);
     setNotice(null);
     try {
-      const doc = buildGanttPdf(p.name, p.tasks, p.links);
+      /* async now: it fetches jsPDF and the Unicode font on demand */
+      const doc = await buildGanttPdf(p.name, p.tasks, p.links);
       const safe = (p.name || "gantt").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "gantt";
       doc.save(safe + ".pdf"); /* plain browser download */
     } catch (e) {

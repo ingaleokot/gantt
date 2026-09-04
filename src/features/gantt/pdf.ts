@@ -1,4 +1,8 @@
-import { jsPDF } from "jspdf";
+/* jsPDF is loaded on demand — see buildGanttPdf. A static import would put the
+   whole library (and its html2canvas/canvg friends) in the editor's route
+   chunk, paid on every project open rather than on the one click that needs
+   it, so the only thing imported here at module scope is its type. */
+import type { jsPDF } from "jspdf";
 import type { StoreLink, StoreTask, TaskId } from "../../lib/db";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -42,6 +46,90 @@ function toDate(v: unknown): Date | null {
 function fmtShort(d: Date) { return d.getDate() + " " + MONTHS[d.getMonth()]; }
 function fmtFull(d: Date) { return d.getDate() + " " + MONTHS[d.getMonth()] + " " + d.getFullYear(); }
 
+/* ── the embedded font ───────────────────────────────────────────────────────
+   jsPDF's built-in Helvetica is a standard PDF Type1 face: WinAnsi only, so a
+   Cyrillic name came out as one wrong Latin glyph per byte ("Поиск" printed as
+   "> 8 A :"). DejaVu Sans is the fix — Latin, Latin Extended, Greek, Cyrillic,
+   Armenian, Georgian, Hebrew, Arabic and the punctuation in between, under a
+   licence that allows redistribution and embedding (fonts/LICENSE.txt).
+
+   The two faces are ~1.4 MB, so they are Vite *assets*, fetched on the first
+   export and kept in a module-scope promise for every export after it. Nothing
+   about them reaches the editor chunk. */
+const PDF_FONT = "DejaVuSans";
+const FALLBACK_FONT = "helvetica";
+type FontFaces = { regular: string; bold: string };
+let facesPromise: Promise<FontFaces> | null = null;
+
+function toBase64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  const CHUNK = 0x8000; /* fromCharCode is called with one chunk of arguments */
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...Array.from(bytes.subarray(i, i + CHUNK)));
+  }
+  return btoa(binary);
+}
+
+async function fetchFace(url: string): Promise<string> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("font " + url + " → HTTP " + res.status);
+  return toBase64(await res.arrayBuffer());
+}
+
+function loadFaces(): Promise<FontFaces> {
+  if (!facesPromise) {
+    facesPromise = (async () => {
+      const [regular, bold] = await Promise.all([
+        fetchFace(new URL("./fonts/DejaVuSans.ttf", import.meta.url).href),
+        fetchFace(new URL("./fonts/DejaVuSans-Bold.ttf", import.meta.url).href),
+      ]);
+      return { regular, bold };
+    })();
+    /* a failed fetch must not poison every later export */
+    facesPromise.catch(() => { facesPromise = null; });
+  }
+  return facesPromise;
+}
+
+/* Returns the family to draw with. If the faces cannot be fetched (offline,
+   asset missing) the export still happens in Helvetica rather than failing —
+   Latin text is fine there, and a PDF with a warning beats no PDF at all. */
+async function installFont(doc: jsPDF): Promise<string> {
+  try {
+    const faces = await loadFaces();
+    doc.addFileToVFS("DejaVuSans.ttf", faces.regular);
+    doc.addFont("DejaVuSans.ttf", PDF_FONT, "normal");
+    doc.addFileToVFS("DejaVuSans-Bold.ttf", faces.bold);
+    doc.addFont("DejaVuSans-Bold.ttf", PDF_FONT, "bold");
+    return PDF_FONT;
+  } catch (e) {
+    console.warn("gantt: Unicode PDF font unavailable, falling back to Helvetica", e);
+    return FALLBACK_FONT;
+  }
+}
+
+/* ── cell fitting ────────────────────────────────────────────────────────────
+   Every string drawn into the table is clipped to its column. The ID column
+   used to draw at a fixed offset with no truncation at all, so PRODUCT-2907
+   (19.8 mm at 7.2 pt) ran straight through the 19 mm column and collided with
+   START. Measure against the font that is actually set, then ellipsize. */
+const ELLIPSIS = "…";
+function fitText(doc: jsPDF, text: string, maxW: number): string {
+  if (!text || maxW <= 0) return "";
+  if (doc.getTextWidth(text) <= maxW) return text;
+  /* split into code points so a surrogate pair is never cut in half */
+  const chars = Array.from(text);
+  const fits = (n: number) => doc.getTextWidth(chars.slice(0, n).join("") + ELLIPSIS) <= maxW;
+  let lo = 0, hi = chars.length - 1;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (fits(mid)) lo = mid; else hi = mid - 1;
+  }
+  if (lo > 0) return chars.slice(0, lo).join("") + ELLIPSIS;
+  return doc.getTextWidth(ELLIPSIS) <= maxW ? ELLIPSIS : "";
+}
+
 type LeveledTask = StoreTask & { $level: number };
 /* the rows actually drawn: `_s` is proven by the filter below, and `_e` is
    always written alongside it in the same map step */
@@ -68,8 +156,22 @@ function orderTasks(tasks: StoreTask[]): LeveledTask[] {
   return out;
 }
 
-export function buildGanttPdf(name: string, tasks: StoreTask[], links: StoreLink[]): jsPDF {
-  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+/* one page's worth of chart furniture, computed once and replayed per page:
+   none of it depends on which rows are on the page, only on how many. */
+type Band = { x0: number; x1: number };
+type Tick = { text: string; x: number };
+type ScalePlan = {
+  weekends: Band[];   /* Saturday+Sunday already coalesced into one band */
+  unitLines: number[];/* week/month separators inside the grid */
+  ticks: Tick[];      /* bottom scale labels */
+  topTicks: Tick[];   /* month (or year) labels in the upper band */
+  topLines: number[];
+};
+
+export async function buildGanttPdf(name: string, tasks: StoreTask[], links: StoreLink[]): Promise<jsPDF> {
+  const { jsPDF: JsPDF } = await import("jspdf");
+  const doc = new JsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+  const F = await installFont(doc);
   const PW = 297, PH = 210, M = 12;
   const rows = orderTasks(tasks).map((t): PdfRow => {
     const start = toDate(t.start);
@@ -104,10 +206,21 @@ export function buildGanttPdf(name: string, tasks: StoreTask[], links: StoreLink
   const unit = spanDays <= 62 ? "day" : spanDays <= 260 ? "week" : "month";
 
   /* geometry */
-  /* the hours column is EFFORT, not the length of the bar beside it, so it
-     says so — which needs a few more millimetres than "HRS" did */
-  const nameW = 46, idW = 19, dateW = 17, hrsW = 17;
+  /* The hours column is EFFORT, not the length of the bar beside it, so it
+     says so. Every width here is measured against the widest thing it has to
+     hold at its own font size: ID takes PRODUCT-nnnn (19.8 mm), the date
+     columns "31 Aug" (9 mm) under a "START" header (9 mm), EFFORT its own
+     13.4 mm header — plus 2 mm of padding on each side. */
+  const PAD = 2;
+  const nameW = 50, idW = 25, dateW = 17, hrsW = 18;
   const tableW = nameW + idW + dateW * 2 + hrsW;
+  const colX = {
+    name: M,
+    id: M + nameW,
+    start: M + nameW + idW,
+    end: M + nameW + idW + dateW,
+    hrs: M + nameW + idW + dateW * 2,
+  };
   const tid = (url: string | undefined) => { const m = /([A-Za-z][A-Za-z0-9_]*-\d+)\/?(?:[?#].*)?$/.exec(url || ""); return m ? m[1].toUpperCase() : null; };
   const chartX = M + tableW, chartW = PW - M - chartX;
   const pxDay = chartW / spanDays;
@@ -118,21 +231,12 @@ export function buildGanttPdf(name: string, tasks: StoreTask[], links: StoreLink
   const pageCount = Math.max(1, Math.ceil(rows.length / rowsPerPage));
 
   const drawHeader = (page: number) => {
-    doc.setFont("helvetica", "bold"); doc.setFontSize(15); doc.setTextColor(...C.ink);
-    doc.text(name || "Project timeline", M, 17);
-    doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); doc.setTextColor(...C.muted);
-    /* the same two dates the app header shows: first start, last inclusive end */
-    const from = isFinite(firstPrinted) ? new Date(firstPrinted) : new Date(min + 2 * DAY);
-    const to = isFinite(lastPrinted) ? new Date(lastPrinted) : new Date(max - 3 * DAY);
-    const meta = fmtFull(from) + "  –  " + fmtFull(to)
-      + "     ·     exported " + fmtFull(new Date())
-      + (pageCount > 1 ? "     ·     page " + page + " of " + pageCount : "");
-    doc.text(meta, M, 22.5);
-
-    /* type legend, right-aligned, only for types in use */
+    /* the legend is measured first: it is right-aligned, and the meta line
+       below the title has to stop before it rather than run underneath */
     const used = Object.keys(TYPE_COLORS).filter((k) => rows.some((t) => t.type === k));
+    let legendLeft = PW - M;
     if (used.length) {
-      doc.setFontSize(7.5);
+      doc.setFont(F, "normal"); doc.setFontSize(7.5);
       let lx = PW - M;
       for (let u = used.length - 1; u >= 0; u--) {
         const tc = TYPE_COLORS[used[u]];
@@ -145,83 +249,128 @@ export function buildGanttPdf(name: string, tasks: StoreTask[], links: StoreLink
         doc.roundedRect(lx, 20.2, 2.4, 2.4, 0.6, 0.6, "F");
         lx -= 5.5;
       }
+      legendLeft = lx + 5.5;
     }
+
+    doc.setFont(F, "bold"); doc.setFontSize(15); doc.setTextColor(...C.ink);
+    doc.text(fitText(doc, name || "Project timeline", PW - 2 * M), M, 17);
+    doc.setFont(F, "normal"); doc.setFontSize(8.5); doc.setTextColor(...C.muted);
+    /* the same two dates the app header shows: first start, last inclusive end */
+    const from = isFinite(firstPrinted) ? new Date(firstPrinted) : new Date(min + 2 * DAY);
+    const to = isFinite(lastPrinted) ? new Date(lastPrinted) : new Date(max - 3 * DAY);
+    const meta = fmtFull(from) + "  –  " + fmtFull(to)
+      + "     ·     exported " + fmtFull(new Date())
+      + (pageCount > 1 ? "     ·     page " + page + " of " + pageCount : "");
+    doc.text(fitText(doc, meta, legendLeft - 4 - M), M, 22.5);
   };
 
-  const drawScale = (nRows: number) => {
-    const gridBottom = topY + scaleH + nRows * rowH;
-    /* header band */
-    doc.setFillColor(...C.headerBg);
-    doc.rect(M, topY, PW - 2 * M, scaleH, "F");
-
-    /* table headers */
-    doc.setFont("helvetica", "bold"); doc.setFontSize(7); doc.setTextColor(...C.muted);
-    doc.text("TASK", M + 2, topY + 8.6);
-    doc.text("ID", M + nameW + 2, topY + 8.6);
-    doc.text("START", M + nameW + idW + 2, topY + 8.6);
-    doc.text("END", M + nameW + idW + dateW + 2, topY + 8.6);
-    doc.text("EFFORT h", M + nameW + idW + dateW * 2 + 2, topY + 8.6);
-
-    /* weekend / unit shading + bottom scale labels */
-    doc.setFontSize(6.6);
-    const half = topY + scaleH / 2;
-    let cursor = new Date(min);
-    cursor.setHours(0, 0, 0, 0);
+  /* The chart furniture is the same on every page, so the date walk that
+     produces it runs once instead of once per page. Weekend shading also
+     coalesces: Saturday and Sunday are adjacent bands of one colour, so they
+     go down as a single rect — half the fills, identical ink. */
+  const planScale = (): ScalePlan => {
+    const weekends: Band[] = [];
+    const unitLines: number[] = [];
+    const ticks: Tick[] = [];
+    /* scale labels are centred in their band, and a band clipped by the edge of
+       the chart is narrower than its label: without this the first week label
+       hung 0.4 mm over the chart's left rule and into the EFFORT column */
+    const centred = (list: Tick[], text: string, x: number) => {
+      const w = doc.getTextWidth(text) / 2;
+      if (x - w >= chartX && x + w <= PW - M) list.push({ text, x });
+    };
+    doc.setFont(F, "normal"); doc.setFontSize(6.6);
+    const cursor0 = new Date(min);
+    cursor0.setHours(0, 0, 0, 0);
     const labelEvery = unit === "day" ? (pxDay >= 3.2 ? 1 : pxDay >= 1.7 ? 2 : 7) : 1;
+    let cursor = cursor0;
     let i = 0;
     while (cursor.getTime() < max) {
       const t0 = cursor.getTime();
-      let next = new Date(t0);
+      let next: Date;
       if (unit === "day") next = new Date(t0 + DAY);
       else if (unit === "week") next = new Date(t0 + 7 * DAY);
-      else { next = new Date(next.getFullYear(), next.getMonth() + 1, 1); }
+      else next = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
       const x0 = Math.max(chartX, X(t0)), x1 = Math.min(PW - M, X(next.getTime()));
       if (x1 > x0) {
         if (unit === "day") {
           const dow = cursor.getDay();
-          if (dow === 0 || dow === 6) { doc.setFillColor(...C.weekend); doc.rect(x0, topY + scaleH, x1 - x0, nRows * rowH, "F"); }
-          if (i % labelEvery === 0 && x1 - x0 >= 1.6) {
-            doc.setFont("helvetica", "normal"); doc.setTextColor(...C.muted);
-            doc.text(String(cursor.getDate()), (x0 + x1) / 2, topY + scaleH - 2.2, { align: "center" });
+          if (dow === 0 || dow === 6) {
+            const prev = weekends[weekends.length - 1];
+            if (prev && Math.abs(prev.x1 - x0) < 0.001) prev.x1 = x1; /* Sat + Sun */
+            else weekends.push({ x0, x1 });
           }
+          if (i % labelEvery === 0 && x1 - x0 >= 1.6) centred(ticks, String(cursor.getDate()), (x0 + x1) / 2);
         } else if (unit === "week") {
-          doc.setFont("helvetica", "normal"); doc.setTextColor(...C.muted);
-          if (x1 - x0 >= 7) doc.text(fmtShort(cursor), (x0 + x1) / 2, topY + scaleH - 2.2, { align: "center" });
-          doc.setDrawColor(...C.line); doc.setLineWidth(0.15);
-          doc.line(x0, topY + scaleH, x0, gridBottom);
+          if (x1 - x0 >= 7) centred(ticks, fmtShort(cursor), (x0 + x1) / 2);
+          unitLines.push(x0);
         } else {
-          doc.setFont("helvetica", "normal"); doc.setTextColor(...C.muted);
-          if (x1 - x0 >= 8) doc.text(MONTHS[cursor.getMonth()], (x0 + x1) / 2, topY + scaleH - 2.2, { align: "center" });
-          doc.setDrawColor(...C.line); doc.setLineWidth(0.15);
-          doc.line(x0, topY + scaleH, x0, gridBottom);
+          if (x1 - x0 >= 8) centred(ticks, MONTHS[cursor.getMonth()], (x0 + x1) / 2);
+          unitLines.push(x0);
         }
       }
       cursor = next; i++;
     }
 
-    /* top scale: months (day/week units) or years (month unit) */
-    doc.setFont("helvetica", "bold"); doc.setFontSize(7); doc.setTextColor(...C.ink);
+    const topTicks: Tick[] = [];
+    const topLines: number[] = [];
+    doc.setFont(F, "bold"); doc.setFontSize(7);
     let mCur = unit === "month" ? new Date(new Date(min).getFullYear(), 0, 1) : new Date(new Date(min).getFullYear(), new Date(min).getMonth(), 1);
     while (mCur.getTime() < max) {
       const mNext = unit === "month" ? new Date(mCur.getFullYear() + 1, 0, 1) : new Date(mCur.getFullYear(), mCur.getMonth() + 1, 1);
       const x0 = Math.max(chartX, X(mCur.getTime())), x1 = Math.min(PW - M, X(mNext.getTime()));
       if (x1 - x0 >= 12) {
         const label = unit === "month" ? String(mCur.getFullYear()) : MONTHS[mCur.getMonth()] + " " + mCur.getFullYear();
-        doc.text(label, (x0 + x1) / 2, half - 1.2, { align: "center" });
+        centred(topTicks, label, (x0 + x1) / 2);
       }
-      doc.setDrawColor(...C.line); doc.setLineWidth(0.2);
-      doc.line(x0, topY, x0, unit === "day" ? gridBottom : topY + scaleH);
+      topLines.push(x0);
       mCur = mNext;
     }
+    return { weekends, unitLines, ticks, topTicks, topLines };
+  };
+  const plan = planScale();
+
+  const drawScale = (nRows: number) => {
+    const gridBottom = topY + scaleH + nRows * rowH;
+    const gridH = nRows * rowH;
+    /* header band */
+    doc.setFillColor(...C.headerBg);
+    doc.rect(M, topY, PW - 2 * M, scaleH, "F");
+
+    /* table headers, each clipped to its own column like every other cell */
+    doc.setFont(F, "bold"); doc.setFontSize(7); doc.setTextColor(...C.muted);
+    doc.text(fitText(doc, "TASK", nameW - PAD * 2), colX.name + PAD, topY + 8.6);
+    doc.text(fitText(doc, "ID", idW - PAD * 2), colX.id + PAD, topY + 8.6);
+    doc.text(fitText(doc, "START", dateW - PAD * 2), colX.start + PAD, topY + 8.6);
+    doc.text(fitText(doc, "END", dateW - PAD * 2), colX.end + PAD, topY + 8.6);
+    doc.text(fitText(doc, "EFFORT h", hrsW - PAD * 2), colX.hrs + PAD, topY + 8.6);
+
+    /* weekend shading, then the bottom scale labels */
+    doc.setFillColor(...C.weekend);
+    for (const b of plan.weekends) doc.rect(b.x0, topY + scaleH, b.x1 - b.x0, gridH, "F");
+
+    doc.setFont(F, "normal"); doc.setFontSize(6.6); doc.setTextColor(...C.muted);
+    for (const t of plan.ticks) doc.text(t.text, t.x, topY + scaleH - 2.2, { align: "center" });
+
+    doc.setDrawColor(...C.line); doc.setLineWidth(0.15);
+    for (const x of plan.unitLines) doc.line(x, topY + scaleH, x, gridBottom);
+
+    /* top scale: months (day/week units) or years (month unit) */
+    doc.setFont(F, "bold"); doc.setFontSize(7); doc.setTextColor(...C.ink);
+    const half = topY + scaleH / 2;
+    for (const t of plan.topTicks) doc.text(t.text, t.x, half - 1.2, { align: "center" });
+    doc.setDrawColor(...C.line); doc.setLineWidth(0.2);
+    const topLineBottom = unit === "day" ? gridBottom : topY + scaleH;
+    for (const x of plan.topLines) doc.line(x, topY, x, topLineBottom);
 
     /* frame lines */
     doc.setDrawColor(...C.line); doc.setLineWidth(0.25);
     doc.line(M, topY, PW - M, topY);
     doc.line(M, topY + scaleH, PW - M, topY + scaleH);
-    doc.line(M + nameW, topY, M + nameW, gridBottom);
-    doc.line(M + nameW + idW, topY, M + nameW + idW, gridBottom);
-    doc.line(M + nameW + idW + dateW, topY, M + nameW + idW + dateW, gridBottom);
-    doc.line(M + nameW + idW + dateW * 2, topY, M + nameW + idW + dateW * 2, gridBottom);
+    doc.line(colX.id, topY, colX.id, gridBottom);
+    doc.line(colX.start, topY, colX.start, gridBottom);
+    doc.line(colX.end, topY, colX.end, gridBottom);
+    doc.line(colX.hrs, topY, colX.hrs, gridBottom);
     doc.line(chartX, topY, chartX, gridBottom);
     doc.line(M, gridBottom, PW - M, gridBottom);
 
@@ -252,25 +401,24 @@ export function buildGanttPdf(name: string, tasks: StoreTask[], links: StoreLink
 
       /* table cells */
       const isSummary = t.type === "summary";
-      doc.setFont("helvetica", isSummary ? "bold" : "normal");
+      doc.setFont(F, isSummary ? "bold" : "normal");
       doc.setFontSize(8); doc.setTextColor(...C.ink);
-      const indent = 2 + (t.$level || 0) * 3.5;
-      let label = String(t.text || "Untitled");
-      while (doc.getTextWidth(label) > nameW - indent - 3 && label.length > 4) label = label.slice(0, -2);
-      if (label !== String(t.text || "Untitled")) label += "…";
-      if (t.url && /^https?:\/\//i.test(t.url)) doc.textWithLink(label, M + indent, yc + 1.1, { url: t.url });
-      else doc.text(label, M + indent, yc + 1.1);
-      doc.setFont("helvetica", "normal"); doc.setFontSize(7.2); doc.setTextColor(...C.muted);
+      const indent = PAD + (t.$level || 0) * 3.5;
+      const label = fitText(doc, String(t.text || "Untitled"), nameW - indent - PAD);
+      if (t.url && /^https?:\/\//i.test(t.url)) doc.textWithLink(label, colX.name + indent, yc + 1.1, { url: t.url });
+      else doc.text(label, colX.name + indent, yc + 1.1);
+      doc.setFont(F, "normal"); doc.setFontSize(7.2); doc.setTextColor(...C.muted);
       const ticket = t.url ? tid(t.url) : null;
       if (ticket) {
         doc.setTextColor(...C.summary);
-        doc.textWithLink(ticket, M + nameW + 2, yc + 1.05, { url: t.url });
+        /* clipped like everything else: PRODUCT-2907 used to run into START */
+        doc.textWithLink(fitText(doc, ticket, idW - PAD * 2), colX.id + PAD, yc + 1.05, { url: t.url });
         doc.setTextColor(...C.muted);
       }
-      doc.text(fmtShort(t._s), M + nameW + idW + 2, yc + 1.05);
-      if (t.type !== "milestone") doc.text(fmtShort(lastDay(t)), M + nameW + idW + dateW + 2, yc + 1.05);
+      doc.text(fitText(doc, fmtShort(t._s), dateW - PAD * 2), colX.start + PAD, yc + 1.05);
+      if (t.type !== "milestone") doc.text(fitText(doc, fmtShort(lastDay(t)), dateW - PAD * 2), colX.end + PAD, yc + 1.05);
       if (t.type !== "milestone" && t.hours) {
-        doc.text(String(t.hours), M + nameW + idW + dateW * 2 + 2, yc + 1.05);
+        doc.text(fitText(doc, String(t.hours), hrsW - PAD * 2), colX.hrs + PAD, yc + 1.05);
       }
 
       /* bar */
@@ -324,7 +472,7 @@ export function buildGanttPdf(name: string, tasks: StoreTask[], links: StoreLink
   }
 
   if (!rows.length) {
-    doc.setFont("helvetica", "normal"); doc.setFontSize(10); doc.setTextColor(...C.muted);
+    doc.setFont(F, "normal"); doc.setFontSize(10); doc.setTextColor(...C.muted);
     doc.text("No scheduled tasks yet.", M, topY + scaleH + 10);
   }
 
