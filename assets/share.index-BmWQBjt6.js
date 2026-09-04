@@ -1,0 +1,1 @@
+import{j as r}from"./index-CjAM-4ul.js";import{S as o}from"./ShareViewer-CQ2cMoWY.js";import"./tracker--dp40N3i.js";import"./runtime-DV8k-noa.js";import"./Plus.es-Bzc_e3sr.js";function n(){return r.jsx(o,{projectId:null})}export{n as component};
