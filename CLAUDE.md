@@ -126,7 +126,7 @@ File-based routes in `src/routes/`, `autoCodeSplitting: true`.
 | `/forgot-password` | `routes/forgot-password.tsx` | request a reset email; same redirect |
 | `/reset-password` | `routes/reset-password.tsx` | set a new password from the emailed link — **no redirect**, see below |
 | `/` | `routes/_authed/index.tsx` | the projects list (`features/projects/ProjectsPage.tsx`): every project the account owns, and where they are created, renamed, duplicated and deleted; with no projects, an empty state and a **New project** button |
-| `/p/$projectId` | `routes/_authed/p.$projectId.tsx` | the editor, deep-linkable, with four validated search params: `?view=day\|week\|month` and the filter's `?type=`, `?rel=`, `?who=` (see Filtering) |
+| `/p/$projectId` | `routes/_authed/p.$projectId.tsx` | the editor, deep-linkable, with three validated search params: the filter's `?type=`, `?rel=`, `?who=` (see Filtering). `?view=` is **gone** — see The timeline scale |
 | `/share/$projectId` | `routes/share.$projectId.tsx` | public read-only viewer — no auth, no Supabase client |
 | `/share` | `routes/share.index.tsx` | the same viewer on the feed's active project, so links handed out before the viewer was deep-linkable still work |
 
@@ -162,12 +162,50 @@ File-based routes in `src/routes/`, `autoCodeSplitting: true`.
   always bounced. Don't put the redirect back.
 - **The editor has no project switcher.** The dropdown of every other project (an Ark
   `Menu` with a hover-revealed delete inside it) is gone; `/` is the list, and the mark at
-  the editor's top left is a `<Link to="/">` back to it. The one `SegmentGroup` left in
-  `Editor.tsx` is the **Day/Week/Month scale** — keep it. The link calls `scheduleSave()`
+  the editor's top left is a `<Link to="/">` back to it. There is no `SegmentGroup` in
+  `Editor.tsx` at all any more — the Day/Week/Month scale went with it. The link calls `scheduleSave()`
   on click so the debounce still in flight is not lost on the way out.
 - The viewer's project segments **navigate**; they do not set state. The editor is keyed
   on `projectId`, so opening another project remounts it with a clean widget, undo stack
   and row tagger.
+
+## The timeline scale, and the header
+
+There is **one scale: days.** The Day / Week / Month `SegmentGroup` is gone from the editor
+and from the public viewer, and with it `?view=` on `/p/$projectId`. Consequences worth
+knowing before "restoring" any of it:
+
+- **`?view=` is not in the route's search schema any more.** `validateSearch` BUILDS the
+  search object rather than checking it, so an old bookmarked `?view=week` is dropped on
+  the way in and the editor opens normally. It is not an error.
+- **`projects.view` stays in the schema and is left exactly as stored.** Nothing writes it
+  now and nothing reads it, so removing the switcher dirtied no project row. There is no
+  migration.
+- **`pdf.ts` keeps its own day/week/month logic and must.** It picks the unit from the
+  project's span (`spanDays <= 62 ? day : <= 260 ? week : month`), because a nine-month
+  timeline drawn in day columns is unreadable on A4. That has nothing to do with this UI.
+
+The header is two groups, not one run: identity on the left — back link, the project's
+name, and a quiet second line under it carrying the save state, the filter pill and the
+totals — and the actions on the right. It used to be nine controls and an eight-fact stats
+string at the same weight on one row, in which the project's own name was the thing that
+got clipped to four characters and "Export PDF" / "Sign out" wrapped onto a second line.
+What holds it together now:
+
+- the identity block is `flex-1 min-w-0` and the actions `flex-none`, so the title takes
+  what is left and ellipsizes rather than pushing controls off a page that cannot scroll;
+- **Share and Export PDF are icon-only** (`BTN_ICON`) and carry `aria-label` AND `title` —
+  an icon-only control with no accessible name was a review finding, don't reintroduce it;
+- People / Filter / Sign out drop their LABEL below 1080px (`max-[1080px]:sr-only`), never
+  the control; the back link's label goes at 900px;
+- the stats line sheds its least important segments first — the date span below 860px, the
+  epic/story counts and the unscoped total below 1180px — so effort and the MVP/Full split
+  survive to ~700px instead of the whole line vanishing at 1100 as it used to.
+
+Verified at 700 / 960 / 1114 / 1440: one row of controls, all six present and inside the
+viewport, header 62px, title never clipped. Below ~760px the fixed `gridWidth` pushes the
+chart off-screen — that is the widget's own layout, not the header's, and is what SVAR's
+draggable resizer is for.
 
 ## Auth (`src/features/auth/`)
 
@@ -322,25 +360,63 @@ and "what does MVP cost" would always be zero.
 - **modal**: a "Release scope" select, hidden unless the row is a tier (`isHidden` reads
   the tier, not the drawn type, so an empty nested story is still scopeable). The empty
   option is `""`, which `db.ts` maps back to a NULL column.
-- **grid**: a `.release-tag` pill (`rel-mvp` / `rel-full`) appended into the name cell by
-  the tagger and positioned with flex `order: 1`, between the name and the row pencil
-  (which moved to `order: 2`). Only the tier that OWNS the release is tagged; repeating
-  the inherited scope on every descendant would tag the whole grid.
-- **totals**: `releaseTotals()` groups leaf effort by inherited scope. The editor header
-  and the projects cards both show "MVP 21h · Full 7h" from it.
+- **grid**: a **Scope column** of its own (`{ id: "scope", width: 72 }`, second in
+  `COLUMNS` in both gantt screens), filled by the row tagger with a `.release-tag` pill.
+  It used to be appended after the task NAME, in a cell that already carried the tree
+  toggle, the type icon, the status dot, the text and the edit pencil. Every row in scope
+  is tagged now, not only the tier that owns it — solid on the owner, ghosted (`rel-soft`)
+  on the rows that inherit — which is the same distinction the PDF's SCOPE column draws
+  with bold and regular, and what makes the column readable as a column. `gridWidth` grew
+  by 48 rather than the column's full 72, so the chart gives up less than the column
+  costs; the widget's own draggable resizer is how a narrow window is rebalanced.
+  `gridWidth` is deliberately a CONSTANT: SVAR re-runs `init(config)` on any prop change,
+  so one that tracked the window would re-initialise the store — and drop the filter — on
+  every resize tick.
+- **the Scope column header hosts the release filter.** A tagger-appended `.col-filter`
+  button (append-only, positioned by CSS, `pointerdown` stopped, and the column declared
+  `sort: false` so there is nothing for it to fight) opens a controlled Ark `Popover`
+  anchored through `getAnchorRect` — the same bridge the Who picker uses, because React
+  cannot render inside a header cell the widget owns. It is a SECOND entry point to the
+  release dimension, not a replacement: the header's Filter popover still holds all three.
+- **totals**: `releaseTotals()` groups leaf effort by inherited scope — see MVP ⊂ Full
+  below for what the four numbers mean and how they are worded.
 - **PDF**: a 16 mm SCOPE column between ID and START — bold and coloured on the tier that
-  owns the scope, muted on the rows that inherit it.
+  owns the scope, muted on the rows that inherit it — plus the same release line the
+  editor header shows, drawn under the meta line from `releaseSummaryText`.
 - **share viewer**: `release` is read from the feed if present. **It is not there yet.**
   `public.share_feed` builds the JSON column by column, so until the owner adds
   `'release', t.release,` next to `'status', t.status,` in that function every shared row
   reads as unscoped — which the viewer handles silently rather than breaking. That is a
   migration; **the user applies it, not us.**
 
+### MVP is a subset of the full release
+
+`mvp` and `full` are **not two disjoint buckets**. Marking a tier `mvp` says "this ships in
+the MVP", and everything in the MVP also ships in the full release; marking one `full` says
+"this ships in the full release and NOT in the MVP". Everything reads that rule from
+`taxonomy.ts` rather than restating it, so no screen can disagree:
+
+- `releaseMatches(selected, scope)` is what `makeFilter` uses. Filtering by **Full release
+  returns the MVP rows too**; filtering by MVP does not return full-only rows.
+- `ReleaseTotals` is `{ mvp, fullOnly, fullRelease, unscoped }`. There is deliberately **no
+  field called plain `full`** — that name is exactly what made "MVP 21h · Full 7h" read as
+  two buckets that fail to add up. `fullRelease` is `mvp + fullOnly`.
+- `releaseSummaryText()` is the one wording, used verbatim by the editor header, the public
+  viewer, the projects cards and the PDF: **"MVP 56h · Full 98h incl. MVP · unscoped 65h"**.
+  The "incl. MVP" is dropped only when there is no MVP effort to include.
+- `RELEASE_INCLUSION_NOTE` ("Full release includes everything marked MVP.") is printed
+  under the Release chips in **both** filter popovers, on screen — never a tooltip. A user
+  who filters by Full and sees MVP rows come back would otherwise read it as a bug.
+- The editor modal's own Release-scope select does NOT use those labels: there the ids are
+  being *assigned*, so it reads "MVP — also in the full release" and "Full release only —
+  not in the MVP".
+
 ## Filtering (type · release · who)
 
-An Ark `Popover` in the editor header, next to the Day/Week/Month scale, with three
-multi-select groups ANDed together. The state is four validated search params on
-`/p/$projectId` — `?type=story,backend&rel=mvp,none&who=h1,none` — so a filtered timeline
+An Ark `Popover` in the editor header, with three multi-select groups ANDed together, and
+a second entry point to the release dimension on the Scope column's header. The state is
+three validated search params on `/p/$projectId` —
+`?type=story,backend&rel=mvp,none&who=h1,none` — so a filtered timeline
 is a link. `type` and `rel` are validated against the known ids; `who` can only be checked
 for SHAPE at the route (the roster is not loaded there), so the editor drops ids nobody
 holds any more via `usableFilter` — a stale person in a URL is ignored, never fatal.
@@ -436,7 +512,8 @@ draft, with **type-only imports from `lib/db`** so it stays free of the Supabase
 
 Two projects can share a name (the account really does have two "Viory — New platform /
 MVP"), so the card carries what tells them apart: tasks, epics, stories, effort, the
-release split ("MVP 21h · Full 7h", or "Not scoped"), the date span and its length, plus
+release split (`releaseSummaryText`: "MVP 56h · Full 98h incl. MVP", or "Not scoped"),
+the date span and its length, plus
 the year on any date outside the current one. `summary.ts` counts the
 way the editor's own header does — an epic contributes no effort of its own (its hours
 are the roll-up of its children) and a milestone is neither a task nor effort — so the
@@ -516,8 +593,8 @@ kind**.
   `bun run build && bun run preview`.
 - Two `rounded-*` utilities on one element race inside `@layer utilities` (source order
   doesn't decide the winner) — set the radius once per element.
-- Ark owns the shell primitives: `Popover` (Share, People, Who picker), `SegmentGroup`
-  (Day/Week/Month, viewer project switcher), `Field` (login). `Menu` is no longer used
+- Ark owns the shell primitives: `Popover` (Share, People, Who picker, Filter, the Scope
+  column's release filter), `Field` (login). `SegmentGroup` and `Menu` are no longer used
   anywhere — it was the editor's project switcher.
   The SVAR gantt, MToolbar, MContextMenu and MEditor are library-owned — leave them alone.
 
@@ -599,6 +676,17 @@ kind**.
 - SVAR react-gantt 2.x, PRO features reimplemented manually: weekend-skipping
   scheduling (HOURS_PER_DAY=7, `scheduleFromHours` + intercepts) and undo/redo
   (JSON snapshot stacks, not `getHistory()` which is PRO-only).
+- **The widget's vertical scrolling is not what it looks like, and one CSS word broke
+  it.** `.wx-gantt` is the scroller; inside it a tall `.wx-pseudo-rows` holds a
+  `position: sticky` `.wx-stuck` sized to the viewport, and the chart's own content is
+  offset upwards by the scroll amount. So the GRID's header stays put on its own (it is a
+  separate flex child of the pinned layout) while the date scale — a child of the offset
+  chart — is only held in place by SVAR's shipped `.wx-scale { position: sticky; top: 0 }`.
+  `wx-overrides.css` used to override that to `position: relative`, purely to give
+  `.project-span` something to position against, and the scale therefore rode off the top
+  of the screen with the bars. Sticky is itself a positioned ancestor, so `.project-span`
+  works either way, and sticky only pins on the axis it is given a threshold for, so the
+  scale still scrolls SIDEWAYS with the bars. Never set that back to `relative`.
 - Four places where SVAR's shipped types are wrong or too narrow, each narrowed locally
   rather than cast to `any` — don't "fix" them by widening the api:
   - `IApi.getTask` is typed `ITask` (everything optional) but returns a parsed task, so
@@ -643,9 +731,10 @@ kind**.
   `{ id: uid(), name: "Project timeline" }` client-side, and the first debounced save
   wrote that phantom into the real database. Zero projects is a real state, rendered by
   the `/` route; a project exists only because `insertProject` ran for a click.
-- `changeView` bumps `seed` as well as navigating. The gantt holder is keyed on
-  `seed + view + projectId`, so the widget remounts on a scale change — without the bump
-  it would remount around the *previous* serialization and show stale rows.
+- The gantt holder is keyed on `seed + projectId + storeRev`. `seed` is bumped by
+  **undo/redo** (`restoreSnapshot`) so the widget remounts around the restored data; it
+  used to be bumped by `changeView` too, which is gone with the scale switcher. Do not
+  delete `seed` — undo still needs it.
 - Vite strips SVAR's `@font-face` rules via a small plugin in `vite.config.ts`; the app
   supplies its own faces and passes `fonts={false}` to Willow. Keep that plugin's
   `enforce: "pre"` and keep it ahead of `tailwindcss()` in the plugin list.

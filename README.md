@@ -16,8 +16,10 @@ dates/hours/days up from what is inside it; four task types
 hour-based estimates (7 h = 1 work day) that skip weekends, bidirectional hours/days
 editing, statuses (not started / in progress / done), a people roster with per-task and
 per-epic assignment shown as initials in a Who column, **release scope** (MVP / Full
-release) on any epic or story with the effort inside it totalled per scope, **filtering**
-by type, release and assignee held in the URL, Yandex Tracker links with an
+release) on any epic or story shown in a Scope column of its own and totalled per scope —
+MVP is a *subset* of the full release, so the full figure includes it and says so —
+**filtering** by type, release and assignee held in the URL and reachable from the Scope
+column's own header, Yandex Tracker links with an
 extracted `PRODUCT-XXXX` ID column, a centered edit modal, keyboard copy/paste/undo
 (Cmd+C / Cmd+V / Cmd+Z), collapse/expand-all, PDF export, and a Share button that hands
 out the read-only link.
@@ -103,7 +105,7 @@ Outside `src/`:
 | `/forgot-password` | request a password-reset email; same redirect |
 | `/reset-password` | set a new password, reached from the link in that email — **not** redirected away by an existing session, because a recovery session is exactly what it arrives with |
 | `/` | the projects list: every project the account owns, with what it takes to tell two same-named ones apart, and where projects are created, renamed, duplicated and deleted; with no projects, an empty state with a **New project** button |
-| `/p/$projectId` | the editor — deep-linkable, with four validated search params: `?view=day\|week\|month`, and `?type=`, `?rel=`, `?who=` for the filter, so a filtered timeline is a link |
+| `/p/$projectId` | the editor — deep-linkable, with three validated search params: `?type=`, `?rel=`, `?who=` for the filter, so a filtered timeline is a link. One timeline scale (days), so `?view=` is gone — an old link that still carries it is ignored, not rejected |
 | `/share/$projectId` | the public read-only viewer: no auth, and the Supabase client is never loaded |
 | `/share` | the same viewer on whichever project the feed reports as active (the shape of the old share link) |
 
@@ -111,12 +113,20 @@ The auth gate is a `beforeLoad` redirect on a pathless `_authed` layout rather t
 conditional render, and opening a project navigates instead of setting state — the URL is
 the source of truth for which project is open.
 
+The editor header is two groups: identity on the left (back link, the editable project
+name, and a quiet second line carrying the save state, the filter pill and the totals) and
+the actions on the right. Share and Export PDF are icon-only with accessible names;
+People, Filter and Sign out shed their labels below 1080px. Nothing wraps and nothing falls
+off from ~700px upwards — which matters, because `body` is `overflow: hidden` and a control
+that leaves the row cannot be scrolled to.
+
 `/` used to forward to `app_state.active_project`, which is why there was no projects
 list: the route that would have shown one always redirected away, and the only way
 between projects was a dropdown in the editor's header. That dropdown is gone. `/` is now
 the list; the editor's top-left mark is a link back to it; and `active_project` has
-degraded to nothing more than the **Last opened** badge on a card. The one segmented
-control left in the editor header is the Day/Week/Month scale.
+degraded to nothing more than the **Last opened** badge on a card. There is no segmented
+control left in the editor header either: the Day/Week/Month scale switcher is gone and
+the timeline is always drawn in days.
 
 Route components are code-split, and the only module that reaches the Supabase client from
 the eager route tree is `src/features/auth/api/auth.ts`, which imports it dynamically.
@@ -148,8 +158,16 @@ stored type untouched — and becomes a container again the moment it gains a ch
 ## Filtering
 
 Type, release and assignee, multi-select within each and ANDed across them, in a popover
-next to the Day/Week/Month scale and held in the URL. Ancestors of a match stay visible so
-the hierarchy still reads; the header totals and roll-ups always report the whole project.
+in the header — and, for the release dimension, behind a funnel on the Scope column's own
+header — held in the URL. Ancestors of a match stay visible so the hierarchy still reads;
+the header totals and roll-ups always report the whole project.
+
+**MVP is a subset of the full release.** Filtering by *Full release* returns the MVP rows
+too (filtering by MVP does not return full-only rows), and the totals read
+"MVP 56h · Full 98h incl. MVP" rather than two figures that appear not to add up. Both
+filter popovers print "Full release includes everything marked MVP." on screen rather than
+in a tooltip. The wording lives once in `taxonomy.ts` (`releaseSummaryText`) and is used by
+the editor header, the public viewer, the projects cards and the PDF.
 
 The filter is applied through SVAR's own `filter-tasks`, and that choice is the whole
 safety story. `filterTree()` records which ids are VISIBLE; the rendered rows honour it,
@@ -196,10 +214,10 @@ Tailwind CSS v4 + [Ark UI](https://ark-ui.com) + [Phosphor icons](https://phosph
   `bun run build && bun run preview`, not just `bun run dev`.
 - **Ark UI** owns the shell interaction primitives: `Popover` for Share, the People
   manager and the Who picker (dismissal, focus and placement, replacing the hand-rolled
-  `mousedown` listeners and `getBoundingClientRect()` math), `SegmentGroup` for the
-  Day/Week/Month scale and the viewer's project switcher, `Field` for the login inputs.
-  `Menu` is no longer used at all — it was the editor's project switcher, and the
-  projects list replaced it. The SVAR gantt, its toolbar, context menu and task editor are
+  `mousedown` listeners and `getBoundingClientRect()` math), for the Filter panel and for
+  the Scope column's release filter, and `Field` for the login inputs. `SegmentGroup` and
+  `Menu` are no longer used at all — the first was the Day/Week/Month scale, the second the
+  editor's project switcher, and both are gone. The SVAR gantt, its toolbar, context menu and task editor are
   library-owned and stay untouched.
 - **Phosphor icons**, from exactly one package — `@phosphor-icons/react`. Three
   mechanisms, all fed from it:
@@ -289,13 +307,16 @@ ownership through `project_id`.
 All data lives in Postgres — the page keeps nothing locally:
 
 - `people (id, name, position, owner)` — the roster tasks are assigned from
-- `projects (id, name, view, position, owner)`
+- `projects (id, name, view, position, owner)` — `view` is a leftover of the removed
+  Day/Week/Month switcher: still in the schema, still whatever it was last set to, and no
+  longer read or written by anything
 - `tasks (id, project_id → projects, parent_id → tasks, text, type, start_date, end_date,
   duration, hours, days, progress, details, open, sort_order, url, status, assignees,
   release)` — `assignees` is a comma-separated list of `people.id`; `type` is free text
   (`task` / `backend` / `frontend` / `design` / `testing` / `story` / `summary` /
   `milestone`) and `release` is `null | 'mvp' | 'full'`, carried only by the two container
-  tiers, with a leaf task inheriting the scope of the nearest one above it
+  tiers, with a leaf task inheriting the scope of the nearest one above it. `'full'` means
+  "in the full release and not in the MVP" — the MVP is a subset of it
 - `links (id, project_id, source → tasks, target → tasks, type)`
 - `app_state (id = 'main', active_project, owner)`
 

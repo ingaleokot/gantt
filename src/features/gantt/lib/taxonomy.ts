@@ -52,7 +52,15 @@ export const TASK_TYPES: Option[] = [
 export const TASK_TYPE_IDS: string[] = TASK_TYPES.map((t) => t.id);
 
 /* `tasks.release`, constrained in Postgres to null | 'mvp' | 'full'. Only the
-   two container tiers carry one; a leaf task inherits its nearest tier's. */
+   two container tiers carry one; a leaf task inherits its nearest tier's.
+
+   ---- MVP is a SUBSET of the full release ------------------------------------
+   The two ids are not two disjoint buckets. Marking a tier `mvp` says "this
+   ships in the MVP", and everything in the MVP is also in the full release;
+   marking one `full` says "this ships in the full release and NOT in the MVP".
+   So `full` is really "full release only", and the full release as a whole is
+   mvp + full. Everything downstream reads that from `releaseMatches` and
+   `releaseTotals` rather than restating it, so no screen can disagree. */
 export const RELEASES: Option[] = [
   { id: "mvp", label: "MVP" },
   { id: "full", label: "Full release" },
@@ -61,8 +69,28 @@ export const RELEASE_IDS: string[] = RELEASES.map((r) => r.id);
 /* the pseudo-value the filter uses for "nothing assigned" — never stored */
 export const UNSET = "none";
 
+/* Said in one place and spelled out on screen wherever the filter offers the
+   two scopes, because a user filtering by Full and seeing MVP rows come back
+   would otherwise read it as a bug. Never a tooltip: it has to be visible. */
+export const RELEASE_INCLUSION_NOTE = "Full release includes everything marked MVP.";
+
 export const releaseLabel = (r: string | null | undefined): string | null =>
   r === "mvp" ? "MVP" : r === "full" ? "Full" : null;
+/* what a marker on a row actually means, for its title attribute */
+export const releaseTitle = (r: string | null | undefined): string | null =>
+  r === "mvp" ? "MVP scope — also part of the full release"
+    : r === "full" ? "Full release only — not in the MVP"
+      : null;
+
+/* Does a row whose inherited scope is `scope` survive a filter that selected
+   `selected`? The one asymmetry: choosing the full release brings the MVP rows
+   with it, because they are part of it. Choosing MVP does not bring full-only
+   rows back — the MVP is the smaller set. */
+export function releaseMatches(selected: string[], scope: string): boolean {
+  if (!selected.length) return true;
+  if (selected.includes(scope)) return true;
+  return scope === "mvp" && selected.includes("full");
+}
 
 /* the two tiers that contain other rows: both are parents to the widget, both
    roll their effort up from their children, and both can carry a release */
@@ -161,7 +189,9 @@ export function makeFilter(
   const types = f.types, releases = f.releases, people = f.people;
   return (row: FilterRow): boolean => {
     if (types.length && !types.includes(effectiveType(row.type, row.kind))) return false;
-    if (releases.length && !releases.includes(scopeOf(row, lookup))) return false;
+    /* releaseMatches, not `includes`: MVP ⊂ Full, so filtering by the full
+       release must keep the MVP rows that are part of it */
+    if (releases.length && !releaseMatches(releases, scopeOf(row, lookup))) return false;
     if (people.length) {
       const ids = parseAssignees(row.assignees);
       /* epics and stories carry their own assignees, independently of the rows
@@ -178,26 +208,56 @@ export function makeFilter(
    Effort lives on leaf tasks; the release lives on the tier above them. So
    "what does MVP cost" is the sum of every leaf's hours grouped by the scope it
    inherits. Tiers contribute nothing of their own — their hours ARE the sum of
-   their children, and counting both would double. */
+   their children, and counting both would double.
+
+   The field names carry the MVP ⊂ Full rule so a caller cannot add the wrong
+   two numbers together: `fullOnly` is what is scoped `full` and NOT in the MVP,
+   and `fullRelease` is the whole release, MVP included. There is deliberately
+   no field called plain `full` — that name is what made "MVP 21h · Full 7h"
+   read as two disjoint buckets. */
 export interface ReleaseTotals {
+  /* effort whose nearest tier is scoped MVP — part of the full release too */
   mvp: number;
-  full: number;
-  none: number;
+  /* effort scoped `full`, i.e. in the full release but NOT in the MVP */
+  fullOnly: number;
+  /* mvp + fullOnly: what the full release costs altogether */
+  fullRelease: number;
+  /* effort under no scoped tier at all */
+  unscoped: number;
 }
 export function releaseTotals<T extends FilterRow>(rows: T[], hoursOf: (row: T) => number): ReleaseTotals {
   const by = new Map<string, FilterRow>();
   rows.forEach((r) => { if (r.id !== undefined) by.set(String(r.id), r); });
   const lookup = (id: string | number): FilterRow | null => by.get(String(id)) || null;
-  const out: ReleaseTotals = { mvp: 0, full: 0, none: 0 };
+  let mvp = 0, fullOnly = 0, unscoped = 0;
   rows.forEach((r) => {
     const t = effectiveType(r.type, r.kind);
     if (isTierType(t) || t === "milestone") return;
     const scope = scopeOf(r, lookup);
     const h = hoursOf(r) || 0;
-    if (scope === "mvp") out.mvp += h;
-    else if (scope === "full") out.full += h;
-    else out.none += h;
+    if (scope === "mvp") mvp += h;
+    else if (scope === "full") fullOnly += h;
+    else unscoped += h;
   });
   const round = (n: number) => Math.round(n * 2) / 2;
-  return { mvp: round(out.mvp), full: round(out.full), none: round(out.none) };
+  return {
+    mvp: round(mvp),
+    fullOnly: round(fullOnly),
+    fullRelease: round(mvp + fullOnly),
+    unscoped: round(unscoped),
+  };
+}
+
+/* The one wording for the two numbers, used by the editor header, the public
+   viewer, the projects cards and the PDF so none of them can appear to
+   disagree: "MVP 56h · Full 98h incl. MVP · unscoped 65h". The "incl. MVP" is
+   dropped only when there is no MVP effort to include, because then the phrase
+   would be answering a question nobody asked. */
+export function releaseSummaryText(t: ReleaseTotals): string {
+  const parts: string[] = [];
+  if (t.mvp) parts.push("MVP " + t.mvp + "h");
+  if (t.fullRelease) parts.push("Full " + t.fullRelease + "h" + (t.mvp ? " incl. MVP" : ""));
+  if (!parts.length) return "Not scoped";
+  if (t.unscoped) parts.push("unscoped " + t.unscoped + "h");
+  return parts.join(" · ");
 }

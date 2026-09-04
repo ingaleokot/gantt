@@ -5,15 +5,15 @@ import { Willow as CoreWillow } from "@svar-ui/react-core";
 import { Willow as GridWillow } from "@svar-ui/react-grid";
 import { Popover } from "@ark-ui/react/popover";
 import { Portal } from "@ark-ui/react/portal";
-import { SegmentGroup } from "@ark-ui/react/segment-group";
 import { Funnel, X } from "@phosphor-icons/react";
 import { setGlyph, type GlyphHost } from "./icons";
 import { installWxiMasks } from "./lib/wxi-masks";
 import { trackerId } from "./lib/tracker";
 import { initialsOf, nameHue, parseAssignees } from "../people/roster";
 import {
-  EMPTY_FILTER, RELEASES, TASK_TYPES, UNSET, asWidgetType, effectiveType, filterActive,
-  filterCount, filterKey, isTierType, makeFilter, releaseLabel, releaseTotals, usableFilter,
+  EMPTY_FILTER, RELEASE_INCLUSION_NOTE, RELEASES, TASK_TYPES, UNSET, asWidgetType, effectiveType,
+  filterActive, filterCount, filterKey, isTierType, makeFilter, releaseLabel, releaseTitle,
+  releaseTotals, scopeOf, usableFilter,
 } from "./lib/taxonomy";
 import type { FilterRow, FilterState, ReleaseTotals } from "./lib/taxonomy";
 
@@ -186,6 +186,62 @@ const tierOf = (t: unknown): string => {
 /* parseAssignees / initialsOf / nameHue live in features/people/roster.ts and
    trackerId in ./lib/tracker — both editor and viewer had the same copy. */
 
+/* the Scope column, decorated the same way the editor's is: `scopeOf` in
+   ./lib/taxonomy is the one implementation of "a leaf inherits the nearest
+   tier's scope", so the column, the filter and the totals cannot disagree */
+function asFilterRow(t: ParsedTask): FilterRow {
+  return {
+    id: t.id,
+    parent: t.parent,
+    type: typeof t.type === "string" ? t.type : null,
+    kind: kindOf(t) ?? null,
+    release: typeof t.release === "string" ? t.release : null,
+  };
+}
+function scopeOfTask(api: GanttApi, t: ParsedTask): string {
+  const lookup = (id: string | number): FilterRow | null => {
+    try { return asFilterRow(api.getTask(id)); } catch (e) { return null; }
+  };
+  return scopeOf(asFilterRow(t), lookup);
+}
+/* every branch spelled out: a class assembled from parts survives dev and
+   vanishes from the production build */
+function scopeCellClass(scope: string, owned: boolean): string {
+  if (scope === "mvp") return owned ? "release-tag rel-mvp" : "release-tag rel-mvp rel-soft";
+  return owned ? "release-tag rel-full" : "release-tag rel-full rel-soft";
+}
+
+/* the release dimension is reachable from the Scope column header here too;
+   these bridge the tagger-built trigger back to React, as in Editor.tsx */
+let releaseFilterRef: string[] = [];
+let scopeFilterHook: ((hostEl: HTMLElement) => void) | null = null;
+function syncScopeFilterButton() {
+  const headerCell = document.querySelector<HTMLElement>('.gantt-holder [data-header-id=":scope"]');
+  if (!headerCell) return;
+  let btn = headerCell.querySelector<HTMLButtonElement>(".col-filter");
+  if (!btn) {
+    btn = document.createElement("button");
+    btn.className = "col-filter";
+    btn.type = "button";
+    const icon = document.createElement("span");
+    icon.className = "ci ci-filter";
+    setGlyph(icon, "ci-filter");
+    btn.appendChild(icon);
+    btn.addEventListener("pointerdown", (e) => e.stopPropagation());
+    btn.addEventListener("dblclick", (e) => { e.stopPropagation(); e.preventDefault(); });
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (scopeFilterHook && btn) scopeFilterHook(btn);
+    });
+    headerCell.appendChild(btn);
+  }
+  const n = releaseFilterRef.length;
+  const cls = n ? "col-filter is-on" : "col-filter";
+  if (btn.className !== cls) btn.className = cls;
+  const label = n ? "Filter by release scope — " + n + " selected" : "Filter by release scope";
+  if (btn.title !== label) { btn.title = label; btn.setAttribute("aria-label", label); }
+}
+
 /* ---------- data comes from the `shared` edge function at runtime ---------- */
 /* One project per request. The endpoint refuses to answer without a target,
    so a link can never expose anything but the timeline it points at. */
@@ -273,21 +329,21 @@ function shapeStore(raw: Feed | null): ViewStore {
   return { projects, active, people: rosterRef };
 }
 
-interface ViewPreset {
-  label: string;
-  cellWidth: number;
-  scales: IScaleConfig[];
-}
-/* keyed by string, not a literal union: the stored `view` is whatever came out
-   of Postgres */
-const VIEWS: Record<string, ViewPreset> = {
-  day:   { label: "Day",   cellWidth: 36,  scales: [{ unit: "month", step: 1, format: "%F %Y" }, { unit: "day", step: 1, format: "%j" }] },
-  week:  { label: "Week",  cellWidth: 74,  scales: [{ unit: "month", step: 1, format: "%M %Y" }, { unit: "week", step: 1, format: "w%W" }] },
-  month: { label: "Month", cellWidth: 110, scales: [{ unit: "year", step: 1, format: "%Y" }, { unit: "month", step: 1, format: "%M" }] },
-};
+/* One scale, days — the editor dropped the Day / Week / Month switcher and the
+   read-only page follows it, so a shared link and the editor it came from draw
+   the same timeline. `projects.view` is left unread. */
+const DAY_SCALES: IScaleConfig[] = [
+  { unit: "month", step: 1, format: "%F %Y" },
+  { unit: "day", step: 1, format: "%j" },
+];
+const DAY_CELL_WIDTH = 36;
 const HIGHLIGHT = (d: Date, u: "day" | "hour") => (u === "day" && (d.getDay() === 0 || d.getDay() === 6) ? "wx-weekend" : "");
 const COLUMNS: IColumnConfig[] = [
   { id: "text", header: "Task name", width: 183, flexgrow: 1, sort: true },
+  /* the editor's Scope column, so the two grids agree. Filled by the decorator
+     below: solid on the tier that owns the release, ghosted on the rows that
+     inherit it. `sort: false` — the header hosts the release filter's trigger. */
+  { id: "scope", header: "Scope", width: 72, align: "center", sort: false },
   { id: "who", header: "Who", width: 78, align: "center", sort: false },
   { id: "tracker", header: "ID", width: 100, align: "center", sort: false },
   { id: "start", header: "Start", width: 92, align: "center", sort: true },
@@ -322,9 +378,6 @@ const CHIP_OFF =
 const CHIP_ON =
   `press inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-accent bg-accent-hover px-2.5 py-[0.1875rem] font-ui text-mini font-semibold text-accent ${FOCUS}`;
 const GROUP_LABEL = "m-0 mt-3 mb-1.5 text-label font-semibold text-faint uppercase";
-const SEG_ROOT = "flex gap-0.5 rounded-[9px] border border-line bg-surface p-0.5";
-const SEG_ITEM =
-  "press flex cursor-pointer select-none items-center rounded-[7px] border-0 bg-transparent px-3.5 py-[0.3125rem] font-ui text-small font-medium text-muted hover:bg-surface-hover hover:text-ink data-[state=checked]:bg-accent data-[state=checked]:text-accent-ink data-[state=checked]:hover:bg-accent data-[state=checked]:hover:text-accent-ink has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-1 has-[:focus-visible]:outline-accent";
 const BRAND_MARK =
   "block h-3.5 w-3.5 rounded-[4px] bg-[linear-gradient(135deg,var(--color-accent)_0_50%,var(--color-summary-fill)_50%_100%)]";
 const BOOT = "grid min-h-screen place-items-center bg-ground font-ui text-body text-muted";
@@ -387,17 +440,23 @@ function decorate(api: GanttApi, project: ViewProject) {
       if (!ic) { ic = document.createElement("span"); ic.className = iconCls; content.appendChild(ic); }
       else if (ic.className !== iconCls) ic.className = iconCls;
       setGlyph(ic, typeKey); /* cached Phosphor SVG, rendered once at module scope */
-      /* release scope, on the tier that owns it — the same pill the editor
-         shows, positioned by the same CSS flex order */
+    }
+    /* release scope, in its own column exactly as the editor draws it */
+    const scopeCell = row.querySelector<HTMLElement>('[data-col-id=":scope"]');
+    if (scopeCell) {
       const rel = typeof t.release === "string" ? t.release : "";
-      const relText = isTierType(tier) ? releaseLabel(rel) : null;
-      let tag = content.querySelector<HTMLElement>(".release-tag");
+      const owned = isTierType(tier) && (rel === "mvp" || rel === "full");
+      const scope = scopeOfTask(api, t);
+      const relText = releaseLabel(scope);
+      const host = scopeCell.querySelector<HTMLElement>(".wx-content") || scopeCell;
+      let tag = host.querySelector<HTMLElement>(".release-tag");
       if (relText) {
-        if (!tag) { tag = document.createElement("span"); content.appendChild(tag); }
-        const tc = rel === "mvp" ? "release-tag rel-mvp" : "release-tag rel-full";
+        if (!tag) { tag = document.createElement("span"); host.appendChild(tag); }
+        const tc = scopeCellClass(scope, owned);
         if (tag.className !== tc) tag.className = tc;
         if (tag.textContent !== relText) tag.textContent = relText;
-        const title = rel === "mvp" ? "MVP scope" : "Full release";
+        const own = releaseTitle(scope) || "";
+        const title = owned ? own : own + " (inherited from the tier above)";
         if (tag.title !== title) tag.title = title;
       } else if (tag) {
         tag.remove();
@@ -499,6 +558,7 @@ function decorate(api: GanttApi, project: ViewProject) {
     }
     if (layer.__html !== html) { layer.innerHTML = html; layer.__html = html; }
   }
+  syncScopeFilterButton();
   /* project span line */
   const scaleEl = document.querySelector<HTMLElement>(".gantt-holder .wx-chart > .wx-scale");
   if (scaleEl) {
@@ -594,14 +654,16 @@ function applyViewFilter(api: GanttApi, f: FilterState, tasks: ViewTask[], peopl
 }
 
 function Board({ store, activeId }: { store: ViewStore; activeId: string | null }) {
-  const [view, setView] = useState("day");
-  const [seed, setSeed] = useState(0);
   const apiRef = useRef<GanttApi | null>(null);
+  /* the Scope column header's own filter trigger, built by the decorator and
+     anchored through Ark's getAnchorRect — the same bridge the editor uses */
+  const [scopePick, setScopePick] = useState<HTMLElement | null>(null);
+  const lastScopeRef = useRef<{ el: HTMLElement | null; rect: DOMRect | null }>({ el: null, rect: null });
 
   /* ShareViewer only mounts Board once the feed has at least one project */
   const project: ViewProject = store.projects.find((p) => p.id === activeId) || store.projects[0];
-  const revivedTasks = useMemo(() => prepareTasks(project.tasks), [activeId, seed]);
-  const links = useMemo(() => project.links.slice(), [activeId, seed]);
+  const revivedTasks = useMemo(() => prepareTasks(project.tasks), [activeId]);
+  const links = useMemo(() => project.links.slice(), [activeId]);
   const stats = useMemo(() => computeStats(project.tasks), [activeId]);
 
   /* the same three filter dimensions as the editor, on local state: this route
@@ -636,10 +698,9 @@ function Board({ store, activeId }: { store: ViewStore; activeId: string | null 
     const a = raw as GanttApi;
     apiRef.current = a;
     setTimeout(() => watchDecorations(a, project), 0);
-  }, [activeId, seed]);
+  }, [activeId]);
 
-  /* a scale change remounts the widget, and a fresh tree carries no filter.
-     `appliedRef` keeps an unfiltered page inert rather than re-running a
+  /* `appliedRef` keeps an unfiltered page inert rather than re-running a
      clearing `filter-tasks` on every render pass. */
   const appliedRef = useRef(false);
   useEffect(() => {
@@ -648,49 +709,115 @@ function Board({ store, activeId }: { store: ViewStore; activeId: string | null 
     if (!filterOn && !appliedRef.current) { setShown(project.tasks.length); return; }
     appliedRef.current = filterOn;
     setShown(applyViewFilter(a, filter, project.tasks, people));
-  }, [fKey, seed, view, activeId, people, project.tasks, filterOn]);
+  }, [fKey, activeId, people, project.tasks, filterOn]);
 
-  const vd = VIEWS[view];
+  /* the Scope column header's trigger reads the release dimension from module
+     scope, the way the decorator reads the roster */
+  useEffect(() => {
+    releaseFilterRef = liveFilter.releases;
+  }, [liveFilter]);
+  useEffect(() => {
+    scopeFilterHook = (hostEl) => {
+      lastScopeRef.current = { el: hostEl, rect: hostEl ? hostEl.getBoundingClientRect() : null };
+      setScopePick((cur) => (cur === hostEl ? null : hostEl));
+    };
+    return () => { scopeFilterHook = null; };
+  }, []);
+
+  /* one definition of the release dimension, shared by the header popover and
+     the Scope column's trigger, with the inclusion rule on screen rather than
+     behind a hover */
+  const releaseChips = (
+    <>
+      <div className="flex flex-wrap gap-1.5">
+        {RELEASES.map((r) => (
+          <button
+            key={r.id}
+            type="button"
+            aria-pressed={filter.releases.includes(r.id)}
+            className={filter.releases.includes(r.id) ? CHIP_ON : CHIP_OFF}
+            onClick={() => toggleFilter("releases", r.id)}
+          >{r.label}</button>
+        ))}
+        <button
+          type="button"
+          aria-pressed={filter.releases.includes(UNSET)}
+          className={filter.releases.includes(UNSET) ? CHIP_ON : CHIP_OFF}
+          onClick={() => toggleFilter("releases", UNSET)}
+        >Unassigned</button>
+      </div>
+      <p className="m-0 mt-1.5 text-tiny text-faint">{RELEASE_INCLUSION_NOTE}</p>
+    </>
+  );
 
   return (
     <div className="flex h-full flex-col">
       {/* same material topbar as the editor (§12): translucent layer, bright top
           edge, soft scroll edge where it meets the board */}
-      <header className="material-chrome edge-fade relative z-10 flex flex-none items-center gap-3 pt-2.5 pr-[18px] pb-2.5 pl-4">
+      <header className="material-chrome edge-fade relative z-10 flex flex-none items-center gap-3 py-2 pr-[18px] pl-4">
         <div aria-hidden="true"><span className={BRAND_MARK} /></div>
-        <h1 className="m-0 max-w-[46vw] min-w-[60px] cursor-default overflow-hidden rounded-[7px] px-2 py-[0.1875rem] font-display text-display font-semibold text-ellipsis whitespace-nowrap">{project.name}</h1>
-        <span className="rounded-full border border-line bg-surface px-2.5 py-[0.1875rem] text-mini whitespace-nowrap text-muted">View only</span>
-        {filterOn && (
-          <button
-            type="button"
-            className={`press inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-accent bg-accent-hover px-2.5 py-[0.1875rem] text-mini whitespace-nowrap text-accent ${FOCUS}`}
-            title="Clear the filter"
-            onClick={() => setFilter(EMPTY_FILTER)}
-          >
-            <Funnel size={11} weight="fill" aria-hidden="true" />
-            Showing {shown} of {project.tasks.length}
-            <X size={11} aria-hidden="true" />
-          </button>
-        )}
-        {stats && stats.min && stats.max && (
-          <span className="pl-1 text-mini whitespace-nowrap text-muted tabular-nums max-[1100px]:hidden">
-            {fmtD(stats.min)} – {fmtD(new Date(stats.max.getTime() - DAY))}
-            {" · effort "}<strong className="font-semibold text-ink">{stats.h}h</strong> / {stats.d}d
-            {stats.epics > 0 && " · " + stats.epics + (stats.epics === 1 ? " epic" : " epics")}
-            {stats.stories > 0 && " · " + stats.stories + (stats.stories === 1 ? " story" : " stories")}
-            {stats.release.mvp > 0 && (
-              <>{" · "}<span className="release-tag rel-lead rel-mvp">MVP</span>{" " + stats.release.mvp + "h"}</>
+        {/* identity, with the quiet run of state and totals underneath it —
+            laid out exactly as the editor's, so a shared link reads the same */}
+        <div className="flex min-w-0 flex-1 flex-col justify-center gap-px">
+          <div className="flex min-w-0 items-center gap-2">
+            <h1 className="m-0 min-w-0 cursor-default overflow-hidden rounded-[7px] px-1.5 py-[0.0625rem] font-display text-display font-semibold text-ellipsis whitespace-nowrap">{project.name}</h1>
+            <span className="flex-none rounded-full border border-line bg-surface px-2 py-0 text-mini whitespace-nowrap text-muted">View only</span>
+          </div>
+          <div className="flex min-w-0 items-center gap-x-3 overflow-hidden pl-1.5 text-mini whitespace-nowrap text-muted tabular-nums">
+            {filterOn && (
+              <button
+                type="button"
+                className={`press inline-flex flex-none cursor-pointer items-center gap-1 rounded-full border border-accent bg-accent-hover px-2 py-0 text-mini whitespace-nowrap text-accent ${FOCUS}`}
+                title="Clear the filter"
+                onClick={() => setFilter(EMPTY_FILTER)}
+              >
+                <Funnel size={10} weight="fill" aria-hidden="true" />
+                {shown} of {project.tasks.length}
+                <X size={10} aria-hidden="true" />
+              </button>
             )}
-            {stats.release.full > 0 && (
-              <>{" · "}<span className="release-tag rel-lead rel-full">Full</span>{" " + stats.release.full + "h"}</>
+            {stats && stats.min && stats.max && (
+              <>
+                <span className="flex-none max-[860px]:hidden">
+                  {fmtD(stats.min)} – {fmtD(new Date(stats.max.getTime() - DAY))}
+                </span>
+                <span className="flex-none">
+                  effort <strong className="font-semibold text-ink">{stats.h}h</strong> / {stats.d}d
+                </span>
+                {(stats.epics > 0 || stats.stories > 0) && (
+                  <span className="flex-none max-[1180px]:hidden">
+                    {stats.epics > 0 && stats.epics + (stats.epics === 1 ? " epic" : " epics")}
+                    {stats.epics > 0 && stats.stories > 0 && " · "}
+                    {stats.stories > 0 && stats.stories + (stats.stories === 1 ? " story" : " stories")}
+                  </span>
+                )}
+                {/* the same wording as the editor and the projects cards: MVP is
+                    PART of the full release, so the full figure says so */}
+                {stats.release.mvp > 0 && (
+                  <span className="inline-flex flex-none items-center gap-1">
+                    <span className="release-tag rel-lead rel-mvp" title={releaseTitle("mvp") ?? undefined}>MVP</span>
+                    {stats.release.mvp}h
+                  </span>
+                )}
+                {stats.release.fullRelease > 0 && (
+                  <span className="inline-flex flex-none items-center gap-1">
+                    <span className="release-tag rel-lead rel-full" title="The full release, MVP included">Full</span>
+                    {stats.release.fullRelease}h
+                    {stats.release.mvp > 0 && <span className="text-faint">incl. MVP</span>}
+                  </span>
+                )}
+                {stats.release.unscoped > 0 && (
+                  <span className="flex-none max-[1180px]:hidden">unscoped {stats.release.unscoped}h</span>
+                )}
+              </>
             )}
-          </span>
-        )}
-        <div className="flex-1" />
+          </div>
+        </div>
+        <div className="flex flex-none items-center gap-1.5">
         <Popover.Root positioning={{ placement: "bottom-end", gutter: 8 }}>
-          <Popover.Trigger className={filterOn ? BTN_ON : BTN}>
+          <Popover.Trigger className={filterOn ? BTN_ON : BTN} title="Filter by type, release scope and assignee">
             <Funnel size={13} weight={filterOn ? "fill" : "regular"} aria-hidden="true" />
-            <span className="max-[1000px]:sr-only">Filter</span>
+            <span className="max-[1080px]:sr-only">Filter</span>
             {filterOn && <span className="tabular-nums">{filterCount(liveFilter)}</span>}
           </Popover.Trigger>
           <Portal>
@@ -713,23 +840,7 @@ function Board({ store, activeId }: { store: ViewStore; activeId: string | null 
                   ))}
                 </div>
                 <p className={GROUP_LABEL}>Release</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {RELEASES.map((r) => (
-                    <button
-                      key={r.id}
-                      type="button"
-                      aria-pressed={filter.releases.includes(r.id)}
-                      className={filter.releases.includes(r.id) ? CHIP_ON : CHIP_OFF}
-                      onClick={() => toggleFilter("releases", r.id)}
-                    >{r.label}</button>
-                  ))}
-                  <button
-                    type="button"
-                    aria-pressed={filter.releases.includes(UNSET)}
-                    className={filter.releases.includes(UNSET) ? CHIP_ON : CHIP_OFF}
-                    onClick={() => toggleFilter("releases", UNSET)}
-                  >Unassigned</button>
-                </div>
+                {releaseChips}
                 {people.length > 0 && (
                   <>
                     <p className={GROUP_LABEL}>Who</p>
@@ -767,20 +878,46 @@ function Board({ store, activeId }: { store: ViewStore; activeId: string | null 
             </Popover.Positioner>
           </Portal>
         </Popover.Root>
-        <SegmentGroup.Root
-          className={SEG_ROOT}
-          aria-label="Timeline scale"
-          value={view}
-          onValueChange={(d) => { if (d.value) { setView(d.value); setSeed((s) => s + 1); } }}
-        >
-          {Object.entries(VIEWS).map(([k, v]) => (
-            <SegmentGroup.Item key={k} value={k} className={SEG_ITEM}>
-              <SegmentGroup.ItemText>{v.label}</SegmentGroup.ItemText>
-              <SegmentGroup.ItemHiddenInput />
-            </SegmentGroup.Item>
-          ))}
-        </SegmentGroup.Root>
+        </div>
       </header>
+      {/* the Scope column header's own release filter, anchored to the button
+          the decorator appended into that header cell */}
+      <Popover.Root
+        open={!!scopePick}
+        onOpenChange={(e) => { if (!e.open) setScopePick(null); }}
+        positioning={{
+          placement: "bottom",
+          gutter: 6,
+          getAnchorRect: () => {
+            const p = scopePick || lastScopeRef.current.el;
+            const r = p && p.isConnected ? p.getBoundingClientRect() : lastScopeRef.current.rect;
+            return r ? { x: r.left, y: r.top, width: r.width, height: r.height } : null;
+          },
+        }}
+      >
+        <Portal>
+          <Popover.Positioner style={{ zIndex: 60 }}>
+            <Popover.Content className={`${POP} w-[254px] rounded-xl p-3`}>
+              <Popover.Title className={POP_TITLE}>Release scope</Popover.Title>
+              <Popover.Description className={POP_HINT}>
+                Hides rows on screen only — the totals still count the whole project.
+              </Popover.Description>
+              {releaseChips}
+              <div className="mt-3 flex items-center gap-2 border-t border-t-line-soft pt-2.5">
+                <button
+                  type="button"
+                  className={BTN}
+                  disabled={!liveFilter.releases.length}
+                  onClick={() => setFilter({ types: filter.types, releases: [], people: filter.people })}
+                >Clear</button>
+                {filterOn && (
+                  <span className="text-mini text-muted tabular-nums">{shown} of {project.tasks.length}</span>
+                )}
+              </div>
+            </Popover.Content>
+          </Popover.Positioner>
+        </Portal>
+      </Popover.Root>
       <div className="board relative mx-[14px] mb-[14px] flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-line bg-surface shadow-pop">
         <CoreWillow fonts={false}>
         <GridWillow fonts={false}>
@@ -793,17 +930,19 @@ function Board({ store, activeId }: { store: ViewStore; activeId: string | null 
               ))}
             </div>
           </div>
-          <div className="gantt-holder min-h-0 flex-1" key={seed + "-" + view + "-" + (project.id || "none")}>
+          <div className="gantt-holder min-h-0 flex-1" key={project.id || "none"}>
             <MGantt
               init={init}
               tasks={revivedTasks}
               links={links}
               columns={COLUMNS}
-              scales={vd.scales}
-              cellWidth={vd.cellWidth}
+              scales={DAY_SCALES}
+              cellWidth={DAY_CELL_WIDTH}
               cellHeight={38}
               scaleHeight={36}
-              gridWidth={620}
+              /* as in the editor: the grid grows by less than the new column,
+                 so the chart keeps most of its width */
+              gridWidth={668}
               start={range.start}
               end={range.end}
               autoScale={true}

@@ -4,7 +4,7 @@
    it, so the only thing imported here at module scope is its type. */
 import type { jsPDF } from "jspdf";
 import type { StoreLink, StoreTask, TaskId } from "../../lib/db";
-import { isTierType, scopeOf } from "./lib/taxonomy";
+import { isTierType, releaseSummaryText, releaseTotals, scopeOf } from "./lib/taxonomy";
 import type { FilterRow } from "./lib/taxonomy";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -238,6 +238,10 @@ export async function buildGanttPdf(name: string, tasks: StoreTask[], links: Sto
   tasks.forEach((t) => byId.set(String(t.id), t));
   const scopeLookup = (id: string | number): FilterRow | null => byId.get(String(id)) || null;
   const tid = (url: string | undefined) => { const m = /([A-Za-z][A-Za-z0-9_]*-\d+)\/?(?:[?#].*)?$/.exec(url || ""); return m ? m[1].toUpperCase() : null; };
+  /* every task, not just the dated ones the chart draws: the totals are the
+     project's, exactly as the header's are */
+  const relTotals = releaseTotals(tasks, (t) => Number(t.hours) || 0);
+  const releaseLine = relTotals.fullRelease || relTotals.unscoped ? releaseSummaryText(relTotals) : "";
   const chartX = M + tableW, chartW = PW - M - chartX;
   const pxDay = chartW / spanDays;
   const topY = 30, scaleH = 13, rowH = 7.4, barH = 4.2;
@@ -278,6 +282,16 @@ export async function buildGanttPdf(name: string, tasks: StoreTask[], links: Sto
       + "     ·     exported " + fmtFull(new Date())
       + (pageCount > 1 ? "     ·     page " + page + " of " + pageCount : "");
     doc.text(fitText(doc, meta, legendLeft - 4 - M), M, 22.5);
+
+    /* The same release line the editor header and the projects cards show,
+       word for word, out of releaseSummaryText — "MVP 56h · Full 98h incl.
+       MVP". The SCOPE column below prints which release each row is in; this
+       says what each one costs, and the "incl. MVP" is what stops the two
+       numbers reading as disjoint buckets that fail to add up. */
+    if (releaseLine) {
+      doc.setFontSize(7.5); doc.setTextColor(...C.muted);
+      doc.text(fitText(doc, releaseLine, PW - 2 * M), M, 27);
+    }
   };
 
   /* The chart furniture is the same on every page, so the date walk that

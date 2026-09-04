@@ -5,7 +5,6 @@ import { Willow as CoreWillow } from "@svar-ui/react-core";
 import { Willow as GridWillow } from "@svar-ui/react-grid";
 import { Popover } from "@ark-ui/react/popover";
 import { Portal } from "@ark-ui/react/portal";
-import { SegmentGroup } from "@ark-ui/react/segment-group";
 import { Link } from "@tanstack/react-router";
 import { CaretLeft, Check, DownloadSimple, Funnel, ShareNetwork, SignOut, Users, X } from "@phosphor-icons/react";
 import { buildGanttPdf } from "./pdf";
@@ -17,8 +16,9 @@ import { trackerId } from "./lib/tracker";
 import { initialsOf, nameHue, parseAssignees } from "../people/roster";
 import { HOURS_PER_DAY } from "../projects/summary";
 import {
-  EMPTY_FILTER, RELEASES, TASK_TYPES, UNSET, asWidgetType, effectiveType, filterActive,
-  filterCount, filterKey, isTierType, makeFilter, releaseLabel, releaseTotals, usableFilter,
+  EMPTY_FILTER, RELEASE_INCLUSION_NOTE, RELEASES, TASK_TYPES, UNSET, asWidgetType, effectiveType,
+  filterActive, filterCount, filterKey, isTierType, makeFilter, releaseLabel, releaseTitle,
+  releaseTotals, scopeOf, usableFilter,
 } from "./lib/taxonomy";
 import type { FilterRow, FilterState, ReleaseTotals } from "./lib/taxonomy";
 
@@ -111,9 +111,11 @@ const POP_INPUT =
   `min-w-0 flex-1 rounded-lg border border-line bg-surface-alt px-[0.5625rem] py-[0.4375rem] font-ui text-mini text-ink focus:outline-2 focus:outline-accent ${FOCUS}`;
 const POP_ACTION =
   `press flex-none cursor-pointer rounded-lg border-0 bg-accent px-3.5 py-[0.4375rem] font-ui text-small font-semibold text-accent-ink hover:brightness-[1.08] active:brightness-[0.94] ${FOCUS}`;
-const SEG_ROOT = "flex gap-0.5 rounded-[9px] border border-line bg-surface p-0.5";
-const SEG_ITEM =
-  "press flex cursor-pointer select-none items-center rounded-[7px] border-0 bg-transparent px-3.5 py-[0.3125rem] font-ui text-small font-medium text-muted hover:bg-surface-hover hover:text-ink data-[state=checked]:bg-accent data-[state=checked]:text-accent-ink data-[state=checked]:hover:bg-accent data-[state=checked]:hover:text-accent-ink has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-1 has-[:focus-visible]:outline-accent";
+/* an action reduced to its glyph. It still carries an accessible name and a
+   tooltip — an icon-only control with neither was the finding this replaces —
+   and it keeps the same height as the labelled buttons beside it. */
+const BTN_ICON =
+  `press press-sm inline-flex h-[30px] w-[30px] flex-none cursor-pointer items-center justify-center rounded-[9px] border border-line bg-surface p-0 text-muted hover:bg-surface-hover hover:text-ink ${FOCUS} disabled:cursor-default disabled:opacity-60`;
 const BRAND_MARK =
   "block h-3.5 w-3.5 rounded-[4px] bg-[linear-gradient(135deg,var(--color-accent)_0_50%,var(--color-summary-fill)_50%_100%)]";
 /* the filter trigger while something is filtered: a control the user forgot is
@@ -130,6 +132,16 @@ const GROUP_LABEL = "m-0 mt-3 mb-1.5 text-label font-semibold text-faint upperca
 
 const COLUMNS: IColumnConfig[] = [
   { id: "text", header: "Task name", width: 183, flexgrow: 1, sort: true, editor: "text" },
+  /* Release scope, out of the name cell and into a column of its own. It used
+     to be appended after the text, in a cell that already carries the tree
+     toggle, the type icon, the status dot, the name and the edit pencil — six
+     things competing for the width the name needs. The column carries no task
+     field (the widget renders it empty, exactly like Who and ID) and the row
+     tagger fills it: the pill is solid on the tier that OWNS the scope and
+     ghosted on the rows that merely inherit it, which is the same distinction
+     the PDF's SCOPE column draws. `sort: false` matters — the header hosts the
+     release filter's own trigger, and a sortable header would fight it. */
+  { id: "scope", header: "Scope", width: 72, align: "center", sort: false },
   { id: "who", header: "Who", width: 78, align: "center", sort: false },
   { id: "tracker", header: "ID", width: 100, align: "center", sort: false },
   { id: "start", header: "Start", width: 92, align: "center", sort: true },
@@ -192,8 +204,18 @@ const TOOLBAR_ITEMS = [
 ];
 
 /* "" rather than null: SVAR's select needs a value for the empty choice, and
-   db.ts maps anything that is not "mvp"/"full" back to a NULL column. */
-const RELEASE_OPTIONS = [{ id: "", label: "Unassigned" }, ...RELEASES];
+   db.ts maps anything that is not "mvp"/"full" back to a NULL column.
+
+   These labels are NOT the filter's labels, on purpose. In the filter, picking
+   "Full release" asks for the whole release and therefore returns the MVP rows
+   too; here the same two ids are being ASSIGNED to a tier, where `full` means
+   "ships in the full release and not in the MVP". Saying that out loud is the
+   difference between a scope the user can reason about and one they guess at. */
+const RELEASE_OPTIONS = [
+  { id: "", label: "Unassigned" },
+  { id: "mvp", label: "MVP — also in the full release" },
+  { id: "full", label: "Full release only — not in the MVP" },
+];
 
 const EDITOR_ITEMS = [
   { key: "text", comp: "text", label: "Name", config: { placeholder: "Add task name" } },
@@ -580,7 +602,44 @@ let retagHook: (() => void) | null = null;
 /* the row tagger lives outside React; these bridge it back to the app */
 let rosterRef: Person[] = [];
 let pickHook: ((taskId: TID, hostEl: HTMLElement) => void) | null = null;
+/* what the release dimension of the filter currently holds, so the Scope
+   column's own header control can show whether it is constraining. Written by
+   an effect, read by the tagger — the same bridge `rosterRef` uses. */
+let releaseFilterRef: string[] = [];
+let scopeFilterHook: ((hostEl: HTMLElement) => void) | null = null;
 const personById = (id: string): Person | null => rosterRef.find((h) => h.id === id) || null;
+
+/* ---------- the row's release scope, for the Scope column ----------
+   `scopeOf` in ./lib/taxonomy is the one implementation of "a leaf inherits the
+   nearest tier's scope", and it is what the filter, the totals and the PDF all
+   read. The tagger reaches it through this adapter rather than walking parents
+   itself, so the column can never disagree with the filter that sits above it.
+   ITask carries an index signature, so every field is narrowed by a real
+   runtime check on the way across. */
+function asFilterRow(t: ParsedTask): FilterRow {
+  return {
+    id: t.id,
+    parent: t.parent,
+    type: typeof t.type === "string" ? t.type : null,
+    kind: kindOf(t) ?? null,
+    release: typeof t.release === "string" ? t.release : null,
+  };
+}
+function scopeOfTask(api: GanttApi, t: ParsedTask): string {
+  const lookup = (id: TaskId): FilterRow | null => {
+    try { return asFilterRow(api.getTask(id)); } catch (e) { return null; }
+  };
+  return scopeOf(asFilterRow(t), lookup);
+}
+/* Both branches, and both weights, written out in full: Tailwind aside, these
+   are CSS-backed semantic names and a class assembled from parts is the one
+   mistake that works in dev and vanishes from the production build. `rel-soft`
+   is the inherited weight — the pill is ghosted on a row that merely sits under
+   a scoped tier, solid on the tier that carries the scope itself. */
+function scopeCellClass(scope: string, owned: boolean): string {
+  if (scope === "mvp") return owned ? "release-tag rel-mvp" : "release-tag rel-mvp rel-soft";
+  return owned ? "release-tag rel-full" : "release-tag rel-full rel-soft";
+}
 function setAllEpicsOpen(api: GanttApi, open: boolean) {
   let list: StoreTask[] = [];
   try { list = serializeSide(api, "tasks"); } catch (e) { return; }
@@ -624,6 +683,41 @@ function syncFoldAllButton(api: GanttApi) {
   const cls = "ci " + name;
   if (icon.className !== cls) icon.className = cls;
   setGlyph(icon, name); /* cached Phosphor SVG, rendered once at module scope */
+}
+/* ---------- the release filter, reachable from the column it filters ----------
+   The Scope column's header carries its own trigger, so the dimension is one
+   click from the data instead of only inside the header popover. It is built
+   the way `.fold-all` is and for the same reasons: APPENDED into the header
+   cell (never inserted between React-managed nodes), positioned by CSS, with
+   pointerdown stopped so the grid's own header handlers do not see it. The
+   column is declared `sort: false`, so there is no sorting for it to fight.
+   The popover itself is React's — this only hands the element over. */
+function syncScopeFilterButton() {
+  const headerCell = document.querySelector<HTMLElement>('.gantt-holder [data-header-id=":scope"]');
+  if (!headerCell) return;
+  let btn = headerCell.querySelector<HTMLButtonElement>(".col-filter");
+  if (!btn) {
+    btn = document.createElement("button");
+    btn.className = "col-filter";
+    btn.type = "button";
+    const icon = document.createElement("span");
+    icon.className = "ci ci-filter";
+    setGlyph(icon, "ci-filter");
+    btn.appendChild(icon);
+    btn.addEventListener("pointerdown", (e) => e.stopPropagation());
+    btn.addEventListener("dblclick", (e) => { e.stopPropagation(); e.preventDefault(); });
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (scopeFilterHook && btn) scopeFilterHook(btn);
+    });
+    headerCell.appendChild(btn);
+  }
+  const n = releaseFilterRef.length;
+  /* both class strings spelled out */
+  const cls = n ? "col-filter is-on" : "col-filter";
+  if (btn.className !== cls) btn.className = cls;
+  const label = n ? "Filter by release scope — " + n + " selected" : "Filter by release scope";
+  if (btn.title !== label) { btn.title = label; btn.setAttribute("aria-label", label); }
 }
 /* assignees (a comma-separated list of people ids, shown as initials) and the
    tracker-id extraction are imported at the top: features/people/roster and
@@ -717,21 +811,26 @@ function watchRowTags(api: GanttApi) {
         ic.className = iconCls;
       }
       if (ic) setGlyph(ic, typeKey);
-      /* Release scope: the marker that makes MVP legible at a glance. Only a
-         tier carries one — repeating the inherited scope on every descendant
-         would tag the whole grid and say nothing. Appended, ordered by CSS. */
-      const nameCell = row.querySelector<HTMLElement>('[data-col-id=":text"] .wx-content');
-      if (nameCell) {
+      /* Release scope, in the Scope column rather than crowded into the name.
+         Every row that is in scope says so — the tier that carries the release
+         with a solid pill, the rows under it with a ghosted one — which is what
+         makes the column readable as a column instead of a sparse row of marks
+         only epics carry. */
+      const scopeCell = row.querySelector<HTMLElement>('[data-col-id=":scope"]');
+      if (scopeCell) {
         const rel = typeof t.release === "string" ? t.release : "";
-        const relText = isTierType(tier) ? releaseLabel(rel) : null;
-        let tag = nameCell.querySelector<HTMLElement>(".release-tag");
+        const owned = isTierType(tier) && (rel === "mvp" || rel === "full");
+        const scope = scopeOfTask(api, t);
+        const relText = releaseLabel(scope);
+        const host = scopeCell.querySelector<HTMLElement>(".wx-content") || scopeCell;
+        let tag = host.querySelector<HTMLElement>(".release-tag");
         if (relText) {
-          if (!tag) { tag = document.createElement("span"); nameCell.appendChild(tag); }
-          /* both class strings written out in full */
-          const tc = rel === "mvp" ? "release-tag rel-mvp" : "release-tag rel-full";
+          if (!tag) { tag = document.createElement("span"); host.appendChild(tag); }
+          const tc = scopeCellClass(scope, owned);
           if (tag.className !== tc) tag.className = tc;
           if (tag.textContent !== relText) tag.textContent = relText;
-          const title = rel === "mvp" ? "MVP scope" : "Full release";
+          const own = releaseTitle(scope) || "";
+          const title = owned ? own : own + " (inherited from the tier above)";
           if (tag.title !== title) tag.title = title;
         } else if (tag) {
           tag.remove();
@@ -841,6 +940,7 @@ function watchRowTags(api: GanttApi) {
       bar.classList.toggle("is-story", tierOf(t) === "story");
     });
     syncFoldAllButton(api);
+    syncScopeFilterButton();
     renderEpicBands(api);
     renderProjectSpan(api);
     if (rowTagObserver) rowTagObserver.takeRecords(); /* our own writes must not retrigger */
@@ -864,19 +964,23 @@ const MEditor = memo(TaskEditor);
 const HIGHLIGHT = (d: Date, u: "day" | "hour") => (u === "day" && (d.getDay() === 0 || d.getDay() === 6) ? "wx-weekend" : "");
 const SUMMARY_CFG = { autoConvert: true, autoProgress: true };
 
-/* ---------- view presets ---------- */
-interface ViewPreset {
-  label: string;
-  cellWidth: number;
-  scales: IScaleConfig[];
-}
-/* keyed by string, not a literal union: the stored `view` is whatever came out
-   of Postgres, and every read below already falls back to "day" */
-const VIEWS: Record<string, ViewPreset> = {
-  day:   { label: "Day",   cellWidth: 36,  scales: [{ unit: "month", step: 1, format: "%F %Y" }, { unit: "day", step: 1, format: "%j" }] },
-  week:  { label: "Week",  cellWidth: 74,  scales: [{ unit: "month", step: 1, format: "%M %Y" }, { unit: "week", step: 1, format: "w%W" }] },
-  month: { label: "Month", cellWidth: 110, scales: [{ unit: "year", step: 1, format: "%Y" }, { unit: "month", step: 1, format: "%M" }] },
-};
+/* ---------- the timeline scale ----------
+   One scale, days. The Day / Week / Month switcher is gone: it was three
+   segments of chrome in a header that had run out of room, and the two scales
+   nobody was choosing cost more than they paid for.
+
+   `projects.view` stays in the schema and is left exactly as stored — nothing
+   here writes it any more, so no project row is dirtied by the removal, and a
+   row that still says "week" simply goes unread.
+
+   The PDF is NOT this: `pdf.ts` picks day / week / month from the project's own
+   span, because a nine-month timeline in day columns is unreadable on A4. That
+   logic is untouched and must stay. */
+const DAY_SCALES: IScaleConfig[] = [
+  { unit: "month", step: 1, format: "%F %Y" },
+  { unit: "day", step: 1, format: "%j" },
+];
+const DAY_CELL_WIDTH = 36;
 
 interface Picker {
   taskId: TID;
@@ -893,9 +997,6 @@ interface Clipboard {
 export interface EditorProps {
   /* the route guarantees this project exists in the loaded store */
   projectId: string;
-  /* resolved from ?view= first, the project's stored scale second */
-  view: string;
-  onView: (v: string) => void;
   /* the three filter dimensions, parsed and validated out of the URL by the
      route so a filtered timeline is shareable and survives a reload */
   filter: FilterState;
@@ -908,7 +1009,7 @@ export interface EditorProps {
    carry tabs for every other one. `/` is the list, and the mark at the top left
    is the way back to it. */
 export default function GanttEditor({
-  projectId, view, onView, filter, onFilter, onSignOut,
+  projectId, filter, onFilter, onSignOut,
 }: EditorProps) {
   /* the draft the whole app shares; mutate it, then scheduleSave() diffs it
      against what Postgres holds and writes only the rows that moved */
@@ -935,6 +1036,11 @@ export default function GanttEditor({
   const [picker, setPicker] = useState<Picker | null>(null); /* { taskId, el, rect, ids } */
   const pickerKeyRef = useRef("none");                       /* last opened row: see the popover below */
   const lastPickerRef = useRef<Picker | null>(null);
+  /* the Scope column header's own filter trigger, anchored the same way the Who
+     picker is: the button is tagger-built, so React never renders it and the
+     popover has to be told where it is */
+  const [scopePick, setScopePick] = useState<HTMLElement | null>(null);
+  const lastScopeRef = useRef<{ el: HTMLElement | null; rect: DOMRect | null }>({ el: null, rect: null });
   const [copied, setCopied] = useState(false);
   const shareInputRef = useRef<HTMLInputElement>(null);
   const nameRef = useRef(activeProject().name);
@@ -1355,7 +1461,7 @@ export default function GanttEditor({
      snapshot, and a fresh tree carries no filter — so re-apply on all of them,
      as well as when the filter itself moves. Clearing goes through here too:
      `filter-tasks` with no handler is what drops SVAR's visible-id set. */
-  useEffect(() => { runFilter(); }, [api, fKey, seed, view, projectId, st.storeRev, people, runFilter]);
+  useEffect(() => { runFilter(); }, [api, fKey, seed, projectId, st.storeRev, people, runFilter]);
 
   /* ---------- people roster ---------- */
   /* the tagger reads the roster from module scope; keep it in step and repaint */
@@ -1363,6 +1469,23 @@ export default function GanttEditor({
     rosterRef = people;
     if (retagHook) retagHook();
   }, [people]);
+
+  /* the Scope column header's trigger reads the release dimension the same way,
+     so it can say whether it is constraining without a React render inside the
+     widget's DOM */
+  useEffect(() => {
+    releaseFilterRef = liveFilter.releases;
+    if (retagHook) retagHook();
+  }, [liveFilter]);
+
+  useEffect(() => {
+    scopeFilterHook = (hostEl) => {
+      lastScopeRef.current = { el: hostEl, rect: hostEl ? hostEl.getBoundingClientRect() : null };
+      /* a second click on the trigger closes it, as the button reads */
+      setScopePick((cur) => (cur === hostEl ? null : hostEl));
+    };
+    return () => { scopeFilterHook = null; };
+  }, []);
 
   useEffect(() => {
     pickHook = (taskId, hostEl) => {
@@ -1447,21 +1570,39 @@ export default function GanttEditor({
     onFilter(next);
   };
 
-  const changeView = (v: string) => {
-    const p = snapshotActive();
-    p.view = v;
-    /* the holder is keyed on seed+view+project, so the widget remounts; bump
-       the seed too or it would remount around the previous serialization */
-    setSeed((s) => s + 1);
-    stRef.current.scheduleSave();
-    onView(v);
-  };
-
   const onName = (e: React.SyntheticEvent<HTMLHeadingElement>) => {
     nameRef.current = e.currentTarget.textContent?.trim() || "Untitled project";
     activeProject().name = nameRef.current;
     scheduleSave();
   };
+
+  /* The release dimension, rendered once and used by both of its entry points:
+     the header's Filter popover and the Scope column header's own trigger. One
+     definition, so the two can never drift — and the inclusion note is part of
+     it, on screen rather than behind a hover, because a user who filters by
+     Full and sees MVP rows come back would otherwise read it as a bug. */
+  const releaseChips = (
+    <>
+      <div className="flex flex-wrap gap-1.5">
+        {RELEASES.map((r) => (
+          <button
+            key={r.id}
+            type="button"
+            aria-pressed={filter.releases.includes(r.id)}
+            className={filter.releases.includes(r.id) ? CHIP_ON : CHIP_OFF}
+            onClick={() => toggleFilter("releases", r.id)}
+          >{r.label}</button>
+        ))}
+        <button
+          type="button"
+          aria-pressed={filter.releases.includes(UNSET)}
+          className={filter.releases.includes(UNSET) ? CHIP_ON : CHIP_OFF}
+          onClick={() => toggleFilter("releases", UNSET)}
+        >Unassigned</button>
+      </div>
+      <p className="m-0 mt-1.5 text-tiny text-faint">{RELEASE_INCLUSION_NOTE}</p>
+    </>
+  );
 
   /* the Who popover's remount key and anchor both survive the close, so the
      exit animation has a stable origin to collapse into; both are plain refs
@@ -1471,13 +1612,19 @@ export default function GanttEditor({
     lastPickerRef.current = picker;
   }
 
-  const vd = VIEWS[view] || VIEWS.day;
-  let statusText = {
-    idle: "", saving: "Saving…", saved: "Saved · Supabase", local: "Not saved — Supabase unavailable",
+  /* The pill sits on the quiet second line now, so it says the short thing and
+     keeps the sentence in its tooltip — "Saved · Supabase" was 110px of a row
+     the project's own name was being clipped out of. */
+  const statusText = {
+    idle: "", saving: "Saving…", saved: "Saved", local: "Not saved",
+  }[st.status];
+  let statusTitle = {
+    idle: "", saving: "Saving to Supabase…", saved: "Saved to Supabase",
+    local: "Not saved — Supabase unavailable",
   }[st.status];
   /* only a failed save belongs on the save pill; a failed create, delete or
      "last opened" write is its own thing and gets its own pill below */
-  if (st.status === "local" && st.error) statusText += " · " + st.error;
+  if (st.status === "local" && st.error) statusTitle += " · " + st.error;
   /* everything the user has to be told, in the order it matters: a write that
      failed, a timeline that moved under them, then anything the editor itself
      could not do */
@@ -1494,7 +1641,16 @@ export default function GanttEditor({
     <div className="flex h-full flex-col">
       {/* the topbar is a material, not a painted strip: a translucent layer with
           a bright top edge, closed off by a soft scroll edge instead of a rule */}
-      <header className="material-chrome edge-fade relative z-10 flex flex-none items-center gap-3 pt-2.5 pr-[18px] pb-2.5 pl-4">
+      {/* ---------- the header, in two groups ----------
+          Identity on the left — back, the project's name, and the quiet line of
+          state and totals under it — and the actions on the right. It used to
+          be one undifferentiated run of nine things at the same weight, in
+          which the project's own name was the item that got clipped to four
+          characters while an eight-fact stats string beside it took full width.
+          The stats moved under the title, the two scale-switcher segments are
+          gone, and Share and Export PDF are icons, which is what bought the
+          name the room it needed. */}
+      <header className="material-chrome edge-fade relative z-10 flex flex-none items-center gap-3 py-2 pr-[18px] pl-3">
         {/* the way back to the list. It is a real link, so the browser's own
             open-in-a-new-tab still works, and it serializes the widget into the
             draft on the way out — leaving the editor must not lose the edit
@@ -1507,90 +1663,135 @@ export default function GanttEditor({
         >
           <span className={BRAND_MARK} aria-hidden="true" />
           <CaretLeft size={11} weight="bold" aria-hidden="true" />
-          <span className="max-[820px]:sr-only">Projects</span>
+          <span className="max-[900px]:sr-only">Projects</span>
         </Link>
-        {/* the title carries no `press`: it is a text field, so a scale on
-            pointer-down would fight the caret rather than confirm a commit */}
-        <h1
-          key={projectId}
-          className="m-0 max-w-[46vw] min-w-[60px] overflow-hidden rounded-[7px] px-2 py-[0.1875rem] font-display text-display font-semibold text-ellipsis whitespace-nowrap outline-none transition-colors duration-[130ms] ease-out hover:bg-surface-hover focus-visible:bg-surface focus-visible:shadow-[0_0_0_2px_var(--color-accent)]"
-          contentEditable
-          suppressContentEditableWarning
-          spellCheck={false}
-          onInput={onName}
-          onBlur={onName}
-          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); } }}
-        >{activeProject().name}</h1>
-        {statusText && (
-          <span
-            className={
-              st.status === "saved"
-                ? "rounded-full border border-transparent bg-accent-hover px-2.5 py-[0.1875rem] text-mini whitespace-nowrap text-accent"
-                : "rounded-full border border-line bg-surface px-2.5 py-[0.1875rem] text-mini whitespace-nowrap text-muted"
-            }
-          >{statusText}</span>
-        )}
-        {/* a filter is a mode, and a mode nobody can see is a trap: this says
-            how much is hidden and clears it in one click */}
-        {filterOn && (
-          <button
-            type="button"
-            className={`press inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-accent bg-accent-hover px-2.5 py-[0.1875rem] text-mini whitespace-nowrap text-accent ${FOCUS}`}
-            title="Clear the filter"
-            onClick={() => onFilter(EMPTY_FILTER)}
-          >
-            <Funnel size={11} weight="fill" aria-hidden="true" />
-            Showing {filterInfo.shown} of {filterInfo.total}
-            <X size={11} aria-hidden="true" />
-          </button>
-        )}
-        {/* not decoration: each of these is something that did not happen.
-            Clicking one dismisses it — the underlying state re-raises it if it
-            is still true. */}
-        {alerts.map((a) =>
-          a.dismiss ? (
-            <button
-              key={a.key}
-              type="button"
-              title={a.text + " — click to dismiss"}
-              onClick={a.dismiss}
-              className={`press max-w-[34vw] cursor-pointer overflow-hidden rounded-full border border-danger bg-surface px-2.5 py-[0.1875rem] text-left text-mini text-ellipsis whitespace-nowrap text-danger ${FOCUS}`}
-            >{a.text}</button>
-          ) : (
-            /* not dismissible: it clears itself when the thing it reports does */
-            <span
-              key={a.key}
-              role="status"
-              title={a.text}
-              className="max-w-[34vw] overflow-hidden rounded-full border border-danger bg-surface px-2.5 py-[0.1875rem] text-mini text-ellipsis whitespace-nowrap text-danger"
-            >{a.text}</span>
-          ),
-        )}
-        {stats && stats.min && stats.max && (
-          /* hours and days are EFFORT — the work inside the bar — not the
-             length of the bar. An epic's pair is the sum of its tasks' effort
-             sitting next to a calendar span that is nothing like it, so the
-             word has to be on screen. */
-          <span className="pl-1 text-mini whitespace-nowrap text-muted tabular-nums max-[1100px]:hidden">
-            {fmtD(stats.min)} – {fmtD(new Date(stats.max.getTime() - DAY))}
-            {" · effort "}<strong className="font-semibold text-ink">{stats.h}h</strong> / {stats.d}d
-            {stats.epics > 0 && " · " + stats.epics + (stats.epics === 1 ? " epic" : " epics")}
-            {stats.stories > 0 && " · " + stats.stories + (stats.stories === 1 ? " story" : " stories")}
-            {/* what MVP costs, from the same roll-up the projects list shows —
-                and always the whole project, never the filtered view */}
-            {stats.release.mvp > 0 && (
-              <>{" · "}<span className="release-tag rel-lead rel-mvp">MVP</span>{" " + stats.release.mvp + "h"}</>
+
+        {/* identity: the name, with everything subordinate to it underneath.
+            `min-w-0` is what lets the title ellipsize instead of pushing the
+            actions off a page that cannot scroll. */}
+        <div className="flex min-w-0 flex-1 flex-col justify-center gap-px">
+          <div className="flex min-w-0 items-center gap-2">
+            {/* the title carries no `press`: it is a text field, so a scale on
+                pointer-down would fight the caret rather than confirm a commit */}
+            <h1
+              key={projectId}
+              className="m-0 min-w-0 overflow-hidden rounded-[7px] px-1.5 py-[0.0625rem] font-display text-display font-semibold text-ellipsis whitespace-nowrap outline-none transition-colors duration-[130ms] ease-out hover:bg-surface-hover focus-visible:bg-surface focus-visible:shadow-[0_0_0_2px_var(--color-accent)]"
+              contentEditable
+              suppressContentEditableWarning
+              spellCheck={false}
+              onInput={onName}
+              onBlur={onName}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); } }}
+            >{activeProject().name}</h1>
+            {/* not decoration: each of these is something that did not happen,
+                which is why they sit on the title's own line rather than in the
+                quiet run below. Clicking one dismisses it — the underlying
+                state re-raises it if it is still true. */}
+            {alerts.map((a) =>
+              a.dismiss ? (
+                <button
+                  key={a.key}
+                  type="button"
+                  title={a.text + " — click to dismiss"}
+                  onClick={a.dismiss}
+                  className={`press max-w-[24vw] flex-none cursor-pointer overflow-hidden rounded-full border border-danger bg-surface px-2.5 py-[0.1875rem] text-left text-mini text-ellipsis whitespace-nowrap text-danger ${FOCUS}`}
+                >{a.text}</button>
+              ) : (
+                /* not dismissible: it clears itself when the thing it reports does */
+                <span
+                  key={a.key}
+                  role="status"
+                  title={a.text}
+                  className="max-w-[24vw] flex-none overflow-hidden rounded-full border border-danger bg-surface px-2.5 py-[0.1875rem] text-mini text-ellipsis whitespace-nowrap text-danger"
+                >{a.text}</span>
+              ),
             )}
-            {stats.release.full > 0 && (
-              <>{" · "}<span className="release-tag rel-lead rel-full">Full</span>{" " + stats.release.full + "h"}</>
+          </div>
+
+          {/* the quiet line: save state, then the totals. Smaller, muted, and
+              subordinate — it answers questions, it does not announce itself.
+              The segments that matter least give way first as the window
+              narrows, so effort and the release split survive down to ~700px
+              rather than the whole line disappearing at 1100 as it used to. */}
+          <div className="flex min-w-0 items-center gap-x-3 overflow-hidden pl-1.5 text-mini whitespace-nowrap text-muted tabular-nums">
+            {statusText && (
+              <span
+                title={statusTitle}
+                className={
+                  st.status === "saved"
+                    ? "flex-none text-accent"
+                    : st.status === "local"
+                      ? "flex-none font-semibold text-danger"
+                      : "flex-none text-muted"
+                }
+              >{statusText}</span>
             )}
-          </span>
-        )}
-        <div className="flex-1" />
+            {/* a filter is a mode, and a mode nobody can see is a trap: this
+                says how much is hidden and clears it in one click */}
+            {filterOn && (
+              <button
+                type="button"
+                className={`press inline-flex flex-none cursor-pointer items-center gap-1 rounded-full border border-accent bg-accent-hover px-2 py-0 text-mini whitespace-nowrap text-accent ${FOCUS}`}
+                title="Clear the filter"
+                onClick={() => onFilter(EMPTY_FILTER)}
+              >
+                <Funnel size={10} weight="fill" aria-hidden="true" />
+                {filterInfo.shown} of {filterInfo.total}
+                <X size={10} aria-hidden="true" />
+              </button>
+            )}
+            {stats && stats.min && stats.max && (
+              <>
+                <span className="flex-none max-[860px]:hidden">
+                  {fmtD(stats.min)} – {fmtD(new Date(stats.max.getTime() - DAY))}
+                </span>
+                {/* hours and days are EFFORT — the work inside the bar — not the
+                    length of the bar. An epic's pair is the sum of its tasks'
+                    effort sitting next to a calendar span that is nothing like
+                    it, so the word has to be on screen. */}
+                <span className="flex-none">
+                  effort <strong className="font-semibold text-ink">{stats.h}h</strong> / {stats.d}d
+                </span>
+                {(stats.epics > 0 || stats.stories > 0) && (
+                  <span className="flex-none max-[1180px]:hidden">
+                    {stats.epics > 0 && stats.epics + (stats.epics === 1 ? " epic" : " epics")}
+                    {stats.epics > 0 && stats.stories > 0 && " · "}
+                    {stats.stories > 0 && stats.stories + (stats.stories === 1 ? " story" : " stories")}
+                  </span>
+                )}
+                {/* what each release costs, from the same roll-up the projects
+                    list and the PDF show — and always the whole project, never
+                    the filtered view. "incl. MVP" is on screen rather than in a
+                    tooltip because MVP ⊂ Full: without it, 56 and 98 read as
+                    two separate buckets that happen not to add up. */}
+                {stats.release.mvp > 0 && (
+                  <span className="inline-flex flex-none items-center gap-1">
+                    <span className="release-tag rel-lead rel-mvp" title={releaseTitle("mvp") ?? undefined}>MVP</span>
+                    {stats.release.mvp}h
+                  </span>
+                )}
+                {stats.release.fullRelease > 0 && (
+                  <span className="inline-flex flex-none items-center gap-1">
+                    <span className="release-tag rel-lead rel-full" title="The full release, MVP included">Full</span>
+                    {stats.release.fullRelease}h
+                    {stats.release.mvp > 0 && <span className="text-faint">incl. MVP</span>}
+                  </span>
+                )}
+                {stats.release.unscoped > 0 && (
+                  <span className="flex-none max-[1180px]:hidden">unscoped {stats.release.unscoped}h</span>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* actions: one group, right-aligned, and none of them ever wraps */}
+        <div className="flex flex-none items-center gap-1.5">
         <Popover.Root positioning={{ placement: "bottom-end", gutter: 8 }}>
-          <Popover.Trigger className={BTN}>
+          <Popover.Trigger className={BTN} title="People on this account">
             <Users size={14} aria-hidden="true" />
-            People{people.length ? " · " + people.length : ""}
+            <span className="max-[1080px]:sr-only">People</span>
+            {people.length > 0 && <span className="tabular-nums">{people.length}</span>}
           </Popover.Trigger>
           <Portal>
             <Popover.Positioner style={{ zIndex: 40 }}>
@@ -1638,9 +1839,10 @@ export default function GanttEditor({
           positioning={{ placement: "bottom-end", gutter: 8 }}
           onOpenChange={(e) => { if (!e.open) setCopied(false); }}
         >
-          <Popover.Trigger className={BTN}>
-            <ShareNetwork size={13} aria-hidden="true" />
-            Share
+          {/* icon-only, but never nameless: the label moves to `aria-label` and
+              `title` rather than disappearing */}
+          <Popover.Trigger className={BTN_ICON} title="Share a view-only link" aria-label="Share a view-only link">
+            <ShareNetwork size={15} aria-hidden="true" />
           </Popover.Trigger>
           <Portal>
             <Popover.Positioner style={{ zIndex: 60 }}>
@@ -1655,16 +1857,22 @@ export default function GanttEditor({
             </Popover.Positioner>
           </Portal>
         </Popover.Root>
-        <button className={BTN} type="button" onClick={exportPdf} disabled={exporting}>
-          <DownloadSimple size={13} aria-hidden="true" />
-          {exporting ? "Exporting…" : "Export PDF"}
+        <button
+          className={BTN_ICON}
+          type="button"
+          onClick={exportPdf}
+          disabled={exporting}
+          title={exporting ? "Exporting the PDF…" : "Export PDF"}
+          aria-label={exporting ? "Exporting the PDF…" : "Export PDF"}
+        >
+          <DownloadSimple size={15} aria-hidden="true" />
         </button>
         <Popover.Root positioning={{ placement: "bottom-end", gutter: 8 }}>
-          <Popover.Trigger className={filterOn ? BTN_ON : BTN}>
+          <Popover.Trigger className={filterOn ? BTN_ON : BTN} title="Filter by type, release scope and assignee">
             <Funnel size={13} weight={filterOn ? "fill" : "regular"} aria-hidden="true" />
-            {/* the header already overflows below 1100px and the page cannot
-                scroll, so the label goes before the control does */}
-            <span className="max-[1000px]:sr-only">Filter</span>
+            {/* the label gives way before the control does — every action stays
+                reachable on a page that cannot scroll */}
+            <span className="max-[1080px]:sr-only">Filter</span>
             {filterOn && <span className="tabular-nums">{filterCount(liveFilter)}</span>}
           </Popover.Trigger>
           <Portal>
@@ -1687,23 +1895,7 @@ export default function GanttEditor({
                   ))}
                 </div>
                 <p className={GROUP_LABEL}>Release</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {RELEASES.map((r) => (
-                    <button
-                      key={r.id}
-                      type="button"
-                      aria-pressed={filter.releases.includes(r.id)}
-                      className={filter.releases.includes(r.id) ? CHIP_ON : CHIP_OFF}
-                      onClick={() => toggleFilter("releases", r.id)}
-                    >{r.label}</button>
-                  ))}
-                  <button
-                    type="button"
-                    aria-pressed={filter.releases.includes(UNSET)}
-                    className={filter.releases.includes(UNSET) ? CHIP_ON : CHIP_OFF}
-                    onClick={() => toggleFilter("releases", UNSET)}
-                  >Unassigned</button>
-                </div>
+                {releaseChips}
                 <p className={GROUP_LABEL}>Who</p>
                 <div className="flex flex-wrap gap-1.5">
                   {people.map((h) => (
@@ -1739,19 +1931,6 @@ export default function GanttEditor({
             </Popover.Positioner>
           </Portal>
         </Popover.Root>
-        <SegmentGroup.Root
-          className={SEG_ROOT}
-          aria-label="Timeline scale"
-          value={view}
-          onValueChange={(d) => { if (d.value) changeView(d.value); }}
-        >
-          {Object.entries(VIEWS).map(([k, v]) => (
-            <SegmentGroup.Item key={k} value={k} className={SEG_ITEM}>
-              <SegmentGroup.ItemText>{v.label}</SegmentGroup.ItemText>
-              <SegmentGroup.ItemHiddenInput />
-            </SegmentGroup.Item>
-          ))}
-        </SegmentGroup.Root>
         <button
           className={BTN}
           type="button"
@@ -1759,8 +1938,9 @@ export default function GanttEditor({
           onClick={() => { void onSignOut(); }}
         >
           <SignOut size={13} aria-hidden="true" />
-          Sign out
+          <span className="max-[1080px]:sr-only">Sign out</span>
         </button>
+        </div>
       </header>
       <div className="board relative mx-[14px] mb-[14px] flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-line bg-surface shadow-pop">
         <CoreWillow fonts={false}>
@@ -1782,18 +1962,27 @@ export default function GanttEditor({
               snapshot from Postgres (another tab wrote while this one was
               idle) the widget remounts around it instead of showing rows that
               no longer exist */}
-          <div className="gantt-holder min-h-0 flex-1" key={seed + "-" + view + "-" + projectId + "-" + st.storeRev}>
+          {/* `seed` is still in the key: undo/redo restores a snapshot and has
+              to remount the widget around it. Only the scale left. */}
+          <div className="gantt-holder min-h-0 flex-1" key={seed + "-" + projectId + "-" + st.storeRev}>
               <MGantt
                 init={init}
                 tasks={revivedTasks}
                 links={links}
                 taskTypes={TASK_TYPES}
                 columns={COLUMNS}
-                scales={vd.scales}
-                cellWidth={vd.cellWidth}
+                scales={DAY_SCALES}
+                cellWidth={DAY_CELL_WIDTH}
                 cellHeight={38}
                 scaleHeight={36}
-                gridWidth={700}
+                /* The Scope column is 72px but the grid only grew by 48, so the
+                   chart gives up less than the new column costs and the task
+                   name gives up the remaining 24. Fixed rather than responsive
+                   on purpose: SVAR re-runs `init(config)` on ANY prop change,
+                   so a gridWidth that tracked the window would re-initialise
+                   the store — and drop the filter — on every resize tick. The
+                   widget's own draggable resizer is how this is adjusted. */
+                gridWidth={748}
                 start={range.start}
                 end={range.end}
                 autoScale={true}
@@ -1831,6 +2020,47 @@ export default function GanttEditor({
           </div>
         )}
       </div>
+      {/* The Scope column's own filter. Same bridge as the Who picker: the
+          trigger is a node the tagger appended into a header cell the widget
+          owns, so React cannot render the popover inside it — it anchors to the
+          element through Ark's getAnchorRect instead. The stored rect is the
+          fallback for when the widget re-renders the header away mid-flight. */}
+      <Popover.Root
+        open={!!scopePick}
+        onOpenChange={(e) => { if (!e.open) setScopePick(null); }}
+        positioning={{
+          placement: "bottom",
+          gutter: 6,
+          getAnchorRect: () => {
+            const p = scopePick || lastScopeRef.current.el;
+            const r = p && p.isConnected ? p.getBoundingClientRect() : lastScopeRef.current.rect;
+            return r ? { x: r.left, y: r.top, width: r.width, height: r.height } : null;
+          },
+        }}
+      >
+        <Portal>
+          <Popover.Positioner style={{ zIndex: 60 }}>
+            <Popover.Content className={`${POP} w-[254px] rounded-xl p-3`}>
+              <Popover.Title className={POP_TITLE}>Release scope</Popover.Title>
+              <Popover.Description className={POP_HINT}>
+                Hides rows on screen only — the totals still count the whole project.
+              </Popover.Description>
+              {releaseChips}
+              <div className="mt-3 flex items-center gap-2 border-t border-t-line-soft pt-2.5">
+                <button
+                  type="button"
+                  className={BTN}
+                  disabled={!liveFilter.releases.length}
+                  onClick={() => onFilter({ types: filter.types, releases: [], people: filter.people })}
+                >Clear</button>
+                {filterOn && (
+                  <span className="text-mini text-muted tabular-nums">{filterInfo.shown} of {filterInfo.total}</span>
+                )}
+              </div>
+            </Popover.Content>
+          </Popover.Positioner>
+        </Portal>
+      </Popover.Root>
       {/* the Who cell is built by the tagger, so this popover is controlled and
           anchored to that DOM node through getAnchorRect; the key remounts it
           per row so Ark re-measures instead of reusing the old placement.

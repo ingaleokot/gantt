@@ -15,13 +15,17 @@ import type { FilterState } from "../../features/gantt/lib/taxonomy";
    ../../features/gantt/lib/taxonomy is pure data and pure functions, which is
    also why the viewer can share it. */
 
-const VIEW_KEYS = ["day", "week", "month"] as const;
-type ViewKey = (typeof VIEW_KEYS)[number];
-const isView = (v: unknown): v is ViewKey => typeof v === "string" && (VIEW_KEYS as readonly string[]).includes(v);
+/* `?view=day|week|month` is GONE. The Day / Week / Month switcher was removed
+   from the header, so the param had nothing left to select; it is simply not in
+   the schema any more. That is deliberately not an error for the links that
+   still carry it: `validateSearch` BUILDS the search object rather than
+   checking it, so a bookmarked `?view=week` is dropped on the way in and the
+   editor opens normally on the one scale there is. `projects.view` stays in the
+   schema and is left exactly as stored — nothing writes it now. */
 
 /* The filter travels as three comma-separated params — `?type=story,backend` —
    so a filtered timeline is a link somebody else can open. Each one is
-   validated the way `view` is: unknown tokens are dropped rather than handed on. */
+   validated: unknown tokens are dropped rather than handed on. */
 const ID_SHAPE = /^[A-Za-z0-9_-]{1,64}$/;
 function parseList(raw: unknown, ok: (v: string) => boolean): string[] {
   if (typeof raw !== "string" || !raw) return [];
@@ -34,7 +38,6 @@ function parseList(raw: unknown, ok: (v: string) => boolean): string[] {
 }
 
 interface Search {
-  view?: ViewKey;
   /* effective task types */
   type?: string;
   /* release scopes, plus "none" for unassigned */
@@ -44,18 +47,18 @@ interface Search {
 }
 
 const listParam = (xs: string[]): string | undefined => (xs.length ? xs.join(",") : undefined);
-const searchOf = (f: FilterState): Pick<Search, "type" | "rel" | "who"> => ({
+const searchOf = (f: FilterState): Search => ({
   type: listParam(f.types),
   rel: listParam(f.releases),
   who: listParam(f.people),
 });
 
 export const Route = createFileRoute("/_authed/p/$projectId")({
-  /* every search param is validated: anything else is dropped rather than
-     handed to the widget as a scale, a type or a scope it does not have */
+  /* every search param is validated: anything else — including the `view` this
+     route used to accept — is dropped rather than handed to the widget as a
+     type or a scope it does not have */
   validateSearch: (search: Record<string, unknown>): Search => {
     const out: Search = {};
-    if (isView(search.view)) out.view = search.view;
     out.type = listParam(parseList(search.type, (v) => TASK_TYPE_IDS.includes(v)));
     out.rel = listParam(parseList(search.rel, (v) => v === UNSET || RELEASE_IDS.includes(v)));
     /* people ids cannot be checked against the roster here — it is not loaded
@@ -97,10 +100,8 @@ function EditorRoute() {
          row tagger rather than trying to reconcile two timelines */
       key={projectId}
       projectId={projectId}
-      view={search.view ?? (isView(project.view) ? project.view : "day")}
-      onView={(v) => go({ ...searchOf(filter), view: isView(v) ? v : undefined })}
       filter={filter}
-      onFilter={(f) => go({ view: search.view, ...searchOf(f) })}
+      onFilter={(f) => go(searchOf(f))}
       onSignOut={async () => {
         /* signing out throws the draft away with the page. flushSave used to
            swallow its own failure, so unsaved work went with it in silence —

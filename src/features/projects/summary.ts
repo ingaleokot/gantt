@@ -1,5 +1,5 @@
 import type { StoreProject, StoreTask } from "../../lib/db";
-import { isTierType, releaseTotals } from "../gantt/lib/taxonomy";
+import { isTierType, releaseSummaryText, releaseTotals } from "../gantt/lib/taxonomy";
 import type { ReleaseTotals } from "../gantt/lib/taxonomy";
 
 /* What one project adds up to, computed from the draft rather than from a
@@ -96,13 +96,9 @@ export function spanDays(s: ProjectSummary): number | null {
   return Math.round((s.end.getTime() - s.start.getTime()) / DAY) + 1;
 }
 
-/* "MVP 76h · Full 40h" — only the scopes that actually carry work, so a project
-   nobody has scoped says so instead of printing three zeroes */
-export function formatRelease(s: ProjectSummary): string {
-  const parts: string[] = [];
-  if (s.release.mvp) parts.push("MVP " + s.release.mvp + "h");
-  if (s.release.full) parts.push("Full " + s.release.full + "h");
-  if (!parts.length) return "Not scoped";
-  if (s.release.none) parts.push("unscoped " + s.release.none + "h");
-  return parts.join(" · ");
-}
+/* "MVP 56h · Full 98h incl. MVP" — the wording lives in taxonomy.ts, which the
+   editor header, the public viewer and the PDF read too, so a card and the
+   screen it opens can never phrase the same two numbers differently. Only the
+   scopes that carry work are printed: a project nobody has scoped says so
+   instead of showing three zeroes. */
+export const formatRelease = (s: ProjectSummary): string => releaseSummaryText(s.release);

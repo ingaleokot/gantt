@@ -179,8 +179,9 @@
 .wx-willow-theme [data-col-id=":text"] .wx-content > .type-icon { order: -2; }
 .wx-willow-theme [data-col-id=":text"] .wx-content > .status-dot { order: -1; }
 .wx-willow-theme [data-col-id=":text"] .wx-content > .wx-text { order: 0; }
-.wx-willow-theme [data-col-id=":text"] .wx-content > .release-tag { order: 1; }
 .wx-willow-theme [data-col-id=":text"] .wx-content > .row-edit { order: 2; }
+/* the release pill used to live here, at order 1, in a cell that already held
+   five things. It has its own column now — see the Scope block below. */
 
 /* ---------- statuses ---------- */
 .wx-willow-theme .status-dot {
@@ -256,6 +257,70 @@
 }
 /* standalone chips (filter panel, header, cards) carry no leading gap */
 .release-tag.rel-lead { margin-left: 0; }
+
+/* ---------- the Scope column ----------
+   The pill sits in a column of its own now rather than after the task name.
+   Every row in scope says so, which is what makes it readable as a column —
+   but the two weights have to stay distinguishable: SOLID on the tier that
+   carries the release, GHOSTED (`rel-soft`) on the rows underneath that merely
+   inherit it. That is the same distinction the PDF's SCOPE column draws with
+   bold and regular. */
+.wx-willow-theme [data-col-id=":scope"] .wx-content {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.wx-willow-theme [data-col-id=":scope"] .release-tag { margin-left: 0; }
+.release-tag.rel-soft,
+.wx-willow-theme .release-tag.rel-soft {
+  background: transparent;
+  border-color: currentcolor;
+  font-weight: 600;
+  opacity: 0.6;
+}
+
+/* ---------- the release filter, on the Scope column's own header ----------
+   A tagger-appended button, positioned by CSS the way `.fold-all` is — the
+   append-only contract means it can never be inserted between the header
+   cell's React-managed nodes. `is-on` is what the column says when the release
+   dimension is constraining, so a filter left on is visible from the data it
+   is filtering rather than only from the header popover. */
+.wx-willow-theme [data-header-id=":scope"] {
+  position: relative;
+}
+/* the header cell renders `.wx-text` (plus SVAR's resize grip), not the
+   `.wx-content` the body cells use — the label has to be told about the control
+   sitting on its right edge or the two overlap */
+.wx-willow-theme [data-header-id=":scope"] .wx-text { padding-right: 18px; }
+.wx-willow-theme .col-filter {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  color: var(--color-faint);
+  cursor: pointer;
+  transition: transform var(--dur-press) ease-out, background-color var(--dur-hover) ease-out, color var(--dur-hover) ease-out;
+}
+.wx-willow-theme .col-filter > .ci { width: 13px; height: 13px; }
+.wx-willow-theme .col-filter:hover { background: var(--color-surface-hover); color: var(--color-ink); }
+.wx-willow-theme .col-filter:active { transform: translateY(-50%) scale(0.9); }
+.wx-willow-theme .col-filter:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.wx-willow-theme .col-filter.is-on {
+  background: var(--color-accent-hover);
+  color: var(--color-accent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .wx-willow-theme .col-filter:active { transform: translateY(-50%); filter: brightness(0.92); }
+}
 
 /* the fold-all chevron in the Task name header — same mechanism */
 .ci {
@@ -338,8 +403,26 @@
   border-bottom-color: color-mix(in srgb, var(--color-story-rail) 45%, transparent);
 }
 
-/* ---------- project span line under the timeline scale ---------- */
-.wx-willow-theme .wx-chart .wx-scale { position: relative; }
+/* ---------- the timeline scale stays put while the rows scroll ----------
+   This rule used to say `position: relative`, purely to give `.project-span`
+   below something to be absolutely positioned against — and that one word was
+   the whole bug.
+
+   SVAR ships `.wx-scale { position: sticky; top: 0 }`, and it is load-bearing.
+   The widget's vertical scrolling is not the rows moving inside a viewport: the
+   whole `.wx-layout` is pinned by a `position: sticky` `.wx-stuck` inside a
+   tall `.wx-pseudo-rows`, and the chart's own content is offset upwards by the
+   scroll amount. So the GRID's header stayed put (it is a separate flex child
+   of the layout) while the date scale — a child of the offset chart — was
+   carried off the top of the screen with the bars, and the rows lost the one
+   piece of context they cannot be read without. Overriding the sticky to
+   relative removed the only thing holding it in place.
+
+   Sticky is itself a positioned ancestor, so `.project-span` still positions
+   against it exactly as before, and because sticky only pins on the axis it is
+   given a threshold for, the scale still scrolls SIDEWAYS with the bars
+   underneath it. `z-index` and the shadow come from the shipped rule. */
+.wx-willow-theme .wx-chart .wx-scale { position: sticky; top: 0; }
 .wx-willow-theme .project-span {
   position: absolute;
   bottom: 3px;
@@ -510,4 +593,9 @@
   .who-chip { border: 1px solid currentcolor; }
   .wx-willow-theme .release-tag,
   .release-tag { border-color: currentcolor; }
+  /* the Scope column's inherited weight is carried by opacity, which is exactly
+     what this mode exists to undo — the solid/ghost difference falls back to
+     the background alone */
+  .wx-willow-theme .release-tag.rel-soft,
+  .release-tag.rel-soft { opacity: 1; }
 }

@@ -28,6 +28,7 @@ import {
   Crown,
   Diamond,
   Flask,
+  Funnel,
   HardDrives,
   PaintBrush,
   PencilSimple,
@@ -53,6 +54,10 @@ const GLYPHS: Record<string, Icon> = {
   "ci-collapse": ArrowsInLineVertical,
   "ci-expand": ArrowsOutLineVertical,
   "who-add": Plus,
+  /* the Scope column header's own filter control. One glyph: whether the
+     release dimension is constraining is said with colour and a count, not
+     with a second silhouette nobody would tell apart at 14px. */
+  "ci-filter": Funnel,
 };
 
 /* the tagger stamps the glyph name onto the node it wrote, so a re-run can
