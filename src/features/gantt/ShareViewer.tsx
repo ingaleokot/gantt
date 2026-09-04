@@ -3,11 +3,19 @@ import { Gantt } from "@svar-ui/react-gantt";
 import type { IApi, IColumnConfig, IScaleConfig, ITask, TID } from "@svar-ui/react-gantt";
 import { Willow as CoreWillow } from "@svar-ui/react-core";
 import { Willow as GridWillow } from "@svar-ui/react-grid";
+import { Popover } from "@ark-ui/react/popover";
+import { Portal } from "@ark-ui/react/portal";
 import { SegmentGroup } from "@ark-ui/react/segment-group";
+import { Funnel, X } from "@phosphor-icons/react";
 import { setGlyph, type GlyphHost } from "./icons";
 import { installWxiMasks } from "./lib/wxi-masks";
 import { trackerId } from "./lib/tracker";
 import { initialsOf, nameHue, parseAssignees } from "../people/roster";
+import {
+  EMPTY_FILTER, RELEASES, TASK_TYPES, UNSET, asWidgetType, effectiveType, filterActive,
+  filterCount, filterKey, isTierType, makeFilter, releaseLabel, releaseTotals, usableFilter,
+} from "./lib/taxonomy";
+import type { FilterRow, FilterState, ReleaseTotals } from "./lib/taxonomy";
 
 /* The stylesheets are imported once by src/main.tsx, in the order that matters.
    This module must not reach lib/ — pulling the Supabase client into the
@@ -49,6 +57,12 @@ interface ViewTask {
   assignees?: string;
   /* written just after the object literal in shapeStore, hence optional */
   status?: string;
+  /* null | "mvp" | "full" — carried only by the two container tiers */
+  release?: string;
+  /* the widget-only tier marker: SVAR has exactly one parent type ("summary"),
+     so a story is presented as one and `kind` is what still says it is a story.
+     See ./lib/taxonomy — the editor does exactly the same thing. */
+  kind?: string;
 }
 interface ViewLink {
   id: string;
@@ -66,6 +80,8 @@ interface ViewProject {
 interface ViewStore {
   projects: ViewProject[];
   active: string | null;
+  /* the people this project's tasks name, for the Who filter's chips */
+  people: Person[];
 }
 interface RevivedTask extends Omit<ViewTask, "start" | "end"> {
   start?: Date;
@@ -113,7 +129,30 @@ function prepareTasks(tasks: ViewTask[]): RevivedTask[] {
   const parents = new Set(tasks.map((t) => t.parent).filter((p) => p !== undefined && p !== null && p !== 0));
   return tasks.map((t) => {
     const r = reviveTask(t);
-    if (parents.has(r.id) && r.type !== "summary") r.type = "summary";
+    /* the same coercion the editor makes, and for the same reason: SVAR only
+       treats a row as a parent when its type is exactly "summary". This page
+       never writes, but it must not turn a story into an epic on screen either
+       — the real tier travels in `kind`, which the decorator reads back. */
+    const stored = r.type || "task";
+    const tier = isTierType(stored) || parents.has(r.id)
+      ? (stored === "story" ? "story" : "summary")
+      : stored;
+    r.kind = tier;
+    /* An empty container cannot be a widget summary while it is NESTED. SVAR's
+       date roll-up (normalizeDates → getSummaryDates) recurses into every
+       descendant of a summary that has no dates of its own, and throws
+       "Summary tasks must have start and end dates if they have no subtasks"
+       the moment it reaches one with nothing inside — the empty row's own dates
+       do not save it, and neither does its parent's. So an empty nested tier is
+       handed over as a plain bar: `kind` still says which tier it is, the row
+       still shows its icon, rail and release marker, the STORED type is
+       untouched, and it becomes a summary again the second it gains a child.
+       A top-level empty tier is not reachable by that recursion and keeps the
+       behaviour it has always had. */
+    const nestedRow = r.parent !== undefined && r.parent !== null && r.parent !== 0;
+    r.type = isTierType(tier) && (parents.has(r.id) || !nestedRow) ? "summary"
+      : isTierType(tier) ? "task"
+      : asWidgetType(tier);
     if (r.type === "summary" && parents.has(r.id)) { delete r.start; delete r.end; delete r.duration; return r; }
     if (r.type === "summary" && !r.start) {
       r.start = rollForward(new Date());
@@ -132,6 +171,18 @@ function prepareTasks(tasks: ViewTask[]): RevivedTask[] {
 }
 let rosterRef: Person[] = [];
 const personById = (id: string): Person | null => rosterRef.find((h) => h.id === id) || null;
+/* ITask has an index signature, so `t.kind` would arrive as `any`; the tier is
+   read through these instead, exactly as in Editor.tsx */
+const kindOf = (t: unknown): string | undefined => {
+  if (!t || typeof t !== "object") return undefined;
+  const k = (t as { kind?: unknown }).kind;
+  return typeof k === "string" ? k : undefined;
+};
+const tierOf = (t: unknown): string => {
+  const o = t && typeof t === "object" ? (t as { type?: unknown }) : null;
+  const ty = o && typeof o.type === "string" ? o.type : undefined;
+  return effectiveType(ty, kindOf(t));
+};
 /* parseAssignees / initialsOf / nameHue live in features/people/roster.ts and
    trackerId in ./lib/tracker — both editor and viewer had the same copy. */
 
@@ -160,6 +211,11 @@ interface FeedTask {
   url?: string;
   assignees?: string;
   status?: string;
+  /* Optional on purpose. `release` is a real column, but the SECURITY DEFINER
+     function the edge endpoint calls (public.share_feed) has to name it before
+     it appears here, and that is a migration the owner applies — see README.
+     Until then every shared row simply reads as unscoped. */
+  release?: string | null;
 }
 interface FeedLink {
   id: string;
@@ -206,6 +262,7 @@ function shapeStore(raw: Feed | null): ViewStore {
       if ((s.tasks || []).some((c) => c.parent === t.id)) o.open = true; /* branches start expanded for viewers */
       if (t.url) o.url = t.url;
       if (t.assignees) o.assignees = t.assignees;
+      if (t.release === "mvp" || t.release === "full") o.release = t.release;
       o.status = t.status || "todo";
       return o;
     }),
@@ -213,7 +270,7 @@ function shapeStore(raw: Feed | null): ViewStore {
   }));
   /* `some` proves s.active is one of the ids, which the compiler cannot see */
   const active = projects.some((p) => p.id === s.active) ? s.active! : projects.length ? projects[0].id! : null;
-  return { projects, active };
+  return { projects, active, people: rosterRef };
 }
 
 interface ViewPreset {
@@ -250,6 +307,21 @@ const LEGEND = [
 ];
 
 /* the shell recipes the editor uses, kept in step by hand */
+const FOCUS = "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent";
+const BTN =
+  `press inline-flex cursor-pointer items-center gap-1.5 rounded-[9px] border border-line bg-surface px-[0.8125rem] py-1.5 font-ui text-small font-medium text-muted hover:bg-surface-hover hover:text-ink ${FOCUS} disabled:cursor-default disabled:opacity-60`;
+const BTN_ON =
+  `press inline-flex cursor-pointer items-center gap-1.5 rounded-[9px] border border-accent bg-accent-hover px-[0.8125rem] py-1.5 font-ui text-small font-semibold text-accent hover:brightness-[1.04] ${FOCUS}`;
+const POP = "pop-anim material-pop border border-line outline-none";
+const POP_TITLE = "mb-1 text-body font-semibold";
+const POP_HINT = "m-0 mb-2.5 text-mini text-muted";
+/* both states written out in full — Tailwind only keeps class names it can read
+   verbatim in the source */
+const CHIP_OFF =
+  `press inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-line bg-surface px-2.5 py-[0.1875rem] font-ui text-mini text-muted hover:bg-surface-hover hover:text-ink ${FOCUS}`;
+const CHIP_ON =
+  `press inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-accent bg-accent-hover px-2.5 py-[0.1875rem] font-ui text-mini font-semibold text-accent ${FOCUS}`;
+const GROUP_LABEL = "m-0 mt-3 mb-1.5 text-label font-semibold text-faint uppercase";
 const SEG_ROOT = "flex gap-0.5 rounded-[9px] border border-line bg-surface p-0.5";
 const SEG_ITEM =
   "press flex cursor-pointer select-none items-center rounded-[7px] border-0 bg-transparent px-3.5 py-[0.3125rem] font-ui text-small font-medium text-muted hover:bg-surface-hover hover:text-ink data-[state=checked]:bg-accent data-[state=checked]:text-accent-ink data-[state=checked]:hover:bg-accent data-[state=checked]:hover:text-accent-ink has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-1 has-[:focus-visible]:outline-accent";
@@ -290,8 +362,16 @@ function decorate(api: GanttApi, project: ViewProject) {
     try { t = api.getTask(id); } catch (e) {}
     if (!t && /^\d+$/.test(id)) { try { t = api.getTask(Number(id)); } catch (e) {} }
     if (!t) return;
-    row.classList.toggle("is-epic", t.type === "summary");
-    row.classList.toggle("in-epic", t.type !== "summary" && (t.$level || 1) > 1);
+    const tier = tierOf(t);
+    const nested = !isTierType(tier) && (t.$level || 1) > 1;
+    let parentTier: string | null = null;
+    if (nested && t.parent !== undefined && t.parent !== null && t.parent !== 0) {
+      try { parentTier = tierOf(api.getTask(t.parent)); } catch (e) {}
+    }
+    row.classList.toggle("is-epic", tier === "summary");
+    row.classList.toggle("is-story", tier === "story");
+    row.classList.toggle("in-epic", nested);
+    row.classList.toggle("in-story", nested && parentTier === "story");
     const status = t.status === "done" || t.status === "progress" ? t.status : "todo";
     ["st-todo", "st-progress", "st-done"].forEach((c) => row.classList.remove(c));
     row.classList.add("st-" + status);
@@ -301,12 +381,27 @@ function decorate(api: GanttApi, project: ViewProject) {
       if (!dot) { dot = document.createElement("span"); dot.className = "status-dot"; content.appendChild(dot); }
       const dc = "status-dot sd-" + status;
       if (dot.className !== dc) dot.className = dc;
-      const typeKey = "ti-" + (t.type || "task");
+      const typeKey = "ti-" + tier;
       const iconCls = "type-icon " + typeKey;
       let ic = content.querySelector<GlyphHost>(".type-icon");
       if (!ic) { ic = document.createElement("span"); ic.className = iconCls; content.appendChild(ic); }
       else if (ic.className !== iconCls) ic.className = iconCls;
       setGlyph(ic, typeKey); /* cached Phosphor SVG, rendered once at module scope */
+      /* release scope, on the tier that owns it — the same pill the editor
+         shows, positioned by the same CSS flex order */
+      const rel = typeof t.release === "string" ? t.release : "";
+      const relText = isTierType(tier) ? releaseLabel(rel) : null;
+      let tag = content.querySelector<HTMLElement>(".release-tag");
+      if (relText) {
+        if (!tag) { tag = document.createElement("span"); content.appendChild(tag); }
+        const tc = rel === "mvp" ? "release-tag rel-mvp" : "release-tag rel-full";
+        if (tag.className !== tc) tag.className = tc;
+        if (tag.textContent !== relText) tag.textContent = relText;
+        const title = rel === "mvp" ? "MVP scope" : "Full release";
+        if (tag.title !== title) tag.title = title;
+      } else if (tag) {
+        tag.remove();
+      }
     }
     const whoCell = row.querySelector<HTMLElement>('[data-col-id=":who"]');
     if (whoCell) {
@@ -373,6 +468,7 @@ function decorate(api: GanttApi, project: ViewProject) {
     const status = t.status === "done" || t.status === "progress" ? t.status : "todo";
     ["st-todo", "st-progress", "st-done"].forEach((c) => bar.classList.remove(c));
     bar.classList.add("st-" + status);
+    bar.classList.toggle("is-story", tierOf(t) === "story");
   });
   /* epic bands */
   const area = document.querySelector<HTMLElement>(".gantt-holder .wx-area");
@@ -397,7 +493,9 @@ function decorate(api: GanttApi, project: ViewProject) {
       let j = i + 1;
       while (j < rows.length && rows[j].$level > t.$level) j++;
       if (j === i + 1) continue;
-      html += '<div class="epic-band" style="top:' + i * ch + "px;height:" + (j - i) * ch + 'px"></div>';
+      /* both class strings spelled out in full */
+      const cls = tierOf(t) === "story" ? "epic-band band-story" : "epic-band";
+      html += '<div class="' + cls + '" style="top:' + i * ch + "px;height:" + (j - i) * ch + 'px"></div>';
     }
     if (layer.__html !== html) { layer.innerHTML = html; layer.__html = html; }
   }
@@ -407,7 +505,8 @@ function decorate(api: GanttApi, project: ViewProject) {
     let el = scaleEl.querySelector<HTMLElement>(":scope > .project-span");
     let min: string | null = null, max: string | null = null;
     project.tasks.forEach((t) => {
-      if (t.type === "summary") return;
+      /* a tier's dates are its children's; counting them repeats the span */
+      if (isTierType(t.type)) return;
       if (t.start && (!min || t.start < min)) min = t.start;
       const e = t.end || t.start;
       if (e && (!max || e > max)) max = e;
@@ -448,11 +547,17 @@ interface Stats {
   min: Date | null;
   max: Date | null;
   epics: number;
+  stories: number;
+  release: ReleaseTotals;
 }
+/* the editor's own header arithmetic, kept in step by hand: both container
+   tiers are counted but contribute no effort of their own */
 function computeStats(tasks: ViewTask[]): Stats {
-  let h = 0, epics = 0, min: string | null = null, max: string | null = null;
+  let h = 0, epics = 0, stories = 0, min: string | null = null, max: string | null = null;
   tasks.forEach((t) => {
+    /* `tasks` carries the STORED type, so a story is "story" here */
     if (t.type === "summary") { epics++; return; }
+    if (t.type === "story") { stories++; return; }
     if (t.type !== "milestone") h += Number(t.hours) || 0;
     if (t.start && (!min || t.start < min)) min = t.start;
     const e = t.end || t.start;
@@ -464,7 +569,28 @@ function computeStats(tasks: ViewTask[]): Stats {
     min: min ? new Date(min + "T00:00:00") : null,
     max: max ? new Date(max + "T00:00:00") : null,
     epics,
+    stories,
+    release: releaseTotals(tasks, (t) => Number(t.hours) || 0),
   };
+}
+
+/* ---------- the same filter as the editor ----------
+   It reuses the editor's predicate through ./lib/taxonomy, and applies it the
+   same way: SVAR's `filter-tasks` records which ids are visible and leaves the
+   underlying tree alone. There is nothing to write from here, but `open: false`
+   is kept so the library does not mutate rows either. Returns how many rows
+   match, for the empty state. */
+function applyViewFilter(api: GanttApi, f: FilterState, tasks: ViewTask[], people: Person[]): number {
+  const usable = usableFilter(f, new Set(people.map((h) => h.id)));
+  if (!filterActive(usable)) {
+    try { api.exec("filter-tasks", {}); } catch (e) {}
+    return tasks.length;
+  }
+  const by = new Map<string, FilterRow>();
+  tasks.forEach((t) => by.set(String(t.id), t));
+  const match = makeFilter(usable, (id) => by.get(String(id)) || null);
+  try { api.exec("filter-tasks", { filter: match, open: false }); } catch (e) {}
+  return tasks.filter((t) => match(t)).length;
 }
 
 function Board({ store, activeId }: { store: ViewStore; activeId: string | null }) {
@@ -477,6 +603,21 @@ function Board({ store, activeId }: { store: ViewStore; activeId: string | null 
   const revivedTasks = useMemo(() => prepareTasks(project.tasks), [activeId, seed]);
   const links = useMemo(() => project.links.slice(), [activeId, seed]);
   const stats = useMemo(() => computeStats(project.tasks), [activeId]);
+
+  /* the same three filter dimensions as the editor, on local state: this route
+     takes no search params today, so a filtered view here is not a link */
+  const [filter, setFilter] = useState<FilterState>(EMPTY_FILTER);
+  const people = store.people;
+  const fKey = filterKey(filter);
+  const liveFilter = useMemo(() => usableFilter(filter, new Set(people.map((h) => h.id))), [fKey, people]);
+  const filterOn = filterActive(liveFilter);
+  const [shown, setShown] = useState(project.tasks.length);
+  const toggleFilter = (dim: "types" | "releases" | "people", id: string) => {
+    const next: FilterState = { types: filter.types, releases: filter.releases, people: filter.people };
+    const cur = next[dim];
+    next[dim] = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+    setFilter(next);
+  };
 
   const range = useMemo(() => {
     const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -497,6 +638,18 @@ function Board({ store, activeId }: { store: ViewStore; activeId: string | null 
     setTimeout(() => watchDecorations(a, project), 0);
   }, [activeId, seed]);
 
+  /* a scale change remounts the widget, and a fresh tree carries no filter.
+     `appliedRef` keeps an unfiltered page inert rather than re-running a
+     clearing `filter-tasks` on every render pass. */
+  const appliedRef = useRef(false);
+  useEffect(() => {
+    const a = apiRef.current;
+    if (!a) return;
+    if (!filterOn && !appliedRef.current) { setShown(project.tasks.length); return; }
+    appliedRef.current = filterOn;
+    setShown(applyViewFilter(a, filter, project.tasks, people));
+  }, [fKey, seed, view, activeId, people, project.tasks, filterOn]);
+
   const vd = VIEWS[view];
 
   return (
@@ -507,14 +660,113 @@ function Board({ store, activeId }: { store: ViewStore; activeId: string | null 
         <div aria-hidden="true"><span className={BRAND_MARK} /></div>
         <h1 className="m-0 max-w-[46vw] min-w-[60px] cursor-default overflow-hidden rounded-[7px] px-2 py-[0.1875rem] font-display text-display font-semibold text-ellipsis whitespace-nowrap">{project.name}</h1>
         <span className="rounded-full border border-line bg-surface px-2.5 py-[0.1875rem] text-mini whitespace-nowrap text-muted">View only</span>
+        {filterOn && (
+          <button
+            type="button"
+            className={`press inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-accent bg-accent-hover px-2.5 py-[0.1875rem] text-mini whitespace-nowrap text-accent ${FOCUS}`}
+            title="Clear the filter"
+            onClick={() => setFilter(EMPTY_FILTER)}
+          >
+            <Funnel size={11} weight="fill" aria-hidden="true" />
+            Showing {shown} of {project.tasks.length}
+            <X size={11} aria-hidden="true" />
+          </button>
+        )}
         {stats && stats.min && stats.max && (
           <span className="pl-1 text-mini whitespace-nowrap text-muted tabular-nums max-[1100px]:hidden">
             {fmtD(stats.min)} – {fmtD(new Date(stats.max.getTime() - DAY))}
             {" · effort "}<strong className="font-semibold text-ink">{stats.h}h</strong> / {stats.d}d
             {stats.epics > 0 && " · " + stats.epics + (stats.epics === 1 ? " epic" : " epics")}
+            {stats.stories > 0 && " · " + stats.stories + (stats.stories === 1 ? " story" : " stories")}
+            {stats.release.mvp > 0 && (
+              <>{" · "}<span className="release-tag rel-lead rel-mvp">MVP</span>{" " + stats.release.mvp + "h"}</>
+            )}
+            {stats.release.full > 0 && (
+              <>{" · "}<span className="release-tag rel-lead rel-full">Full</span>{" " + stats.release.full + "h"}</>
+            )}
           </span>
         )}
         <div className="flex-1" />
+        <Popover.Root positioning={{ placement: "bottom-end", gutter: 8 }}>
+          <Popover.Trigger className={filterOn ? BTN_ON : BTN}>
+            <Funnel size={13} weight={filterOn ? "fill" : "regular"} aria-hidden="true" />
+            <span className="max-[1000px]:sr-only">Filter</span>
+            {filterOn && <span className="tabular-nums">{filterCount(liveFilter)}</span>}
+          </Popover.Trigger>
+          <Portal>
+            <Popover.Positioner style={{ zIndex: 60 }}>
+              <Popover.Content className={`${POP} w-[286px] rounded-xl p-3.5`}>
+                <Popover.Title className={POP_TITLE}>Filter</Popover.Title>
+                <Popover.Description className={POP_HINT}>
+                  Hides rows on screen only — the totals above still count the whole project.
+                </Popover.Description>
+                <p className={GROUP_LABEL}>Type</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {TASK_TYPES.map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      aria-pressed={filter.types.includes(t.id)}
+                      className={filter.types.includes(t.id) ? CHIP_ON : CHIP_OFF}
+                      onClick={() => toggleFilter("types", t.id)}
+                    >{t.label}</button>
+                  ))}
+                </div>
+                <p className={GROUP_LABEL}>Release</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {RELEASES.map((r) => (
+                    <button
+                      key={r.id}
+                      type="button"
+                      aria-pressed={filter.releases.includes(r.id)}
+                      className={filter.releases.includes(r.id) ? CHIP_ON : CHIP_OFF}
+                      onClick={() => toggleFilter("releases", r.id)}
+                    >{r.label}</button>
+                  ))}
+                  <button
+                    type="button"
+                    aria-pressed={filter.releases.includes(UNSET)}
+                    className={filter.releases.includes(UNSET) ? CHIP_ON : CHIP_OFF}
+                    onClick={() => toggleFilter("releases", UNSET)}
+                  >Unassigned</button>
+                </div>
+                {people.length > 0 && (
+                  <>
+                    <p className={GROUP_LABEL}>Who</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {people.map((h) => (
+                        <button
+                          key={h.id}
+                          type="button"
+                          aria-pressed={filter.people.includes(h.id)}
+                          className={filter.people.includes(h.id) ? CHIP_ON : CHIP_OFF}
+                          onClick={() => toggleFilter("people", h.id)}
+                        >
+                          <span className="who-chip" style={{ "--who-hue": nameHue(h.name) }}>{initialsOf(h.name)}</span>
+                          <span className="max-w-[9rem] overflow-hidden text-ellipsis whitespace-nowrap">{h.name}</span>
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        aria-pressed={filter.people.includes(UNSET)}
+                        className={filter.people.includes(UNSET) ? CHIP_ON : CHIP_OFF}
+                        onClick={() => toggleFilter("people", UNSET)}
+                      >Unassigned</button>
+                    </div>
+                  </>
+                )}
+                <div className="mt-3.5 flex items-center gap-2 border-t border-t-line-soft pt-3">
+                  <button type="button" className={BTN} disabled={!filterOn} onClick={() => setFilter(EMPTY_FILTER)}>
+                    Clear all
+                  </button>
+                  {filterOn && (
+                    <span className="text-mini text-muted tabular-nums">{shown} of {project.tasks.length} rows</span>
+                  )}
+                </div>
+              </Popover.Content>
+            </Popover.Positioner>
+          </Portal>
+        </Popover.Root>
         <SegmentGroup.Root
           className={SEG_ROOT}
           aria-label="Timeline scale"
@@ -561,6 +813,17 @@ function Board({ store, activeId }: { store: ViewStore; activeId: string | null 
           </div>
         </GridWillow>
         </CoreWillow>
+        {project.tasks.length > 0 && filterOn && shown === 0 && (
+          <div className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center">
+            <div className="material-pop pointer-events-auto max-w-[380px] rounded-[14px] border border-line px-[1.625rem] py-[1.375rem] text-center motion-safe:animate-rise">
+              <div className="mb-1.5 font-display text-title font-semibold">Nothing matches this filter</div>
+              <p className="m-0 mb-3.5 text-copy text-muted">
+                All {project.tasks.length} rows are still here — the filter only hides them on screen.
+              </p>
+              <button type="button" className={BTN} onClick={() => setFilter(EMPTY_FILTER)}>Clear filter</button>
+            </div>
+          </div>
+        )}
         {!project.tasks.length && (
           <div className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center">
             <div className="material-pop pointer-events-auto max-w-[380px] rounded-[14px] border border-line px-[1.625rem] py-[1.375rem] text-center motion-safe:animate-rise">

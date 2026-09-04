@@ -22,6 +22,7 @@
 import {
   AppWindow,
   ArrowsInLineVertical,
+  BookOpenText,
   ArrowsOutLineVertical,
   CheckSquare,
   Crown,
@@ -39,6 +40,9 @@ import { renderIcon } from "./lib/render-icon";
    so a name is enough to pick both the glyph and its CSS hook */
 const GLYPHS: Record<string, Icon> = {
   "ti-summary": Crown,
+  /* the middle tier. An open book reads as a story and shares no silhouette
+     with the epic's crown, which matters at 15px in a dense grid. */
+  "ti-story": BookOpenText,
   "ti-backend": HardDrives,
   "ti-frontend": AppWindow,
   "ti-design": PaintBrush,

@@ -7,7 +7,7 @@ import { Popover } from "@ark-ui/react/popover";
 import { Portal } from "@ark-ui/react/portal";
 import { SegmentGroup } from "@ark-ui/react/segment-group";
 import { Link } from "@tanstack/react-router";
-import { CaretLeft, Check, DownloadSimple, ShareNetwork, SignOut, Users, X } from "@phosphor-icons/react";
+import { CaretLeft, Check, DownloadSimple, Funnel, ShareNetwork, SignOut, Users, X } from "@phosphor-icons/react";
 import { buildGanttPdf } from "./pdf";
 import type { Person, StoreLink, StoreProject, StoreTask, TaskId } from "../../lib/db";
 import { uid, useStore } from "../projects/store";
@@ -16,6 +16,11 @@ import { installWxiMasks } from "./lib/wxi-masks";
 import { trackerId } from "./lib/tracker";
 import { initialsOf, nameHue, parseAssignees } from "../people/roster";
 import { HOURS_PER_DAY } from "../projects/summary";
+import {
+  EMPTY_FILTER, RELEASES, TASK_TYPES, UNSET, asWidgetType, effectiveType, filterActive,
+  filterCount, filterKey, isTierType, makeFilter, releaseLabel, releaseTotals, usableFilter,
+} from "./lib/taxonomy";
+import type { FilterRow, FilterState, ReleaseTotals } from "./lib/taxonomy";
 
 /* The stylesheets are imported once by src/main.tsx — the order between them
    is load-bearing, so it lives in one place rather than per screen. */
@@ -46,21 +51,36 @@ type ScaleCell = { width: number; date: Date };
 type ScaleRow = { cells: ScaleCell[] };
 type ScaleData = { rows: ScaleRow[] } | null | undefined;
 
+/* ---------- the three tiers, and the one seam where they are translated ----------
+   epic → story → task. SVAR only makes a row a PARENT when its `type` is
+   exactly "summary", and there is no second parent type to reach for, so a
+   story is handed to the widget as a summary carrying `kind: "story"`.
+   `kind` never reaches Postgres — prepareTasks writes it on the way in and
+   cleanTask turns it back into `type: "story"` on the way out. The mapping
+   itself lives in ./lib/taxonomy so the viewer, the PDF and the projects list
+   read it from the same place. */
+type WidgetTask = StoreTask & { kind?: string };
+
 /* store tasks with their dates revived: what the widget is handed */
-interface RevivedTask extends Omit<StoreTask, "start" | "end"> {
+interface RevivedTask extends Omit<WidgetTask, "start" | "end"> {
   start?: Date;
   end?: Date;
 }
 
-export const TASK_TYPES = [
-  { id: "task", label: "Task" },
-  { id: "backend", label: "Backend" },
-  { id: "frontend", label: "Frontend" },
-  { id: "design", label: "Design" },
-  { id: "testing", label: "Testing" },
-  { id: "summary", label: "Epic" },
-  { id: "milestone", label: "Milestone" },
-];
+/* ITask carries an index signature, so `t.kind` would arrive as `any`. These two
+   take `unknown` and narrow with a real runtime check instead, so nothing here
+   widens and no assertion is made about a shape that was not verified. */
+const kindOf = (t: unknown): string | undefined => {
+  if (!t || typeof t !== "object") return undefined;
+  const k = (t as { kind?: unknown }).kind;
+  return typeof k === "string" ? k : undefined;
+};
+/* the row's REAL tier, whichever side of the seam it came from */
+const tierOf = (t: unknown): string => {
+  const o = t && typeof t === "object" ? (t as { type?: unknown }) : null;
+  const ty = o && typeof o.type === "string" ? o.type : undefined;
+  return effectiveType(ty, kindOf(t));
+};
 /* `dot` has to be a complete literal class string — Tailwind's scanner only
    sees class names that appear verbatim in the source, never ones assembled
    at runtime. Same rule everywhere below. */
@@ -96,6 +116,17 @@ const SEG_ITEM =
   "press flex cursor-pointer select-none items-center rounded-[7px] border-0 bg-transparent px-3.5 py-[0.3125rem] font-ui text-small font-medium text-muted hover:bg-surface-hover hover:text-ink data-[state=checked]:bg-accent data-[state=checked]:text-accent-ink data-[state=checked]:hover:bg-accent data-[state=checked]:hover:text-accent-ink has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-1 has-[:focus-visible]:outline-accent";
 const BRAND_MARK =
   "block h-3.5 w-3.5 rounded-[4px] bg-[linear-gradient(135deg,var(--color-accent)_0_50%,var(--color-summary-fill)_50%_100%)]";
+/* the filter trigger while something is filtered: a control the user forgot is
+   on is worse than no control, so it does not look like the others */
+const BTN_ON =
+  `press inline-flex cursor-pointer items-center gap-1.5 rounded-[9px] border border-accent bg-accent-hover px-[0.8125rem] py-1.5 font-ui text-small font-semibold text-accent hover:brightness-[1.04] ${FOCUS}`;
+/* both states written out in full: Tailwind only keeps class names it can read
+   verbatim, so a conditional spells out the whole list per branch */
+const CHIP_OFF =
+  `press inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-line bg-surface px-2.5 py-[0.1875rem] font-ui text-mini text-muted hover:bg-surface-hover hover:text-ink ${FOCUS}`;
+const CHIP_ON =
+  `press inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-accent bg-accent-hover px-2.5 py-[0.1875rem] font-ui text-mini font-semibold text-accent ${FOCUS}`;
+const GROUP_LABEL = "m-0 mt-3 mb-1.5 text-label font-semibold text-faint uppercase";
 
 const COLUMNS: IColumnConfig[] = [
   { id: "text", header: "Task name", width: 183, flexgrow: 1, sort: true, editor: "text" },
@@ -160,10 +191,23 @@ const TOOLBAR_ITEMS = [
   { id: "move-task:down", comp: "icon", icon: "wxi-angle-down", menuText: "Move down" },
 ];
 
+/* "" rather than null: SVAR's select needs a value for the empty choice, and
+   db.ts maps anything that is not "mvp"/"full" back to a NULL column. */
+const RELEASE_OPTIONS = [{ id: "", label: "Unassigned" }, ...RELEASES];
+
 const EDITOR_ITEMS = [
   { key: "text", comp: "text", label: "Name", config: { placeholder: "Add task name" } },
   { key: "details", comp: "textarea", label: "Description", config: { placeholder: "Add description" } },
-  { key: "type", comp: "select", label: "Type", options: TASK_TYPES },
+  /* `kind`, not `type`: the widget's `type` is "summary" for both container
+     tiers, so a select bound to it would show a story as an epic. The modal
+     edits the real tier and the update-task intercept derives `type` from it. */
+  { key: "kind", comp: "select", label: "Type", options: TASK_TYPES },
+  /* only the two tiers can be scoped — a leaf task inherits the scope of the
+     nearest one above it rather than carrying its own */
+  { key: "release", comp: "select", label: "Release scope", options: RELEASE_OPTIONS,
+    /* the tier, not the drawn type — an empty nested story is handed to the
+       widget as a plain bar and must still be scopeable */
+    isHidden: (t: ITask) => !isTierType(tierOf(t)) },
   { key: "status", comp: "select", label: "Status", options: [
     { id: "todo", label: "Not started" },
     { id: "progress", label: "In progress" },
@@ -186,7 +230,7 @@ function reviveTask(t: StoreTask): RevivedTask {
   if (t.end) out.end = new Date(t.end + "T00:00:00");
   return out;
 }
-/* epics recalculate from their children when parsed without dates;
+/* epics and stories recalculate from their children when parsed without dates;
    plain tasks are normalized to the hours model (weekends skipped) */
 function prepareTasks(tasks: StoreTask[]): RevivedTask[] {
   const parents = new Set(tasks.map((t) => t.parent).filter((p) => p !== undefined && p !== null && p !== 0));
@@ -198,11 +242,37 @@ function prepareTasks(tasks: StoreTask[]): RevivedTask[] {
        draws. Only what has children may keep it, which is what the read-only
        viewer already derives rather than trusts. */
     if (!parents.has(r.id)) delete r.open;
-    /* anything with tasks under it is an epic */
-    if (parents.has(r.id) && r.type !== "summary") r.type = "summary";
+    /* THE tier seam, inbound. This line used to be
+         if (parents.has(r.id) && r.type !== "summary") r.type = "summary";
+       which overwrote the stored type in place — and since cleanTask's KEEP
+       list round-trips `type`, the coercion was written straight back to
+       Postgres. Every story would have become an epic on the first save.
+       Now the real tier is kept in `kind` and only the widget-facing `type`
+       is coerced: a story stays a story in the database for ever. */
+    const stored = r.type || "task";
+    const tier = isTierType(stored) || parents.has(r.id)
+      ? (stored === "story" ? "story" : "summary")
+      : stored;
+    r.kind = tier;
+    /* An empty container cannot be a widget summary while it is NESTED. SVAR's
+       date roll-up (normalizeDates → getSummaryDates) recurses into every
+       descendant of a summary that has no dates of its own, and throws
+       "Summary tasks must have start and end dates if they have no subtasks"
+       the moment it reaches one with nothing inside — the empty row's own dates
+       do not save it, and neither does its parent's. So an empty nested tier is
+       handed over as a plain bar: `kind` still says which tier it is, the row
+       still shows its icon, rail and release marker, the STORED type is
+       untouched, and it becomes a summary again the second it gains a child.
+       A top-level empty tier is not reachable by that recursion and keeps the
+       behaviour it has always had. */
+    const nestedRow = r.parent !== undefined && r.parent !== null && r.parent !== 0;
+    r.type = isTierType(tier) && (parents.has(r.id) || !nestedRow) ? "summary"
+      : isTierType(tier) ? "task"
+      : asWidgetType(tier);
     if (r.type === "summary" && parents.has(r.id)) { delete r.start; delete r.end; delete r.duration; return r; }
     if (r.type === "summary" && !r.start) {
-      /* a childless epic must carry dates or the widget throws */
+      /* a childless epic — or a childless story — must carry dates or the
+         widget throws on parse */
       r.start = rollForward(new Date());
       r.end = addWorkDays(r.start, 1);
       r.duration = Math.round((+r.end - +r.start) / DAY);
@@ -229,9 +299,9 @@ function fmtDate(d: Date | undefined): string | undefined {
 }
 
 /* ---------- serialize widget state back to plain data ---------- */
-const KEEP = ["id", "text", "start", "end", "duration", "hours", "days", "progress", "parent", "type", "open", "details", "url", "status", "assignees"];
+const KEEP = ["id", "text", "start", "end", "duration", "hours", "days", "progress", "parent", "type", "open", "details", "url", "status", "assignees", "kind", "release"];
 function cleanTask(t: ITask): StoreTask {
-  const out: Partial<StoreTask> = {};
+  const out: Partial<WidgetTask> = {};
   for (const k of KEEP) {
     if (t[k] === undefined || t[k] === null) continue;
     /* the KEEP loop copies by dynamic key, so the write side is untyped and
@@ -241,6 +311,11 @@ function cleanTask(t: ITask): StoreTask {
   if (out.start) out.start = fmtDate(t.start);
   if (out.end) out.end = fmtDate(t.end);
   if (out.parent === 0) delete out.parent;
+  /* THE tier seam, outbound: the widget only ever knows "summary", so what goes
+     to Postgres is the real tier `kind` names. `kind` itself is never stored —
+     it is reconstructed from `type` on the next load. */
+  out.type = effectiveType(out.type, out.kind);
+  delete out.kind;
   return out as StoreTask;
 }
 function extractTasks(api: GanttApi): StoreTask[] {
@@ -299,15 +374,27 @@ interface Stats {
   max: Date | null;
   tasks: number;
   epics: number;
+  stories: number;
+  /* the same effort split by the scope each task inherits, so "what does MVP
+     cost" is answerable without opening every epic */
+  release: ReleaseTotals;
 }
+/* Totals are always the WHOLE project, filter or no filter: serializeSide reads
+   the widget's full tree (see applyFilterTo), and a number that silently meant
+   something different depending on a filter would be worse than no number. */
 function computeStats(api: GanttApi): Stats | null {
   let list: StoreTask[] = [];
   try { list = serializeSide(api, "tasks"); } catch (e) { return null; }
-  let h = 0, tasks = 0, epics = 0, min: string | null = null, max: string | null = null;
+  let h = 0, tasks = 0, epics = 0, stories = 0, min: string | null = null, max: string | null = null;
   list.forEach((t) => {
-    if (t.type === "summary") { epics++; }
-    else if (t.type !== "milestone") { tasks++; h += Number(t.hours) || 0; }
-    if (t.type !== "summary") {
+    /* `list` carries STORED types, so a story is "story" here */
+    const ty = t.type || "task";
+    if (ty === "summary") { epics++; }
+    else if (ty === "story") { stories++; }
+    else if (ty !== "milestone") { tasks++; h += Number(t.hours) || 0; }
+    /* a tier's dates are its children's, so counting them would only repeat
+       what those children already contributed */
+    if (!isTierType(ty)) {
       if (t.start && (!min || t.start < min)) min = t.start;
       const e = t.end || t.start;
       if (e && (!max || e > max)) max = e;
@@ -318,8 +405,54 @@ function computeStats(api: GanttApi): Stats | null {
     d: Math.round((h / HOURS_PER_DAY) * 10) / 10,
     min: min ? new Date(min + "T00:00:00") : null,
     max: max ? new Date(max + "T00:00:00") : null,
-    tasks, epics,
+    tasks, epics, stories,
+    release: releaseTotals(list, (t) => Number(t.hours) || 0),
   };
+}
+
+/* ---------- filtering: a view, never a write ----------
+   The trap here is specific and fatal. The editor serializes the widget into the
+   draft on every change, and the save diffs that draft against the snapshot —
+   a row that is in the snapshot and not in the draft is emitted as a DELETE. So
+   handing the widget a reduced dataset would make the next save delete every
+   filtered-out task.
+
+   Nothing here reduces the dataset. SVAR's own `filter-tasks` action calls
+   `tree.filterTree()`, which does one thing: it records the set of ids that
+   should be VISIBLE (`_filteredIds`). `tree.toArray()` — the rendered rows —
+   honours it; `tree.serialize()`, which is what `api.serialize({data:"tasks"})`
+   returns and therefore what every save, roll-up, total and undo entry is built
+   from, walks the full pool and never looks at it. The draft keeps every row
+   while the screen shows some of them.
+
+   `open: false` is deliberate as well: with `open: true` the library sets
+   `task.open = true` on every ancestor of a match, `open` IS a persisted
+   column, and merely applying a filter would have dirtied rows. The cost is
+   that a collapsed epic containing a match stays collapsed — the epic itself is
+   still shown, because SVAR keeps any branch with a surviving descendant, so
+   the hierarchy above a match is never orphaned.
+
+   Returns how many rows match, for the header count and the empty state. */
+function applyFilterTo(api: GanttApi, f: FilterState, roster: Person[]): { shown: number; total: number } {
+  let list: StoreTask[] = [];
+  try { list = serializeSide(api, "tasks"); } catch (e) { return { shown: 0, total: 0 }; }
+  /* a person removed from the roster while their id sat in the URL must not
+     hide the whole timeline — usableFilter drops ids nobody holds any more */
+  const usable = usableFilter(f, new Set(roster.map((h) => h.id)));
+  if (!filterActive(usable)) {
+    try { api.exec("filter-tasks", {}); } catch (e) {}
+    return { shown: list.length, total: list.length };
+  }
+  const by = new Map<string, FilterRow>();
+  list.forEach((t) => by.set(String(t.id), t));
+  const lookup = (id: string | number): FilterRow | null => by.get(String(id)) || null;
+  /* one predicate for both shapes: it reads the tier through effectiveType, so
+     the stored rows in `list` ("story") and the parsed rows the widget hands it
+     ("summary" + kind) answer identically */
+  const match = makeFilter(usable, lookup);
+  const shown = list.filter((t) => match(t)).length;
+  try { api.exec("filter-tasks", { filter: match, open: false }); } catch (e) {}
+  return { shown, total: list.length };
 }
 
 /* map a date to an x position using the rendered scale cells */
@@ -394,7 +527,9 @@ function dragModeOf(ev: { diff?: number; task?: Partial<ITask> | null }): DragMo
    applied the diff — the only place the drag's mode is still known */
 let pendingDrag: { id: TID; mode: DragMode; hours: number } | null = null;
 
-/* epic estimates roll up from the tasks inside them */
+/* Epic and story estimates roll up from what is inside them, however deep:
+   an epic of stories of tasks totals its tasks exactly once, because a tier
+   contributes its children's sum rather than its own stored hours. */
 let ROLLUP_WRITE = false;
 function rollupEpics(api: GanttApi) {
   let list: StoreTask[] = [];
@@ -404,15 +539,18 @@ function rollupEpics(api: GanttApi) {
   /* plan the derived writes first */
   const writes: { id: TaskId; task: Partial<ITask> }[] = [];
   list.forEach((t) => {
-    if (t.type !== "summary" && (byParent[t.id] || []).length) {
-      writes.push({ id: t.id, task: { type: "summary" } });
+    /* a plain row that has gained children becomes an epic; a story already IS
+       a container, so it keeps its tier instead of being promoted out of it */
+    if (!isTierType(t.type) && (byParent[t.id] || []).length) {
+      writes.push({ id: t.id, task: { type: "summary", kind: "summary" } });
       t.type = "summary";
     }
   });
   const sumOf = (id: TaskId): number => {
     let s = 0;
     (byParent[id] || []).forEach((c) => {
-      if (c.type === "summary") s += sumOf(c.id);
+      /* both tiers recurse, so nesting never double-counts */
+      if (isTierType(c.type)) s += sumOf(c.id);
       else if (c.type !== "milestone") s += Number(c.hours) || 0;
     });
     return s;
@@ -422,8 +560,8 @@ function rollupEpics(api: GanttApi) {
      the user could never put the number back. Converting a task to an epic used
      to erase its estimate that way, silently and permanently. Leave a childless
      epic's stored estimate exactly where it is — the moment it gains a task the
-     roll-up takes over again. */
-  list.filter((t) => t.type === "summary" && (byParent[String(t.id)] || []).length > 0).forEach((e) => {
+     roll-up takes over again. The same is true of a childless story. */
+  list.filter((t) => isTierType(t.type) && (byParent[String(t.id)] || []).length > 0).forEach((e) => {
     const h = Math.round(sumOf(e.id) * 2) / 2;
     const d = Math.round((h / HOURS_PER_DAY) * 10) / 10;
     if (Number(e.hours) !== h || Number(e.days) !== d) writes.push({ id: e.id, task: { hours: h, days: d } });
@@ -479,7 +617,7 @@ function syncFoldAllButton(api: GanttApi) {
     btn.hidden = !parents.size;
   } catch (e) {}
   btn.dataset.next = anyOpen ? "collapse" : "expand";
-  btn.title = anyOpen ? "Collapse all epics" : "Expand all epics";
+  btn.title = anyOpen ? "Collapse all epics and stories" : "Expand all epics and stories";
   /* the button is built just above with exactly one <span class="ci"> child */
   const icon = btn.firstChild as GlyphHost;
   const name = anyOpen ? "ci-collapse" : "ci-expand";
@@ -514,11 +652,15 @@ function renderEpicBands(api: GanttApi) {
   let html = "";
   for (let i = 0; i < rows.length; i++) {
     const t = rows[i];
+    /* both tiers are "summary" to the widget; the class is what separates them */
     if (t.type !== "summary") continue;
     let j = i + 1;
     while (j < rows.length && rows[j].$level > t.$level) j++;
-    if (j === i + 1) continue; /* collapsed or childless epic: no band */
-    html += '<div class="epic-band" style="top:' + i * ch + "px;height:" + (j - i) * ch + 'px"></div>';
+    if (j === i + 1) continue; /* collapsed or childless: no band */
+    /* literal class strings, both branches spelled out — Tailwind aside, these
+       are CSS-backed semantic names and must never be assembled from parts */
+    const cls = tierOf(t) === "story" ? "epic-band band-story" : "epic-band";
+    html += '<div class="' + cls + '" style="top:' + i * ch + "px;height:" + (j - i) * ch + 'px"></div>';
   }
   if (layer.__html !== html) { layer.innerHTML = html; layer.__html = html; }
 }
@@ -534,8 +676,19 @@ function watchRowTags(api: GanttApi) {
       try { t = api.getTask(id); } catch (e) {}
       if (!t && /^\d+$/.test(id)) { try { t = api.getTask(Number(id)); } catch (e) {} }
       if (!t) return;
-      row.classList.toggle("is-epic", t.type === "summary");
-      row.classList.toggle("in-epic", t.type !== "summary" && (t.$level || 1) > 1);
+      /* the row's real tier, not the widget's coerced one */
+      const tier = tierOf(t);
+      const nested = !isTierType(tier) && (t.$level || 1) > 1;
+      let parentTier: string | null = null;
+      if (nested && t.parent !== undefined && t.parent !== null && t.parent !== 0) {
+        try { parentTier = tierOf(api.getTask(t.parent)); } catch (e) {}
+      }
+      row.classList.toggle("is-epic", tier === "summary");
+      row.classList.toggle("is-story", tier === "story");
+      /* `in-epic` owns the nesting connector's shape for every nested row;
+         `in-story` only recolours it when the container is a story */
+      row.classList.toggle("in-epic", nested);
+      row.classList.toggle("in-story", nested && parentTier === "story");
       /* status: classes + dot in the list */
       const status = t.status === "done" || t.status === "progress" ? t.status : "todo";
       ["st-todo", "st-progress", "st-done"].forEach((c) => row.classList.remove(c));
@@ -550,7 +703,7 @@ function watchRowTags(api: GanttApi) {
       }
       /* type icon in front of the name (appended, repositioned via flex order —
          never inserted between React-managed nodes) */
-      const typeKey = "ti-" + (t.type || "task");
+      const typeKey = "ti-" + tier;
       const iconCls = "type-icon " + typeKey;
       let ic = row.querySelector<GlyphHost>(".type-icon");
       if (!ic) {
@@ -564,6 +717,26 @@ function watchRowTags(api: GanttApi) {
         ic.className = iconCls;
       }
       if (ic) setGlyph(ic, typeKey);
+      /* Release scope: the marker that makes MVP legible at a glance. Only a
+         tier carries one — repeating the inherited scope on every descendant
+         would tag the whole grid and say nothing. Appended, ordered by CSS. */
+      const nameCell = row.querySelector<HTMLElement>('[data-col-id=":text"] .wx-content');
+      if (nameCell) {
+        const rel = typeof t.release === "string" ? t.release : "";
+        const relText = isTierType(tier) ? releaseLabel(rel) : null;
+        let tag = nameCell.querySelector<HTMLElement>(".release-tag");
+        if (relText) {
+          if (!tag) { tag = document.createElement("span"); nameCell.appendChild(tag); }
+          /* both class strings written out in full */
+          const tc = rel === "mvp" ? "release-tag rel-mvp" : "release-tag rel-full";
+          if (tag.className !== tc) tag.className = tc;
+          if (tag.textContent !== relText) tag.textContent = relText;
+          const title = rel === "mvp" ? "MVP scope" : "Full release";
+          if (tag.title !== title) tag.title = title;
+        } else if (tag) {
+          tag.remove();
+        }
+      }
       /* Who column: assignee initials from the roster; click opens the picker.
          The host is appended, never inserted between React-managed nodes. */
       const whoCell = row.querySelector<HTMLElement>('[data-col-id=":who"]');
@@ -647,7 +820,7 @@ function watchRowTags(api: GanttApi) {
         if (content) { setGlyph(bEl, "row-edit"); content.appendChild(bEl); } else bEl = null;
       }
       if (bEl) {
-        const label = t.type === "summary" ? "Edit epic" : "Edit task";
+        const label = tier === "summary" ? "Edit epic" : tier === "story" ? "Edit story" : "Edit task";
         if (bEl.title !== label) { bEl.title = label; bEl.setAttribute("aria-label", label); }
         bEl.onclick = (e) => {
           e.stopPropagation();
@@ -665,6 +838,7 @@ function watchRowTags(api: GanttApi) {
       const status = t.status === "done" || t.status === "progress" ? t.status : "todo";
       ["st-todo", "st-progress", "st-done"].forEach((c) => bar.classList.remove(c));
       bar.classList.add("st-" + status);
+      bar.classList.toggle("is-story", tierOf(t) === "story");
     });
     syncFoldAllButton(api);
     renderEpicBands(api);
@@ -722,6 +896,10 @@ export interface EditorProps {
   /* resolved from ?view= first, the project's stored scale second */
   view: string;
   onView: (v: string) => void;
+  /* the three filter dimensions, parsed and validated out of the URL by the
+     route so a filtered timeline is shareable and survives a reload */
+  filter: FilterState;
+  onFilter: (f: FilterState) => void;
   onSignOut: () => Promise<void>;
 }
 
@@ -730,7 +908,7 @@ export interface EditorProps {
    carry tabs for every other one. `/` is the list, and the mark at the top left
    is the way back to it. */
 export default function GanttEditor({
-  projectId, view, onView, onSignOut,
+  projectId, view, onView, filter, onFilter, onSignOut,
 }: EditorProps) {
   /* the draft the whole app shares; mutate it, then scheduleSave() diffs it
      against what Postgres holds and writes only the rows that moved */
@@ -765,6 +943,35 @@ export default function GanttEditor({
   const redoRef = useRef<string[]>([]);
   const snapTimer = useRef<number | null>(null);
   const apiRef = useRef<GanttApi | null>(null);
+
+  /* ---------- the filter ----------
+     It hides rows and touches nothing else — see applyFilterTo above for why
+     that is structurally true rather than a promise. The refs are what let the
+     widget's own event handlers re-apply it (a row added while a filter is on
+     would otherwise stay outside the visible set) without rebuilding `init`. */
+  const [filterInfo, setFilterInfo] = useState<{ shown: number; total: number }>({ shown: 0, total: 0 });
+  const filterRef = useRef(filter);
+  filterRef.current = filter;
+  const peopleRef = useRef(people);
+  peopleRef.current = people;
+  /* `appliedRef` is what keeps an unfiltered editor completely inert: without
+     it every draft bump would exec a clearing `filter-tasks` and re-render the
+     widget for nothing */
+  const appliedRef = useRef(false);
+  const runFilter = useCallback(() => {
+    const a = apiRef.current;
+    if (!a) return;
+    const on = filterActive(filterRef.current);
+    if (!on && !appliedRef.current) return;
+    appliedRef.current = on;
+    setFilterInfo(applyFilterTo(a, filterRef.current, peopleRef.current));
+  }, []);
+  const fKey = filterKey(filter);
+  const knownPeople = useMemo(() => new Set(people.map((h) => h.id)), [people]);
+  /* what the filter actually constrains, once ids nobody holds any more are
+     dropped — a deleted person left in the URL must not hide everything */
+  const liveFilter = useMemo(() => usableFilter(filter, knownPeople), [fKey, knownPeople]);
+  const filterOn = filterActive(liveFilter);
 
   /* `st.storeRev` is in here for the same reason it is in the holder's key: an
      adopted snapshot replaces the draft object wholesale, and neither `seed`
@@ -1013,6 +1220,12 @@ export default function GanttEditor({
     /* enforce the hours/working-day model on every change */
     a.intercept("add-task", (ev) => {
       const t = ev.task || (ev.task = {});
+      /* the tier seam again: a row may arrive asking to be a story (the context
+         menu's Convert list is built from TASK_TYPES), and every new row needs
+         a `kind` or the editor modal's Type select would open blank */
+      const asked = kindOf(t) ?? (typeof t.type === "string" ? t.type : "task");
+      t.kind = asked;
+      t.type = asWidgetType(asked);
       if (t.type === "summary") {
         if (!t.start) {
           /* the enclosing guard narrows t.start to undefined, so the Date
@@ -1033,6 +1246,18 @@ export default function GanttEditor({
       if (!t) return;
       let prev: ITask = {};
       try { prev = a.getTask(ev.id) || {}; } catch (e) {}
+      /* THE tier seam, live. Two things can ask for a type change:
+           · the editor modal, which edits `kind` (the real tier) — `type` is
+             derived from it here, so picking Story makes a widget summary;
+           · the context menu's Convert list, which sends `type` alone — `kind`
+             follows it, so converting a story to a task really does drop the
+             tier instead of leaving a stale marker behind.
+         Doing this first matters: every branch below reads `merged.type`. */
+      const asked = kindOf(t) ?? (typeof t.type === "string" ? t.type : undefined);
+      if (asked !== undefined) {
+        t.kind = asked;
+        t.type = asWidgetType(asked);
+      }
       const merged = { ...prev, ...t };
       if (merged.type === "summary" && !ROLLUP_WRITE) {
         /* epic estimates are derived from their tasks — ignore manual edits */
@@ -1107,6 +1332,10 @@ export default function GanttEditor({
         setTaskCount(serializeSide(a, "tasks").length);
         setStats(computeStats(a));
       } catch (e) {}
+      /* a row added, moved or retyped while a filter is on is not in the
+         visible set yet; re-running the filter is a pure read of the same tree
+         and emits no event, so it cannot loop */
+      if (filterActive(filterRef.current)) runFilter();
       if (retagHook) retagHook();
     };
     finalEvents.forEach((ev) => a.on(ev, () => { touched(); }));
@@ -1120,7 +1349,13 @@ export default function GanttEditor({
       try { seedSnapshot(); } catch (e) {}
     }, 0);
     if (window.__ganttProbe) window.__ganttProbe(a);
-  }, [scheduleSave, scheduleSnapshot, seedSnapshot, projectId]);
+  }, [scheduleSave, scheduleSnapshot, seedSnapshot, projectId, runFilter]);
+
+  /* The widget is remounted by a scale change, a project change and an adopted
+     snapshot, and a fresh tree carries no filter — so re-apply on all of them,
+     as well as when the filter itself moves. Clearing goes through here too:
+     `filter-tasks` with no handler is what drops SVAR's visible-id set. */
+  useEffect(() => { runFilter(); }, [api, fKey, seed, view, projectId, st.storeRev, people, runFilter]);
 
   /* ---------- people roster ---------- */
   /* the tagger reads the roster from module scope; keep it in step and repaint */
@@ -1203,6 +1438,14 @@ export default function GanttEditor({
     setPicker((cur) => (cur && cur.taskId === taskId ? { ...cur, ids: next } : cur));
     if (retagHook) setTimeout(() => retagHook!(), 0);
   }, []);
+
+  /* one dimension at a time; the three are ANDed by makeFilter */
+  const toggleFilter = (dim: "types" | "releases" | "people", id: string) => {
+    const next: FilterState = { types: filter.types, releases: filter.releases, people: filter.people };
+    const cur = next[dim];
+    next[dim] = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+    onFilter(next);
+  };
 
   const changeView = (v: string) => {
     const p = snapshotActive();
@@ -1287,6 +1530,20 @@ export default function GanttEditor({
             }
           >{statusText}</span>
         )}
+        {/* a filter is a mode, and a mode nobody can see is a trap: this says
+            how much is hidden and clears it in one click */}
+        {filterOn && (
+          <button
+            type="button"
+            className={`press inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-accent bg-accent-hover px-2.5 py-[0.1875rem] text-mini whitespace-nowrap text-accent ${FOCUS}`}
+            title="Clear the filter"
+            onClick={() => onFilter(EMPTY_FILTER)}
+          >
+            <Funnel size={11} weight="fill" aria-hidden="true" />
+            Showing {filterInfo.shown} of {filterInfo.total}
+            <X size={11} aria-hidden="true" />
+          </button>
+        )}
         {/* not decoration: each of these is something that did not happen.
             Clicking one dismisses it — the underlying state re-raises it if it
             is still true. */}
@@ -1318,6 +1575,15 @@ export default function GanttEditor({
             {fmtD(stats.min)} – {fmtD(new Date(stats.max.getTime() - DAY))}
             {" · effort "}<strong className="font-semibold text-ink">{stats.h}h</strong> / {stats.d}d
             {stats.epics > 0 && " · " + stats.epics + (stats.epics === 1 ? " epic" : " epics")}
+            {stats.stories > 0 && " · " + stats.stories + (stats.stories === 1 ? " story" : " stories")}
+            {/* what MVP costs, from the same roll-up the projects list shows —
+                and always the whole project, never the filtered view */}
+            {stats.release.mvp > 0 && (
+              <>{" · "}<span className="release-tag rel-lead rel-mvp">MVP</span>{" " + stats.release.mvp + "h"}</>
+            )}
+            {stats.release.full > 0 && (
+              <>{" · "}<span className="release-tag rel-lead rel-full">Full</span>{" " + stats.release.full + "h"}</>
+            )}
           </span>
         )}
         <div className="flex-1" />
@@ -1393,6 +1659,86 @@ export default function GanttEditor({
           <DownloadSimple size={13} aria-hidden="true" />
           {exporting ? "Exporting…" : "Export PDF"}
         </button>
+        <Popover.Root positioning={{ placement: "bottom-end", gutter: 8 }}>
+          <Popover.Trigger className={filterOn ? BTN_ON : BTN}>
+            <Funnel size={13} weight={filterOn ? "fill" : "regular"} aria-hidden="true" />
+            {/* the header already overflows below 1100px and the page cannot
+                scroll, so the label goes before the control does */}
+            <span className="max-[1000px]:sr-only">Filter</span>
+            {filterOn && <span className="tabular-nums">{filterCount(liveFilter)}</span>}
+          </Popover.Trigger>
+          <Portal>
+            <Popover.Positioner style={{ zIndex: 60 }}>
+              <Popover.Content className={`${POP} w-[286px] rounded-xl p-3.5`}>
+                <Popover.Title className={POP_TITLE}>Filter</Popover.Title>
+                <Popover.Description className={POP_HINT}>
+                  Hides rows on screen only. Nothing is deleted, and the totals above still count the whole project.
+                </Popover.Description>
+                <p className={GROUP_LABEL}>Type</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {TASK_TYPES.map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      aria-pressed={filter.types.includes(t.id)}
+                      className={filter.types.includes(t.id) ? CHIP_ON : CHIP_OFF}
+                      onClick={() => toggleFilter("types", t.id)}
+                    >{t.label}</button>
+                  ))}
+                </div>
+                <p className={GROUP_LABEL}>Release</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {RELEASES.map((r) => (
+                    <button
+                      key={r.id}
+                      type="button"
+                      aria-pressed={filter.releases.includes(r.id)}
+                      className={filter.releases.includes(r.id) ? CHIP_ON : CHIP_OFF}
+                      onClick={() => toggleFilter("releases", r.id)}
+                    >{r.label}</button>
+                  ))}
+                  <button
+                    type="button"
+                    aria-pressed={filter.releases.includes(UNSET)}
+                    className={filter.releases.includes(UNSET) ? CHIP_ON : CHIP_OFF}
+                    onClick={() => toggleFilter("releases", UNSET)}
+                  >Unassigned</button>
+                </div>
+                <p className={GROUP_LABEL}>Who</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {people.map((h) => (
+                    <button
+                      key={h.id}
+                      type="button"
+                      aria-pressed={filter.people.includes(h.id)}
+                      className={filter.people.includes(h.id) ? CHIP_ON : CHIP_OFF}
+                      onClick={() => toggleFilter("people", h.id)}
+                    >
+                      {/* the same chip as the Who column, so it reads as the
+                          same concept rather than a second list of names */}
+                      <span className="who-chip" style={{ "--who-hue": nameHue(h.name) }}>{initialsOf(h.name)}</span>
+                      <span className="max-w-[9rem] overflow-hidden text-ellipsis whitespace-nowrap">{h.name}</span>
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    aria-pressed={filter.people.includes(UNSET)}
+                    className={filter.people.includes(UNSET) ? CHIP_ON : CHIP_OFF}
+                    onClick={() => toggleFilter("people", UNSET)}
+                  >Unassigned</button>
+                </div>
+                <div className="mt-3.5 flex items-center gap-2 border-t border-t-line-soft pt-3">
+                  <button type="button" className={BTN} disabled={!filterOn} onClick={() => onFilter(EMPTY_FILTER)}>
+                    Clear all
+                  </button>
+                  {filterOn && (
+                    <span className="text-mini text-muted tabular-nums">{filterInfo.shown} of {filterInfo.total} rows</span>
+                  )}
+                </div>
+              </Popover.Content>
+            </Popover.Positioner>
+          </Portal>
+        </Popover.Root>
         <SegmentGroup.Root
           className={SEG_ROOT}
           aria-label="Timeline scale"
@@ -1459,6 +1805,19 @@ export default function GanttEditor({
           {api && <MEditor api={api} items={EDITOR_ITEMS} />}
         </GridWillow>
         </CoreWillow>
+        {/* a blank chart with no explanation is the one thing a filter must
+            never leave behind */}
+        {taskCount > 0 && filterOn && filterInfo.shown === 0 && (
+          <div className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center">
+            <div className="material-pop pointer-events-auto max-w-[380px] rounded-[14px] border border-line px-[1.625rem] py-[1.375rem] text-center motion-safe:animate-rise">
+              <div className="mb-1.5 font-display text-title font-semibold">Nothing matches this filter</div>
+              <p className="m-0 mb-3.5 text-copy text-muted">
+                All {filterInfo.total} rows are still here — the filter only hides them on screen.
+              </p>
+              <button type="button" className={BTN} onClick={() => onFilter(EMPTY_FILTER)}>Clear filter</button>
+            </div>
+          </div>
+        )}
         {taskCount === 0 && (
           <div className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center">
             <div className="material-pop pointer-events-auto max-w-[380px] rounded-[14px] border border-line px-[1.625rem] py-[1.375rem] text-center motion-safe:animate-rise">

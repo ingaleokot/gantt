@@ -64,6 +64,16 @@
 .wx-willow-theme .wx-row.is-epic .wx-text { font-weight: 600; }
 .wx-willow-theme .wx-row.is-epic > .wx-cell:first-child { box-shadow: inset 3px 0 0 var(--color-epic-rail); }
 .wx-willow-theme .wx-row.in-epic > .wx-cell:first-child { box-shadow: inset 3px 0 0 var(--color-epic-rail); }
+/* ---------- the story tier: a parent to the widget, its own thing here ----------
+   A story is handed to SVAR as a summary row (that is the only parent type it
+   has), so these rules are what keeps it visually distinct from an epic. The
+   tagger adds `is-story` from the row's real tier, and `in-story` alongside
+   `in-epic` on rows nested under one — `in-epic` owns the connector's shape,
+   `in-story` only recolours it. */
+.wx-willow-theme .wx-row.is-story { background: var(--color-story-row); }
+.wx-willow-theme .wx-row.is-story .wx-text { font-weight: 600; }
+.wx-willow-theme .wx-row.is-story > .wx-cell:first-child { box-shadow: inset 3px 0 0 var(--color-story-rail); }
+.wx-willow-theme .wx-row.in-story > .wx-cell:first-child { box-shadow: inset 3px 0 0 var(--color-story-rail); }
 .wx-willow-theme .wx-row.in-epic .wx-content { position: relative; }
 .wx-willow-theme .wx-row.in-epic .wx-content::before {
   content: "";
@@ -78,6 +88,7 @@
   opacity: 0.55;
   pointer-events: none;
 }
+.wx-willow-theme .wx-row.in-story .wx-content::before { border-color: var(--color-story-rail); }
 
 /* ---------- ticket ID column (extracted from the link) ---------- */
 .wx-willow-theme .tracker-link {
@@ -168,7 +179,8 @@
 .wx-willow-theme [data-col-id=":text"] .wx-content > .type-icon { order: -2; }
 .wx-willow-theme [data-col-id=":text"] .wx-content > .status-dot { order: -1; }
 .wx-willow-theme [data-col-id=":text"] .wx-content > .wx-text { order: 0; }
-.wx-willow-theme [data-col-id=":text"] .wx-content > .row-edit { order: 1; }
+.wx-willow-theme [data-col-id=":text"] .wx-content > .release-tag { order: 1; }
+.wx-willow-theme [data-col-id=":text"] .wx-content > .row-edit { order: 2; }
 
 /* ---------- statuses ---------- */
 .wx-willow-theme .status-dot {
@@ -206,8 +218,44 @@
 .wx-willow-theme .ti-frontend { color: var(--color-type-frontend-deep); }
 .wx-willow-theme .ti-design { color: var(--color-type-design-deep); }
 .wx-willow-theme .ti-testing { color: var(--color-type-testing-deep); }
+.wx-willow-theme .ti-story { color: var(--color-story-rail); }
 .wx-willow-theme .ti-milestone { color: var(--color-milestone); }
 .wx-willow-theme .ti-task { color: var(--color-faint); }
+
+/* ---------- release scope: MVP / Full release ----------
+   One definition for the pill, used by the tagger inside the grid and spelled
+   out verbatim in JSX for the header, the filter panel and the projects cards.
+   The bare selector is what makes it render outside the widget; the scoped copy
+   keeps the specificity SVAR's own descendant selectors would otherwise beat. */
+.release-tag,
+.wx-willow-theme .release-tag {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  margin-left: 7px;
+  padding: 1px 6px;
+  border: 1px solid transparent;
+  border-radius: 99px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1.6;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: default;
+}
+.release-tag.rel-mvp,
+.wx-willow-theme .release-tag.rel-mvp {
+  color: var(--color-release-mvp);
+  background: var(--color-release-mvp-bg);
+}
+.release-tag.rel-full,
+.wx-willow-theme .release-tag.rel-full {
+  color: var(--color-release-full);
+  background: var(--color-release-full-bg);
+}
+/* standalone chips (filter panel, header, cards) carry no leading gap */
+.release-tag.rel-lead { margin-left: 0; }
 
 /* the fold-all chevron in the Task name header — same mechanism */
 .ci {
@@ -262,6 +310,12 @@
   line-height: 16px;
   height: 16px;
 }
+/* the same bracket, in the story tier's colour */
+.wx-willow-theme .wx-bar.wx-summary.is-story,
+.wx-willow-theme .wx-bar.wx-summary.is-story .wx-segment {
+  background-color: var(--color-story-rail);
+  border-color: transparent;
+}
 
 /* ---------- epic bands on the chart canvas ---------- */
 .wx-willow-theme .epic-bands {
@@ -277,6 +331,11 @@
   background: var(--color-epic-row);
   border-top: 2px solid var(--color-epic-rail);
   border-bottom: 1px solid color-mix(in srgb, var(--color-epic-rail) 45%, transparent);
+}
+.wx-willow-theme .epic-band.band-story {
+  background: var(--color-story-row);
+  border-top-color: var(--color-story-rail);
+  border-bottom-color: color-mix(in srgb, var(--color-story-rail) 45%, transparent);
 }
 
 /* ---------- project span line under the timeline scale ---------- */
@@ -449,4 +508,6 @@
   .wx-willow-theme .status-dot { box-shadow: inset 0 0 0 1.5px var(--color-ink); }
   .wx-willow-theme .who-chip,
   .who-chip { border: 1px solid currentcolor; }
+  .wx-willow-theme .release-tag,
+  .release-tag { border-color: currentcolor; }
 }

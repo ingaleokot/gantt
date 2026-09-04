@@ -59,6 +59,17 @@
   --color-summary-ink: #ffffff;
   --color-epic-row: rgba(47, 107, 223, 0.07);
   --color-epic-rail: #2f6bdf;
+  /* the story tier sits between an epic and a task, so it gets its own rail and
+     row wash — a violet that is neither the epic's blue nor the design type's
+     pastel purple, which is only ever a bar fill */
+  --color-story-row: rgba(109, 91, 208, 0.07);
+  --color-story-rail: #6d5bd0;
+  /* release scope: MVP is the one that has to catch the eye in a dense grid,
+     Full release reads as the calmer "everything else" */
+  --color-release-mvp: #9c4f16;
+  --color-release-mvp-bg: rgba(192, 124, 30, 0.16);
+  --color-release-full: #3f5f7d;
+  --color-release-full-bg: rgba(63, 95, 125, 0.12);
   --color-type-backend: #a8c3ec;
   --color-type-backend-deep: #7da3dc;
   --color-type-frontend: #a5dad8;
@@ -168,6 +179,12 @@
     --color-summary-ink: #0b1416;
     --color-epic-row: rgba(91, 141, 239, 0.1);
     --color-epic-rail: #5b8def;
+    --color-story-row: rgba(154, 139, 234, 0.11);
+    --color-story-rail: #9a8bea;
+    --color-release-mvp: #edb377;
+    --color-release-mvp-bg: rgba(223, 160, 74, 0.18);
+    --color-release-full: #a3bcd4;
+    --color-release-full-bg: rgba(163, 188, 212, 0.16);
     --color-type-backend: #a8c3ec;
     --color-type-backend-deep: #7da3dc;
     --color-type-frontend: #a5dad8;
@@ -208,6 +225,12 @@
   --color-summary-ink: #0b1416;
   --color-epic-row: rgba(91, 141, 239, 0.1);
   --color-epic-rail: #5b8def;
+  --color-story-row: rgba(154, 139, 234, 0.11);
+  --color-story-rail: #9a8bea;
+  --color-release-mvp: #edb377;
+  --color-release-mvp-bg: rgba(223, 160, 74, 0.18);
+  --color-release-full: #a3bcd4;
+  --color-release-full-bg: rgba(163, 188, 212, 0.16);
   --color-type-backend: #a8c3ec;
   --color-type-backend-deep: #7da3dc;
   --color-type-frontend: #a5dad8;

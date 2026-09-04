@@ -10,11 +10,14 @@ under `/gantt/`. The shell is Tailwind CSS v4 + Ark UI + Phosphor icons.
 
 A projects list as the front door — counts, effort and timeline on every card, so two
 projects sharing a name are still told apart — with create, rename, duplicate and
-delete; epics with auto-rolled-up dates/hours/days, four task types
+delete; a three-tier hierarchy of **epic → story → task**, each tier rolling its
+dates/hours/days up from what is inside it; four task types
 (backend / frontend / design / testing) with pastel colors, Merlin-style epic bars,
 hour-based estimates (7 h = 1 work day) that skip weekends, bidirectional hours/days
 editing, statuses (not started / in progress / done), a people roster with per-task and
-per-epic assignment shown as initials in a Who column, Yandex Tracker links with an
+per-epic assignment shown as initials in a Who column, **release scope** (MVP / Full
+release) on any epic or story with the effort inside it totalled per scope, **filtering**
+by type, release and assignee held in the URL, Yandex Tracker links with an
 extracted `PRODUCT-XXXX` ID column, a centered edit modal, keyboard copy/paste/undo
 (Cmd+C / Cmd+V / Cmd+Z), collapse/expand-all, PDF export, and a Share button that hands
 out the read-only link.
@@ -50,7 +53,9 @@ src/
       pdf.ts            vector PDF export (jsPDF, A4 landscape); returns a jsPDF doc
       icons.ts          Phosphor glyphs for the nodes the row tagger builds in plain JS
       lib/              render-icon (one detached React root), wxi-masks (the CSS masks
-                        for SVAR's own <i> icons), tracker (PRODUCT-XXXX extraction)
+                        for SVAR's own <i> icons), tracker (PRODUCT-XXXX extraction),
+                        taxonomy (the three tiers, the release scopes, the filter — and
+                        the one place the story↔summary mapping lives)
     people/roster.ts    assignee helpers shared by both gantt screens
     projects/
       store.tsx       the React Query snapshot, the draft, and the write mutations
@@ -98,7 +103,7 @@ Outside `src/`:
 | `/forgot-password` | request a password-reset email; same redirect |
 | `/reset-password` | set a new password, reached from the link in that email — **not** redirected away by an existing session, because a recovery session is exactly what it arrives with |
 | `/` | the projects list: every project the account owns, with what it takes to tell two same-named ones apart, and where projects are created, renamed, duplicated and deleted; with no projects, an empty state with a **New project** button |
-| `/p/$projectId` | the editor — deep-linkable, with `?view=day\|week\|month` as a validated search param |
+| `/p/$projectId` | the editor — deep-linkable, with four validated search params: `?view=day\|week\|month`, and `?type=`, `?rel=`, `?who=` for the filter, so a filtered timeline is a link |
 | `/share/$projectId` | the public read-only viewer: no auth, and the Supabase client is never loaded |
 | `/share` | the same viewer on whichever project the feed reports as active (the shape of the old share link) |
 
@@ -118,6 +123,43 @@ the eager route tree is `src/features/auth/api/auth.ts`, which imports it dynami
 That is what lets one HTML entry serve both the editor and a public share page that never
 downloads supabase-js. Verify it after any route change: `bun run build`, then check that
 `dist/assets/index-*.js` names the supabase chunk only inside an `import(...)`.
+
+## The story tier, and how it maps onto SVAR
+
+SVAR's widget makes a row a parent — tree toggle, rolled-up bracket bar — only when its
+`type` is exactly `summary`, and there is no second parent type to reach for. A story is
+therefore **stored as `tasks.type = "story"`** and **handed to the widget as
+`type: "summary"` plus `kind: "story"`**. `kind` is a widget-only field: `prepareTasks`
+writes it on the way in, `cleanTask` turns it back into `type` on the way out and deletes
+it, and it never reaches a database row. `src/features/gantt/lib/taxonomy.ts` holds that
+mapping, the tier list, the release scopes and the filter predicate, and every screen —
+editor, viewer, projects list, PDF — reads it from there so none of them can disagree.
+
+The alternative, coercing `type` in place, is what the code used to do: because the
+serializer round-trips `type`, that coercion was written back to Postgres and every story
+would have become an epic on the next save.
+
+One consequence is worth knowing: an **empty container that is nested** cannot be a widget
+summary at all. SVAR's date roll-up recurses into every descendant of a dateless summary
+and throws if it reaches one with nothing inside, whatever dates that row carries. So an
+empty nested epic or story is drawn as a plain bar — icon, rail and scope marker intact,
+stored type untouched — and becomes a container again the moment it gains a child.
+
+## Filtering
+
+Type, release and assignee, multi-select within each and ANDed across them, in a popover
+next to the Day/Week/Month scale and held in the URL. Ancestors of a match stay visible so
+the hierarchy still reads; the header totals and roll-ups always report the whole project.
+
+The filter is applied through SVAR's own `filter-tasks`, and that choice is the whole
+safety story. `filterTree()` records which ids are VISIBLE; the rendered rows honour it,
+while `tree.serialize()` — what every save, roll-up, total and undo entry is built from —
+walks the full set and ignores it. Since a save diffs the draft against a snapshot and
+emits a DELETE for anything missing from the draft, a filter that reduced the dataset
+would delete the filtered-out rows on the next write. This one cannot: it never touches
+the dataset. It is also applied with `open: false`, because the library's
+expand-the-ancestors option would set `open` — a persisted column — on every match's
+parent, and applying a filter must not dirty a row.
 
 ## Styling stack
 
@@ -249,8 +291,11 @@ All data lives in Postgres — the page keeps nothing locally:
 - `people (id, name, position, owner)` — the roster tasks are assigned from
 - `projects (id, name, view, position, owner)`
 - `tasks (id, project_id → projects, parent_id → tasks, text, type, start_date, end_date,
-  duration, hours, days, progress, details, open, sort_order, url, status, assignees)` —
-  `assignees` is a comma-separated list of `people.id`
+  duration, hours, days, progress, details, open, sort_order, url, status, assignees,
+  release)` — `assignees` is a comma-separated list of `people.id`; `type` is free text
+  (`task` / `backend` / `frontend` / `design` / `testing` / `story` / `summary` /
+  `milestone`) and `release` is `null | 'mvp' | 'full'`, carried only by the two container
+  tiers, with a leaf task inheriting the scope of the nearest one above it
 - `links (id, project_id, source → tasks, target → tasks, type)`
 - `app_state (id = 'main', active_project, owner)`
 
@@ -282,6 +327,13 @@ nothing that already exists is touched. All the write mutations share
 one TanStack Query scope, so they queue instead of racing each other's snapshot.
 
 ## Share flow
+
+> The share feed is assembled column by column by the SECURITY DEFINER SQL function
+> `public.share_feed`, so a new `tasks` column only reaches the viewer once that function
+> names it. `release` is not in it yet: add `'release', t.release,` next to
+> `'status', t.status,` in that function and shared timelines start showing the MVP / Full
+> release markers. Until then the viewer renders every shared row as unscoped, which it
+> handles silently.
 
 `/gantt/share/<projectId>` is a route with no Supabase client and no auth. It fetches
 `https://<project>.supabase.co/functions/v1/shared?raw=1`, where the edge function

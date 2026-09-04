@@ -46,6 +46,11 @@ export interface StoreTask {
   url?: string;
   assignees?: string | null;
   status?: string;
+  /* `tasks.release`: null | "mvp" | "full", constrained in Postgres. Only the
+     two container tiers (an epic, a story) ever carry one — a leaf task takes
+     the scope of the nearest tier above it, which is a read-side roll-up and
+     never a stored value. */
+  release?: string | null;
   /* what `tasks.sort_order` actually holds for this row. Only the snapshot side
      carries it — the draft's order is its array order — and it exists so the
      diff can see that the two disagree. See rowsOf(). */
@@ -158,6 +163,7 @@ function toTask(t: Tables<"tasks">): StoreTask {
   if (t.open !== null && t.open !== undefined) o.open = t.open;
   if (t.url) o.url = t.url;
   if (t.assignees) o.assignees = t.assignees;
+  if (t.release) o.release = t.release;
   o.status = t.status || "todo";
   if (t.sort_order !== null && t.sort_order !== undefined) o.sortOrder = t.sort_order;
   return o;
@@ -262,11 +268,15 @@ function taskRow(t: StoreTask, projectId: string, i: number): TaskRow {
     url: t.url || null,
     status: t.status || "todo",
     assignees: t.assignees || null,
+    /* "" is what the editor's select sends for "unassigned"; the column's check
+       constraint only allows null, 'mvp' and 'full' */
+    release: t.release === "mvp" || t.release === "full" ? t.release : null,
   };
 }
 const TASK_KEYS: (keyof TaskRow)[] = [
   "id", "project_id", "parent_id", "text", "type", "start_date", "end_date", "duration",
   "hours", "days", "progress", "details", "open", "sort_order", "url", "status", "assignees",
+  "release",
 ];
 const LINK_KEYS: (keyof LinkRow)[] = ["id", "project_id", "source", "target", "type"];
 const PROJECT_KEYS: (keyof ProjectRow)[] = ["id", "name", "view", "position", "owner"];

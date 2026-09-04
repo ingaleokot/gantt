@@ -4,6 +4,8 @@
    it, so the only thing imported here at module scope is its type. */
 import type { jsPDF } from "jspdf";
 import type { StoreLink, StoreTask, TaskId } from "../../lib/db";
+import { isTierType, scopeOf } from "./lib/taxonomy";
+import type { FilterRow } from "./lib/taxonomy";
 
 const DAY = 24 * 60 * 60 * 1000;
 /* jsPDF's colour setters take three channels, so the palette entries are
@@ -11,7 +13,8 @@ const DAY = 24 * 60 * 60 * 1000;
 type Rgb = readonly [number, number, number];
 type ColorName =
   | "ink" | "muted" | "line" | "zebra" | "weekend" | "accent"
-  | "progress" | "summary" | "milestone" | "link" | "today" | "headerBg";
+  | "progress" | "summary" | "story" | "milestone" | "link" | "today" | "headerBg"
+  | "relMvp" | "relFull";
 const C: Record<ColorName, Rgb> = {
   ink: [28, 42, 46],
   muted: [98, 119, 122],
@@ -21,10 +24,14 @@ const C: Record<ColorName, Rgb> = {
   accent: [16, 118, 127],
   progress: [10, 82, 89],
   summary: [47, 107, 223],
+  /* the story tier's rail, matching --color-story-rail in the light theme */
+  story: [109, 91, 208],
   milestone: [192, 124, 30],
   link: [160, 175, 177],
   today: [196, 69, 60],
   headerBg: [241, 245, 244],
+  relMvp: [156, 79, 22],
+  relFull: [63, 95, 125],
 };
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 type TypeColor = { bar: Rgb; deep: Rgb; label: string };
@@ -212,15 +219,24 @@ export async function buildGanttPdf(name: string, tasks: StoreTask[], links: Sto
      columns "31 Aug" (9 mm) under a "START" header (9 mm), EFFORT its own
      13.4 mm header — plus 2 mm of padding on each side. */
   const PAD = 2;
-  const nameW = 50, idW = 25, dateW = 17, hrsW = 18;
-  const tableW = nameW + idW + dateW * 2 + hrsW;
+  /* SCOPE holds "MVP" or "FULL" under a 12.5 mm header, so 16 mm with padding */
+  const nameW = 50, idW = 25, scopeW = 16, dateW = 17, hrsW = 18;
+  const tableW = nameW + idW + scopeW + dateW * 2 + hrsW;
   const colX = {
     name: M,
     id: M + nameW,
-    start: M + nameW + idW,
-    end: M + nameW + idW + dateW,
-    hrs: M + nameW + idW + dateW * 2,
+    scope: M + nameW + idW,
+    start: M + nameW + idW + scopeW,
+    end: M + nameW + idW + scopeW + dateW,
+    hrs: M + nameW + idW + scopeW + dateW * 2,
   };
+  /* Release lives on epics and stories only, so a task prints the scope of the
+     nearest tier above it — the same roll-up the app's own totals use. The map
+     is built from every task, not just the ones with dates, or a parent that
+     never got scheduled would break the chain. */
+  const byId = new Map<string, FilterRow>();
+  tasks.forEach((t) => byId.set(String(t.id), t));
+  const scopeLookup = (id: string | number): FilterRow | null => byId.get(String(id)) || null;
   const tid = (url: string | undefined) => { const m = /([A-Za-z][A-Za-z0-9_]*-\d+)\/?(?:[?#].*)?$/.exec(url || ""); return m ? m[1].toUpperCase() : null; };
   const chartX = M + tableW, chartW = PW - M - chartX;
   const pxDay = chartW / spanDays;
@@ -341,6 +357,7 @@ export async function buildGanttPdf(name: string, tasks: StoreTask[], links: Sto
     doc.setFont(F, "bold"); doc.setFontSize(7); doc.setTextColor(...C.muted);
     doc.text(fitText(doc, "TASK", nameW - PAD * 2), colX.name + PAD, topY + 8.6);
     doc.text(fitText(doc, "ID", idW - PAD * 2), colX.id + PAD, topY + 8.6);
+    doc.text(fitText(doc, "SCOPE", scopeW - PAD * 2), colX.scope + PAD, topY + 8.6);
     doc.text(fitText(doc, "START", dateW - PAD * 2), colX.start + PAD, topY + 8.6);
     doc.text(fitText(doc, "END", dateW - PAD * 2), colX.end + PAD, topY + 8.6);
     doc.text(fitText(doc, "EFFORT h", hrsW - PAD * 2), colX.hrs + PAD, topY + 8.6);
@@ -368,6 +385,7 @@ export async function buildGanttPdf(name: string, tasks: StoreTask[], links: Sto
     doc.line(M, topY, PW - M, topY);
     doc.line(M, topY + scaleH, PW - M, topY + scaleH);
     doc.line(colX.id, topY, colX.id, gridBottom);
+    doc.line(colX.scope, topY, colX.scope, gridBottom);
     doc.line(colX.start, topY, colX.start, gridBottom);
     doc.line(colX.end, topY, colX.end, gridBottom);
     doc.line(colX.hrs, topY, colX.hrs, gridBottom);
@@ -400,7 +418,10 @@ export async function buildGanttPdf(name: string, tasks: StoreTask[], links: Sto
       doc.line(M, y + rowH, PW - M, y + rowH);
 
       /* table cells */
-      const isSummary = t.type === "summary";
+      /* a story is a container like an epic — bold row, bracket bar — and only
+         its colour and its SCOPE cell tell them apart */
+      const isSummary = isTierType(t.type);
+      const isStory = t.type === "story";
       doc.setFont(F, isSummary ? "bold" : "normal");
       doc.setFontSize(8); doc.setTextColor(...C.ink);
       const indent = PAD + (t.$level || 0) * 3.5;
@@ -413,6 +434,18 @@ export async function buildGanttPdf(name: string, tasks: StoreTask[], links: Sto
         doc.setTextColor(...C.summary);
         /* clipped like everything else: PRODUCT-2907 used to run into START */
         doc.textWithLink(fitText(doc, ticket, idW - PAD * 2), colX.id + PAD, yc + 1.05, { url: t.url });
+        doc.setTextColor(...C.muted);
+      }
+      /* SCOPE: bold and coloured on the tier that OWNS the release, muted on
+         the rows that merely inherit it */
+      const owned = isTierType(t.type) && (t.release === "mvp" || t.release === "full");
+      const scope = scopeOf(t, scopeLookup);
+      if (scope === "mvp" || scope === "full") {
+        const label = scope === "mvp" ? "MVP" : "FULL";
+        doc.setFont(F, owned ? "bold" : "normal");
+        doc.setTextColor(...(scope === "mvp" ? C.relMvp : C.relFull));
+        doc.text(fitText(doc, label, scopeW - PAD * 2), colX.scope + PAD, yc + 1.05);
+        doc.setFont(F, "normal");
         doc.setTextColor(...C.muted);
       }
       doc.text(fitText(doc, fmtShort(t._s), dateW - PAD * 2), colX.start + PAD, yc + 1.05);
@@ -434,7 +467,7 @@ export async function buildGanttPdf(name: string, tasks: StoreTask[], links: Sto
         /* Merlin-style bracket: bar with down-pointing wings at both ends */
         const w = Math.max(x1 - x0, 2);
         const yTop = yc - 2.1, barH2 = 2.2, wing = Math.min(2.2, w / 3);
-        doc.setFillColor(...C.summary);
+        doc.setFillColor(...(isStory ? C.story : C.summary));
         doc.rect(x0, yTop, w, barH2, "F");
         doc.triangle(x0, yTop + barH2, x0 + wing, yTop + barH2, x0, yTop + barH2 + 2.2, "F");
         doc.triangle(x1 - wing, yTop + barH2, x1, yTop + barH2, x1, yTop + barH2 + 2.2, "F");

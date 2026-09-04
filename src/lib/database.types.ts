@@ -185,6 +185,7 @@ export type Database = {
           parent_id: string | null
           progress: number
           project_id: string
+          release: string | null
           sort_order: number
           start_date: string | null
           status: string
@@ -205,6 +206,7 @@ export type Database = {
           parent_id?: string | null
           progress?: number
           project_id: string
+          release?: string | null
           sort_order?: number
           start_date?: string | null
           status?: string
@@ -225,6 +227,7 @@ export type Database = {
           parent_id?: string | null
           progress?: number
           project_id?: string
+          release?: string | null
           sort_order?: number
           start_date?: string | null
           status?: string

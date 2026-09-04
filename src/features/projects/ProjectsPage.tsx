@@ -3,7 +3,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { ArrowRight, CopySimple, Plus, SignOut, TrashSimple } from "@phosphor-icons/react";
 import { signOut } from "../auth/api/auth";
 import { useStore } from "./store";
-import { formatSpan, spanDays, summarizeProject } from "./summary";
+import { formatRelease, formatSpan, spanDays, summarizeProject } from "./summary";
 import type { ProjectSummary } from "./summary";
 import type { StoreProject } from "../../lib/db";
 
@@ -81,8 +81,8 @@ function ProjectCard({ project, lastOpened, busy, locked, flash, armed, onArm, o
     if (flash) cardRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [flash]);
 
-  const cost = s.tasks || s.epics
-    ? `Delete “${project.name || "Untitled project"}” and everything in it — ${project.tasks.length} ${project.tasks.length === 1 ? "row" : "rows"}, including ${s.tasks} ${s.tasks === 1 ? "task" : "tasks"} and ${s.epics} ${s.epics === 1 ? "epic" : "epics"}?`
+  const cost = s.tasks || s.epics || s.stories
+    ? `Delete “${project.name || "Untitled project"}” and everything in it — ${project.tasks.length} ${project.tasks.length === 1 ? "row" : "rows"}, including ${s.tasks} ${s.tasks === 1 ? "task" : "tasks"}, ${s.stories} ${s.stories === 1 ? "story" : "stories"} and ${s.epics} ${s.epics === 1 ? "epic" : "epics"}?`
     : `Delete “${project.name || "Untitled project"}”? It is empty.`;
 
   return (
@@ -127,11 +127,23 @@ function ProjectCard({ project, lastOpened, busy, locked, flash, armed, onArm, o
           <dd className={META_VALUE}>{s.epics}</dd>
         </div>
         <div>
+          {/* the middle tier, counted separately: an epic of five stories and an
+              epic of five tasks are not the same project */}
+          <dt className={META_LABEL}>Stories</dt>
+          <dd className={META_VALUE}>{s.stories}</dd>
+        </div>
+        <div>
           {/* effort is the work inside the bars, not the length of the span —
               the word has to be on screen next to a date range that is nothing
               like it */}
           <dt className={META_LABEL}>Effort</dt>
           <dd className={META_VALUE}>{fmtEffort(s)}</dd>
+        </div>
+        <div className="col-span-2">
+          {/* what MVP actually costs, from the same roll-up the editor uses:
+              every task takes the scope of the nearest epic or story above it */}
+          <dt className={META_LABEL}>Release scope</dt>
+          <dd className={META_VALUE}>{formatRelease(s)}</dd>
         </div>
         <div className="col-span-3">
           <dt className={META_LABEL}>Timeline</dt>
