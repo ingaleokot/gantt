@@ -20,12 +20,20 @@ facts and hard-won gotchas below.
 - Edge Function `shared` (verify_jwt: false, source in `edge/shared/index.ts`):
   `?raw=1` returns `{active, projects, tasks, links, people}` as JSON with CORS `*`;
   the payload is assembled by the SECURITY DEFINER SQL function `public.share_feed`, so
-  **a new task column only reaches the viewer once that function names it** — `release`
-  does not yet (see "Release scope" below for the one-line SQL);
-  optional `&owner=<uuid>` narrows it. Without `?raw` it returns a pointer note.
-  **The user deploys it — don't.**
-- The user owns all Supabase deploys and migrations. Never apply SQL, never deploy
-  the function, never commit or push.
+  **a new task column only reaches the viewer once that function names it.** `release`
+  is published; `people.role` deliberately is NOT — a team's disciplines are internal,
+  and nothing on a page anyone with the link can read needs them.
+  It takes either `&token=<share token>` (resolved through `share_resolve`, so a link can
+  be password-gated or revoked, with the bcrypt check staying inside Postgres) or
+  `&project=<id>` for links handed out before tokens existed. **There is no "everything"
+  mode** — an early version returned every project to any caller, which is why the
+  function returns exactly one. Without `?raw` it returns a pointer note.
+- **Who may touch what.** Subagents never reach Supabase or git: no SQL, no
+  edge-function deploys, no commits, no pushes — a schema change goes in their report as
+  SQL for the main session to apply. The main session applies migrations, deploys the
+  function, commits, pushes and publishes `dist/` to the `gh-pages` branch, on the
+  user's instruction. This is why every subagent brief says "treat the database as
+  read-only" — that is the subagent contract, not a claim that migrations are blocked.
 
 ## Folder structure (feature-first)
 
@@ -42,6 +50,8 @@ src/
     gantt/            Editor · ShareViewer · pdf · icons · lib/ (render-icon,
                       wxi-masks, tracker, taxonomy)
     people/           roster.ts — the assignee helpers both gantt screens share
+                      (the role LIST and the role→type map live in gantt/lib/taxonomy.ts,
+                      next to the task types they name)
     projects/         store.tsx — the snapshot/draft write model and project CRUD ·
                       ProjectsPage.tsx (the `/` list) · summary.ts (per-project totals,
                       type-only imports so it stays free of supabase)
@@ -67,9 +77,14 @@ would have been a rewrite rather than a move:
 `ShareViewer.tsx`, so **none of them may import from `lib/`** — that would drag the
 Supabase client onto the public page. `features/gantt/lib/taxonomy.ts` is the newest
 member of that set: the tier list, the release scopes, the tier↔widget mapping and the
-filter predicate, shared by the editor, the viewer, the PDF, the projects list **and the
-`/p/$projectId` route file** (which validates the filter out of the URL and therefore must
-not reach supabase either).
+filter predicate, the roles and the role→task-type map, shared by the editor, the viewer,
+the PDF, the projects list **and the `/p/$projectId` route file** (which validates the
+filter out of the URL and therefore must not reach supabase either).
+
+The one import that runs the other way is deliberate: **`lib/db.ts` imports `asRole` from
+`taxonomy.ts`**. The ban is one-directional — taxonomy and roster may not reach `lib/` —
+and letting db.ts read the same list is what stops `people.role` from having a second,
+quietly disagreeing definition on the write side.
 
 ## Build
 
@@ -259,7 +274,7 @@ validator returned, which is wider than `ReactNode`).
 Tables: `projects(id,name,view,position,owner)`, `tasks(id, project_id FK, parent_id
 self-FK, text, type, start_date, end_date, duration, hours, days, progress, details,
 open, sort_order, url, status, assignees, release)`, `links(id, project_id, source,
-target, type)`, `people(id,name,position,owner)`,
+target, type)`, `people(id,name,position,owner,role)`,
 `app_state(id='main', active_project, owner)`.
 
 - **RLS is owner-scoped.** Every insert of `projects`, `people` and `app_state` must set
@@ -268,6 +283,10 @@ target, type)`, `people(id,name,position,owner)`,
 - `tasks.assignees` is a comma-separated list of `people.id`.
 - `tasks.type` is **plain text with no check constraint** — which is why adding the
   `story` tier needed no migration.
+- `people.role` is `text null`, guarded by `people_role_check: role is null or role in
+  ('tester','backend','frontend','lead','designer')`. Labelled Tester · Backend developer ·
+  Frontend developer · Tech lead · Designer. What it *does* is set a leaf task's type at
+  the moment that person is assigned — see "Roles" below.
 - `tasks.release` is `text null`, guarded by
   `tasks_release_check: release is null or release in ('mvp','full')` and indexed by
   `tasks_release_idx on (project_id, release) where release is not null`. Only the two
@@ -349,6 +368,55 @@ The editor modal's Type select is bound to **`kind`**, not `type` — a select b
 `type` would show every story as "Epic". The `update-task` intercept derives `type` from
 whichever of the two arrives (the modal sends `kind`, the context menu's Convert list
 sends `type`) and keeps them in step, before any other branch reads `merged.type`.
+
+### Roles, and the role → task type rule
+
+`people.role` is `null | 'tester' | 'backend' | 'frontend' | 'lead' | 'designer'`, and the
+list, the labels and the mapping all live in `features/gantt/lib/taxonomy.ts` (`ROLES`,
+`roleLabel`, `asRole`, `typeForRole`, `retypableByRole`) — never restated anywhere else.
+
+| role | label | assigning that person sets `tasks.type` to |
+| --- | --- | --- |
+| `tester` | Tester | `testing` |
+| `backend` | Backend developer | `backend` |
+| `frontend` | Frontend developer | `frontend` |
+| `lead` | Tech lead | **nothing — the type is left exactly as it is** |
+| `designer` | Designer | `design` |
+
+**It is applied ONCE, at the moment of assignment, and never again.** `type` stays an
+ordinary stored, freely editable field: nothing recomputes it on load, on save or in
+`rollupEpics`, so a type the user picks by hand sticks for ever. A **later** assignment
+sets it again — reassigning work to another discipline is exactly the case that should
+recolour. **Un**assigning changes nothing, and a person with no role changes nothing.
+
+The whole rule lives in **`toggleAssignee` in `Editor.tsx`**, which is the only place in
+the app where a person is assigned to a row. Three things about it are load-bearing:
+
+- **Never a tier.** `summary`/`story` is what makes a row a container — SVAR only draws a
+  parent when the type it is handed is exactly `summary` — so retyping an epic to
+  `frontend` would take the tree toggle, the rolled-up bar and every child's nesting with
+  it, and `cleanTask` would write that ruin back to Postgres. `retypableByRole` reads the
+  TIER (`effectiveType`), not the drawn type, so an empty nested story — handed over as a
+  plain bar — is protected too. The Who chips already show who is on a tier, so nothing
+  is lost. **A milestone is exempt for the same kind of reason**: it is a shape, not a
+  discipline, and converting one into a bar would invent a 7 h estimate nobody asked for.
+- **It sends `kind`, not `type`.** The `update-task` intercept derives one from the other
+  and prefers `kind` — the same field the editor modal's Type select writes — so hooking
+  `kind` sits correctly with the intercept instead of fighting it.
+- **Assignment and retype go out as ONE `update-task`.** One widget event, one undo
+  snapshot, one row in the diff: Cmd+Z puts the assignment and the type back together, and
+  the save is a single `PATCH /tasks?id=eq.…` carrying both columns.
+
+Only one person can be added per click, so "which assignee wins" is answered by
+construction: the one just selected, every time.
+
+Where it shows up: a **role select per person** in the People popover (empty option "No
+role"; committed as one discrete step with its own undo entry, unlike the per-keystroke
+rename), and each person's role as a quiet second line **under their name in the Who
+picker** — same initials chip, no second colour system. The projects list and the PDF do
+not mention roles. Neither does the **share viewer**: `public.share_feed` publishes people
+as `{id, name}` only, and roles are internal team data that should not appear on a public
+page — nothing in `ShareViewer.tsx` reads `role`, and nothing should start.
 
 ### Release scope (MVP / Full release)
 

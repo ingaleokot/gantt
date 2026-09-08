@@ -6,7 +6,7 @@ import { Willow as GridWillow } from "@svar-ui/react-grid";
 import { Popover } from "@ark-ui/react/popover";
 import { Portal } from "@ark-ui/react/portal";
 import { Link } from "@tanstack/react-router";
-import { CaretLeft, Check, DownloadSimple, Funnel, ShareNetwork, SignOut, Users, X } from "@phosphor-icons/react";
+import { CaretDown, CaretLeft, Check, DownloadSimple, Funnel, ShareNetwork, SignOut, Users, X } from "@phosphor-icons/react";
 import { buildGanttPdf } from "./pdf";
 import type { Person, StoreLink, StoreProject, StoreTask, TaskId } from "../../lib/db";
 import { uid, useStore } from "../projects/store";
@@ -16,9 +16,9 @@ import { trackerId } from "./lib/tracker";
 import { initialsOf, nameHue, parseAssignees } from "../people/roster";
 import { HOURS_PER_DAY } from "../projects/summary";
 import {
-  EMPTY_FILTER, RELEASE_INCLUSION_NOTE, RELEASES, TASK_TYPES, UNSET, asWidgetType, effectiveType,
-  filterActive, filterCount, filterKey, isTierType, makeFilter, releaseLabel, releaseTitle,
-  releaseTotals, scopeOf, usableFilter,
+  EMPTY_FILTER, RELEASE_INCLUSION_NOTE, RELEASES, ROLES, TASK_TYPES, UNSET, asWidgetType,
+  effectiveType, filterActive, filterCount, filterKey, isTierType, makeFilter, releaseLabel,
+  releaseTitle, releaseTotals, retypableByRole, roleLabel, scopeOf, typeForRole, usableFilter,
 } from "./lib/taxonomy";
 import type { FilterRow, FilterState, ReleaseTotals } from "./lib/taxonomy";
 
@@ -129,6 +129,14 @@ const CHIP_OFF =
 const CHIP_ON =
   `press inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-accent bg-accent-hover px-2.5 py-[0.1875rem] font-ui text-mini font-semibold text-accent ${FOCUS}`;
 const GROUP_LABEL = "m-0 mt-3 mb-1.5 text-label font-semibold text-faint uppercase";
+/* The roster's role picker. `appearance-none` because preflight is deliberately
+   not imported, so a native select would otherwise arrive wearing the platform's
+   own chrome and ignore the surface it sits on; the caret is drawn beside it as
+   a Phosphor glyph. No `press` here, unlike every other control: the scale
+   latches on pointer-down and a native select keeps its menu open on top of the
+   trigger, so the surface would stay shrunk for as long as the list is showing. */
+const ROLE_SELECT =
+  `w-full cursor-pointer appearance-none rounded-[7px] border border-line-soft bg-surface-alt py-[0.1875rem] pr-[1.375rem] pl-2 font-ui text-mini text-muted transition-colors duration-[130ms] ease-out hover:border-line hover:text-ink ${FOCUS}`;
 
 const COLUMNS: IColumnConfig[] = [
   { id: "text", header: "Task name", width: 183, flexgrow: 1, sort: true, editor: "text" },
@@ -1074,6 +1082,10 @@ export default function GanttEditor({
   }, []);
   const fKey = filterKey(filter);
   const knownPeople = useMemo(() => new Set(people.map((h) => h.id)), [people]);
+  /* is anyone on the roster carrying a role that maps to a type? The Who
+     picker only explains the rule when there is a rule to explain — a roster of
+     tech leads and unroled people never triggers it. */
+  const retypes = useMemo(() => people.some((h) => !!typeForRole(h.role)), [people]);
   /* what the filter actually constrains, once ids nobody holds any more are
      dropped — a deleted person left in the URL must not hide everything */
   const liveFilter = useMemo(() => usableFilter(filter, knownPeople), [fKey, knownPeople]);
@@ -1527,6 +1539,18 @@ export default function GanttEditor({
     commitPeople(stRef.current.draft.people.map((h) => (h.id === id ? { ...h, name } : h)));
   }, [commitPeople]);
 
+  /* A rename arrives per keystroke and shares one debounced undo entry with the
+     rest of the word; a role is a single discrete choice, so it gets an entry
+     of its own — flushSnapshot pins the state it started from, exactly as
+     adding and removing a person do. "" (No role) becomes a NULL column in
+     db.ts. Nothing here retypes anything that is already assigned: the rule is
+     applied at the moment of ASSIGNMENT, so changing a role only changes what
+     the NEXT assignment will do. */
+  const setPersonRole = useCallback((id: string, role: string) => {
+    flushSnapshot();
+    commitPeople(stRef.current.draft.people.map((h) => (h.id === id ? { ...h, role: role || null } : h)));
+  }, [commitPeople, flushSnapshot]);
+
   /* removing a person also clears them from every task that referenced them */
   const removePerson = useCallback((id: string) => {
     /* before anything moves: this one step changes both the roster and every
@@ -1549,6 +1573,30 @@ export default function GanttEditor({
     commitPeople(stRef.current.draft.people.filter((h) => h.id !== id));
   }, [commitPeople, flushSnapshot]);
 
+  /* ---------- assignment, and the one moment a role touches a type ----------
+     The rule is ONE-SHOT and it lives here because this is the only place in
+     the app where a person is assigned to a row: adding someone whose role
+     maps to a discipline (`typeForRole` in ./lib/taxonomy) sets that row's type
+     right now, and nothing ever recomputes it afterwards. So a type the user
+     picks by hand sticks — the modal's Type select stays fully editable — while
+     a LATER assignment sets it again, because moving work to another discipline
+     is exactly the case that should recolour. Removing someone changes nothing.
+
+     Three things it must not do, each of which would be a real bug:
+       · retype a TIER. `summary`/`story` is what makes a row a container, and
+         overwriting it would collapse the tree, the rolled-up bar and every
+         child's nesting — and be written back to Postgres. `retypableByRole`
+         reads the TIER (so an empty nested story, drawn as a plain bar, is
+         still protected) and refuses tiers and milestones alike;
+       · fight the update-task intercept. It derives `type` from whichever of
+         `type`/`kind` arrives, preferring `kind`, so `kind` is what is sent —
+         the same field the editor modal writes;
+       · split the change in two. Assignment and retype go out as ONE
+         `update-task`, so the widget fires one event, the undo stack takes one
+         snapshot and Cmd+Z puts both back together.
+
+     Only one person can be added per click here, so "which assignee wins" is
+     answered by construction: the one just selected, every time. */
   const toggleAssignee = useCallback((taskId: TID, personId: string) => {
     const a = apiRef.current;
     if (!a) return;
@@ -1556,8 +1604,17 @@ export default function GanttEditor({
     try { t = a.getTask(taskId); } catch (e) {}
     if (!t) return;
     const cur = parseAssignees(t.assignees);
-    const next = cur.includes(personId) ? cur.filter((x) => x !== personId) : [...cur, personId];
-    a.exec("update-task", { id: taskId, task: { assignees: next.join(",") || null } });
+    const adding = !cur.includes(personId);
+    const next = adding ? [...cur, personId] : cur.filter((x) => x !== personId);
+    const task: Partial<ITask> = { assignees: next.join(",") || null };
+    if (adding) {
+      const person = peopleRef.current.find((h) => h.id === personId);
+      const wanted = typeForRole(person && person.role);
+      const tier = tierOf(t);
+      /* `wanted` is null for a tech lead and for a person with no role at all */
+      if (wanted && retypableByRole(tier) && tier !== wanted) task.kind = wanted;
+    }
+    a.exec("update-task", { id: taskId, task });
     setPicker((cur) => (cur && cur.taskId === taskId ? { ...cur, ids: next } : cur));
     if (retagHook) setTimeout(() => retagHook!(), 0);
   }, []);
@@ -1797,26 +1854,55 @@ export default function GanttEditor({
             <Popover.Positioner style={{ zIndex: 40 }}>
               <Popover.Content className={`${POP} w-[288px] rounded-xl p-3.5`}>
                 <Popover.Title className={POP_TITLE}>People</Popover.Title>
-                <Popover.Description className={POP_HINT}>Anyone on this list can be assigned to a task or an epic.</Popover.Description>
+                <Popover.Description className={POP_HINT}>
+                  Anyone on this list can be assigned to a task or an epic. A role sets the task’s
+                  type the moment you assign that person — epics and stories keep theirs.
+                </Popover.Description>
                 {people.length > 0 && (
                   <ul className="m-0 mb-2.5 max-h-[240px] list-none overflow-y-auto p-0">
                     {people.map((h) => (
-                      <li key={h.id} className="flex items-center gap-2 py-[0.1875rem]">
-                        {/* .who-chip is styled unscoped in wx-overrides.css, so the pill
-                            looks identical here, in the Who picker and in the grid */}
-                        <span className="who-chip" style={{ "--who-hue": nameHue(h.name) }}>{initialsOf(h.name)}</span>
-                        <input
-                          className={`min-w-0 flex-1 rounded-[7px] border border-transparent bg-transparent px-2 py-[0.3125rem] font-ui text-body text-ink transition-colors duration-[130ms] ease-out hover:border-line-soft focus:border-accent focus:bg-surface-alt focus:outline-none ${FOCUS}`}
-                          value={h.name}
-                          aria-label="Name"
-                          onChange={(e) => renamePerson(h.id, e.target.value)}
-                        />
-                        <button
-                          type="button"
-                          className={`press press-sm inline-flex h-[22px] w-[22px] flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent p-0 leading-none text-faint hover:bg-surface-hover hover:text-danger ${FOCUS}`}
-                          title={"Remove " + h.name}
-                          onClick={() => removePerson(h.id)}
-                        ><X size={14} aria-hidden="true" /></button>
+                      <li key={h.id} className="py-[0.1875rem]">
+                        <div className="flex items-center gap-2">
+                          {/* .who-chip is styled unscoped in wx-overrides.css, so the pill
+                              looks identical here, in the Who picker and in the grid */}
+                          <span className="who-chip" style={{ "--who-hue": nameHue(h.name) }}>{initialsOf(h.name)}</span>
+                          <input
+                            className={`min-w-0 flex-1 rounded-[7px] border border-transparent bg-transparent px-2 py-[0.3125rem] font-ui text-body text-ink transition-colors duration-[130ms] ease-out hover:border-line-soft focus:border-accent focus:bg-surface-alt focus:outline-none ${FOCUS}`}
+                            value={h.name}
+                            aria-label="Name"
+                            onChange={(e) => renamePerson(h.id, e.target.value)}
+                          />
+                          <button
+                            type="button"
+                            className={`press press-sm inline-flex h-[22px] w-[22px] flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent p-0 leading-none text-faint hover:bg-surface-hover hover:text-danger ${FOCUS}`}
+                            title={"Remove " + h.name}
+                            onClick={() => removePerson(h.id)}
+                          ><X size={14} aria-hidden="true" /></button>
+                        </div>
+                        {/* the role, on its own line and aligned under the name — the
+                            margins are the chip (21px) and the remove button (22px)
+                            plus their gaps, so the select lines up with the input
+                            above it rather than crowding a 288px row */}
+                        <div className="relative mt-[0.1875rem] mr-[1.875rem] ml-[1.8125rem]">
+                          <select
+                            className={ROLE_SELECT}
+                            value={h.role || ""}
+                            aria-label={"Role for " + (h.name || "this person")}
+                            title="Assigning this person sets a task’s type to match their role"
+                            onChange={(e) => setPersonRole(h.id, e.target.value)}
+                          >
+                            <option value="">No role</option>
+                            {ROLES.map((r) => (
+                              <option key={r.id} value={r.id}>{r.label}</option>
+                            ))}
+                          </select>
+                          <CaretDown
+                            size={9}
+                            weight="bold"
+                            aria-hidden="true"
+                            className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 text-faint"
+                          />
+                        </div>
                       </li>
                     ))}
                   </ul>
@@ -2091,24 +2177,42 @@ export default function GanttEditor({
               {people.length === 0 ? (
                 <Popover.Description className={POP_HINT}>No people yet — add them under <strong>People</strong> in the header.</Popover.Description>
               ) : (
-                <ul className="m-0 mt-1.5 max-h-[260px] list-none overflow-y-auto p-0">
-                  {people.map((h) => {
-                    const on = picker ? picker.ids.includes(h.id) : false;
-                    return (
-                      <li key={h.id}>
-                        <button
-                          type="button"
-                          className={`press flex w-full cursor-pointer items-center gap-2 rounded-lg border-0 px-1.5 py-[0.3125rem] text-left font-ui text-body text-ink hover:bg-surface-hover ${FOCUS} ${on ? "bg-accent-hover" : "bg-transparent"}`}
-                          onClick={() => toggleAssignee(picker!.taskId, h.id)}
-                        >
-                          <span className="who-chip" style={{ "--who-hue": nameHue(h.name) }}>{initialsOf(h.name)}</span>
-                          <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{h.name}</span>
-                          <span className="flex-none text-accent" aria-hidden="true">{on ? <Check size={13} weight="bold" /> : null}</span>
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
+                <>
+                  {/* only worth saying when it can actually happen: a roster with
+                      no mapped roles would be told about a rule nothing obeys */}
+                  {retypes && (
+                    <Popover.Description className="m-0 mb-0.5 text-tiny text-faint">
+                      A role sets this task’s type. You can change it afterwards.
+                    </Popover.Description>
+                  )}
+                  <ul className="m-0 mt-1.5 max-h-[260px] list-none overflow-y-auto p-0">
+                    {people.map((h) => {
+                      const on = picker ? picker.ids.includes(h.id) : false;
+                      const role = roleLabel(h.role);
+                      return (
+                        <li key={h.id}>
+                          <button
+                            type="button"
+                            className={`press flex w-full cursor-pointer items-center gap-2 rounded-lg border-0 px-1.5 py-[0.3125rem] text-left font-ui text-body text-ink hover:bg-surface-hover ${FOCUS} ${on ? "bg-accent-hover" : "bg-transparent"}`}
+                            onClick={() => toggleAssignee(picker!.taskId, h.id)}
+                          >
+                            <span className="who-chip" style={{ "--who-hue": nameHue(h.name) }}>{initialsOf(h.name)}</span>
+                            {/* the same chip as everywhere else, and the role as a
+                                quiet second line under the name rather than a second
+                                colour system beside it */}
+                            <span className="min-w-0 flex-1 overflow-hidden">
+                              <span className="block overflow-hidden text-ellipsis whitespace-nowrap">{h.name}</span>
+                              {role && (
+                                <span className="block overflow-hidden text-tiny text-ellipsis whitespace-nowrap text-faint">{role}</span>
+                              )}
+                            </span>
+                            <span className="flex-none text-accent" aria-hidden="true">{on ? <Check size={13} weight="bold" /> : null}</span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </>
               )}
             </Popover.Content>
           </Popover.Positioner>

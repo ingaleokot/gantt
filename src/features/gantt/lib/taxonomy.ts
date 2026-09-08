@@ -51,6 +51,65 @@ export const TASK_TYPES: Option[] = [
 ];
 export const TASK_TYPE_IDS: string[] = TASK_TYPES.map((t) => t.id);
 
+/* ---------- roles, and the one rule that ties a role to a task type ----------
+   `people.role`, constrained in Postgres to
+     null | 'tester' | 'backend' | 'frontend' | 'lead' | 'designer'
+   The order here is the constraint's own, so the select reads the way the
+   column is written.
+
+   The rule, and it is deliberately a ONE-SHOT: assigning a person whose role
+   maps to a type sets that task's type at the moment of assignment, and never
+   again. The type is a stored, freely editable field afterwards — nothing
+   recomputes it on load, on save or on roll-up — so a hand-picked type sticks
+   for ever, and a LATER assignment sets it again because handing work to a
+   different discipline really is a recolour. Unassigning changes nothing.
+
+   Tech lead maps to nothing on purpose: a lead is not a discipline, so a lead
+   joining a task must not tell the team what kind of work it is. */
+export const ROLES: Option[] = [
+  { id: "tester", label: "Tester" },
+  { id: "backend", label: "Backend developer" },
+  { id: "frontend", label: "Frontend developer" },
+  { id: "lead", label: "Tech lead" },
+  { id: "designer", label: "Designer" },
+];
+export const ROLE_IDS: string[] = ROLES.map((r) => r.id);
+export const roleLabel = (r: string | null | undefined): string | null =>
+  ROLES.find((x) => x.id === r)?.label ?? null;
+/* "" is what the People manager's empty option sends; the column's check
+   constraint only allows null and the five ids above */
+export const asRole = (r: string | null | undefined): string | null =>
+  r && ROLE_IDS.includes(r) ? r : null;
+
+/* role → the `tasks.type` an assignment sets. `lead` is absent, which is the
+   whole point: `typeForRole("lead")` is null and nothing is written. */
+const ROLE_TASK_TYPE: Record<string, string> = {
+  tester: "testing",
+  backend: "backend",
+  frontend: "frontend",
+  designer: "design",
+};
+export const typeForRole = (role: string | null | undefined): string | null =>
+  (role && ROLE_TASK_TYPE[role]) || null;
+
+/* ---- which rows an assignment may retype, and why the answer is "leaves" ----
+   NEVER a tier. `summary` and `story` are containers, and the stored `type` is
+   the only thing that says which: SVAR makes a row a parent only when the type
+   it is handed is exactly "summary", so retyping an epic to `frontend` would
+   take its tree toggle, its rolled-up bar and every child's nesting with it —
+   and cleanTask would write that ruin straight back to Postgres. The Who chips
+   already say who is on a tier, so nothing is lost by leaving it alone.
+
+   A milestone is exempt too. It is a shape, not a discipline — a zero-length
+   marker with no estimate — and converting one into a bar would invent a
+   7-hour estimate the user never asked for. Everything else is a leaf that
+   carries a discipline, and those are exactly the rows this recolours.
+
+   Takes the TIER (effectiveType), not the drawn type: an empty nested story is
+   handed to the widget as a plain bar and must still be protected. */
+export const retypableByRole = (tier: string | null | undefined): boolean =>
+  !isTierType(tier) && tier !== "milestone";
+
 /* `tasks.release`, constrained in Postgres to null | 'mvp' | 'full'. Only the
    two container tiers carry one; a leaf task inherits its nearest tier's.
 

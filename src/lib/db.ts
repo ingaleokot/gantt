@@ -1,5 +1,12 @@
 import { supabase } from "./supabase";
 import type { Tables, TablesInsert } from "./database.types";
+/* the one list of roles, and the one map from a role to the task type an
+   assignment sets, live in the taxonomy with the tiers and the release scopes.
+   The rule runs the OTHER way from the usual one: taxonomy (and roster) may
+   never import from lib/, because ShareViewer.tsx uses them — importing the
+   pure data here is fine and keeps `people.role` from having a second, quietly
+   disagreeing definition. */
+import { asRole } from "../features/gantt/lib/taxonomy";
 
 /* Supabase is the only store. Every read and write goes through supabase-js
    table queries under the signed-in user's JWT; RLS is owner-scoped, so
@@ -24,6 +31,11 @@ export type TaskId = string | number;
 export interface Person {
   id: string;
   name: string;
+  /* `people.role`: null | "tester" | "backend" | "frontend" | "lead" | "designer",
+     constrained in Postgres. What it does beyond labelling the roster is set a
+     leaf task's `type` at the moment that person is assigned to it — once, and
+     never again. See ROLES / typeForRole in features/gantt/lib/taxonomy.ts. */
+  role?: string | null;
   /* as above: what `people.position` holds, carried on the snapshot side only */
   position?: number;
 }
@@ -183,7 +195,7 @@ export async function fetchStore(): Promise<StoreData> {
     supabase.from("tasks").select("*")
       .order("sort_order", { ascending: true }).order("id", { ascending: true }),
     supabase.from("links").select("id,project_id,source,target,type"),
-    supabase.from("people").select("id,name,position")
+    supabase.from("people").select("id,name,position,role")
       .order("position", { ascending: true }).order("id", { ascending: true }),
     /* no `id` filter: RLS already scopes app_state to this account's row, and
        that is the one identity the table has both before and after the
@@ -211,7 +223,7 @@ export async function fetchStore(): Promise<StoreData> {
   const active = list.some((p) => p.id === wanted) ? wanted! : "";
   const roster: Person[] = (people.data || [])
     .filter((x) => x && x.id)
-    .map((x) => ({ id: x.id, name: x.name || "", position: x.position ?? undefined }));
+    .map((x) => ({ id: x.id, name: x.name || "", role: asRole(x.role), position: x.position ?? undefined }));
   return { version: 2, activeProject: active, projects: list, people: roster };
 }
 
@@ -280,7 +292,7 @@ const TASK_KEYS: (keyof TaskRow)[] = [
 ];
 const LINK_KEYS: (keyof LinkRow)[] = ["id", "project_id", "source", "target", "type"];
 const PROJECT_KEYS: (keyof ProjectRow)[] = ["id", "name", "view", "position", "owner"];
-const PERSON_KEYS: (keyof PersonRow)[] = ["id", "name", "position", "owner"];
+const PERSON_KEYS: (keyof PersonRow)[] = ["id", "name", "position", "owner", "role"];
 
 /* a numeric 7 and the text "7" Postgres handed back are the same value; every
    other column is a scalar, so one stringify is the whole comparison */
@@ -351,7 +363,10 @@ function rowsOf(store: StoreData, ownerId: string, skip: Set<string>, ordering: 
   });
   (store.people || []).forEach((h, i) => {
     const pos = stored && h.position !== undefined ? h.position : i;
-    people.set(h.id, { id: h.id, name: h.name || "", position: pos, owner: ownerId });
+    /* "" is what the People manager's "No role" option sends; asRole maps
+       anything that is not one of the five ids back to a NULL column, exactly
+       as taskRow does for `release` */
+    people.set(h.id, { id: h.id, name: h.name || "", position: pos, owner: ownerId, role: asRole(h.role) });
   });
   return { projects, tasks, links, people };
 }

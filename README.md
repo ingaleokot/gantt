@@ -15,7 +15,9 @@ dates/hours/days up from what is inside it; four task types
 (backend / frontend / design / testing) with pastel colors, Merlin-style epic bars,
 hour-based estimates (7 h = 1 work day) that skip weekends, bidirectional hours/days
 editing, statuses (not started / in progress / done), a people roster with per-task and
-per-epic assignment shown as initials in a Who column, **release scope** (MVP / Full
+per-epic assignment shown as initials in a Who column — each person optionally carrying a
+**role**, which sets a task's type (and so its colour) the moment they are assigned to
+it — **release scope** (MVP / Full
 release) on any epic or story shown in a Scope column of its own and totalled per scope —
 MVP is a *subset* of the full release, so the full figure includes it and says so —
 **filtering** by type, release and assignee held in the URL and reachable from the Scope
@@ -154,6 +156,38 @@ summary at all. SVAR's date roll-up recurses into every descendant of a dateless
 and throws if it reaches one with nothing inside, whatever dates that row carries. So an
 empty nested epic or story is drawn as a plain bar — icon, rail and scope marker intact,
 stored type untouched — and becomes a container again the moment it gains a child.
+
+## Roles
+
+Everyone on the roster can carry one role — **Tester · Backend developer · Frontend
+developer · Tech lead · Designer** — picked from a select beside their name in the People
+popover, and shown under their name in the Who picker so you can tell who does what while
+assigning.
+
+A role does one thing beyond labelling: **assigning that person sets the task's type**, and
+therefore its colour.
+
+| role | sets the task's type to |
+| --- | --- |
+| Tester | Testing |
+| Backend developer | Backend |
+| Frontend developer | Frontend |
+| Designer | Design |
+| Tech lead | nothing — the type is left exactly as it is |
+
+It happens **once, at the moment of assignment**. The type is an ordinary field afterwards:
+change it by hand and it sticks — nothing recomputes it on load, on save or on roll-up.
+Assigning someone else later sets it again, because moving work to another discipline is
+exactly when it should be recoloured. Unassigning changes nothing.
+
+**Epics and stories are never retyped.** A tier's `type` is what makes it a container —
+it is the only thing SVAR reads to draw a parent — so assigning a frontend developer to an
+epic or a story leaves the tier completely alone and just adds the chip. Milestones are
+left alone too: a milestone is a shape, not a discipline. The rule, the role list and the
+tier exemption live once in `src/features/gantt/lib/taxonomy.ts`.
+
+Roles are internal. `public.share_feed` publishes people as `{id, name}`, and the public
+viewer does not read or show a role.
 
 ## Filtering
 
@@ -306,7 +340,9 @@ ownership through `project_id`.
 
 All data lives in Postgres — the page keeps nothing locally:
 
-- `people (id, name, position, owner)` — the roster tasks are assigned from
+- `people (id, name, position, owner, role)` — the roster tasks are assigned from;
+  `role` is `null | 'tester' | 'backend' | 'frontend' | 'lead' | 'designer'` and decides
+  what type an assignment gives a task (see [Roles](#roles))
 - `projects (id, name, view, position, owner)` — `view` is a leftover of the removed
   Day/Week/Month switcher: still in the schema, still whatever it was last set to, and no
   longer read or written by anything

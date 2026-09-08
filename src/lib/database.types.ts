@@ -122,6 +122,7 @@ export type Database = {
           name: string
           owner: string | null
           position: number
+          role: string | null
           updated_at: string
         }
         Insert: {
@@ -130,6 +131,7 @@ export type Database = {
           name?: string
           owner?: string | null
           position?: number
+          role?: string | null
           updated_at?: string
         }
         Update: {
@@ -138,6 +140,7 @@ export type Database = {
           name?: string
           owner?: string | null
           position?: number
+          role?: string | null
           updated_at?: string
         }
         Relationships: []
@@ -171,6 +174,44 @@ export type Database = {
           view?: string
         }
         Relationships: []
+      }
+      share_links: {
+        Row: {
+          created_at: string
+          last_used_at: string | null
+          owner: string
+          password_hash: string | null
+          project_id: string
+          revoked: boolean
+          token: string
+        }
+        Insert: {
+          created_at?: string
+          last_used_at?: string | null
+          owner: string
+          password_hash?: string | null
+          project_id: string
+          revoked?: boolean
+          token?: string
+        }
+        Update: {
+          created_at?: string
+          last_used_at?: string | null
+          owner?: string
+          password_hash?: string | null
+          project_id?: string
+          revoked?: boolean
+          token?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "share_links_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       tasks: {
         Row: {
@@ -297,7 +338,21 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      share_feed: {
+        Args: { p_password?: string; p_project?: string; p_token?: string }
+        Returns: Json
+      }
+      share_resolve: {
+        Args: { p_password?: string; p_token: string }
+        Returns: {
+          project_id: string
+          status: string
+        }[]
+      }
+      share_set_password: {
+        Args: { p_password: string; p_token: string }
+        Returns: undefined
+      }
     }
     Enums: {
       [_ in never]: never
