@@ -35,11 +35,17 @@ const C: Record<ColorName, Rgb> = {
 };
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 type TypeColor = { bar: Rgb; deep: Rgb; label: string };
+/* The RGB of the LIGHT theme's `--color-type-*` / `--color-type-*-deep` pairs,
+   which is the only theme a printed page has. They are saturated now rather
+   than pastel, in step with the chart — a PDF that still printed the old
+   pastels would not be recognisable as the same plan. Keep these and
+   `styles/style.css` in step by hand; there is no way to read a CSS custom
+   property from jsPDF. */
 const TYPE_COLORS: Record<string, TypeColor> = {
-  backend:  { bar: [168, 195, 236], deep: [125, 163, 220], label: "Backend" },
-  frontend: { bar: [165, 218, 216], deep: [111, 191, 187], label: "Frontend" },
-  design:   { bar: [212, 188, 228], deep: [181, 146, 206], label: "Design" },
-  testing:  { bar: [191, 224, 168], deep: [151, 200, 119], label: "Testing" },
+  backend:  { bar: [111, 157, 242], deep: [47, 99, 204],  label: "Backend" },
+  frontend: { bar: [79, 190, 196],  deep: [14, 136, 145], label: "Frontend" },
+  design:   { bar: [169, 140, 235], deep: [111, 76, 201], label: "Design" },
+  testing:  { bar: [95, 191, 133],  deep: [31, 139, 83],  label: "Testing" },
 };
 
 function toDate(v: unknown): Date | null {

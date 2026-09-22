@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useState, useEffect, useCallback, memo } from "react";
 import { Gantt, Toolbar, ContextMenu, Editor as TaskEditor } from "@svar-ui/react-gantt";
-import type { IApi, IColumnConfig, ILink, IScaleConfig, ITask, TID } from "@svar-ui/react-gantt";
+import type { IApi, IColumnConfig, ILink, ITask, TID } from "@svar-ui/react-gantt";
 import { Willow as CoreWillow } from "@svar-ui/react-core";
 import { Willow as GridWillow } from "@svar-ui/react-grid";
 import { Popover } from "@ark-ui/react/popover";
@@ -13,6 +13,8 @@ import { uid, useStore } from "../projects/store";
 import { setGlyph, type GlyphHost } from "./icons";
 import { installWxiMasks } from "./lib/wxi-masks";
 import { trackerId } from "./lib/tracker";
+import { ensureLinkArrowMarker, labelLinkHandles } from "./lib/link-marker";
+import { DAY_CELL_WIDTH, DAY_SCALES, WEEKEND_HIGHLIGHT, setTodayLine, todayStart } from "./lib/scale";
 import { initialsOf, nameHue, parseAssignees } from "../people/roster";
 import { HOURS_PER_DAY } from "../projects/summary";
 import {
@@ -84,11 +86,14 @@ const tierOf = (t: unknown): string => {
 /* `dot` has to be a complete literal class string — Tailwind's scanner only
    sees class names that appear verbatim in the source, never ones assembled
    at runtime. Same rule everywhere below. */
+/* the `-deep` step, not the bar's body: the pair inverts between the themes
+   (light bodies are the lighter of the two, dark bodies the darker), and
+   `-deep` is the one that is emphatic against the ground in BOTH */
 const LEGEND = [
-  { id: "backend", label: "Backend", dot: "bg-type-backend" },
-  { id: "frontend", label: "Frontend", dot: "bg-type-frontend" },
-  { id: "design", label: "Design", dot: "bg-type-design" },
-  { id: "testing", label: "Testing", dot: "bg-type-testing" },
+  { id: "backend", label: "Backend", dot: "bg-type-backend-deep" },
+  { id: "frontend", label: "Frontend", dot: "bg-type-frontend-deep" },
+  { id: "design", label: "Design", dot: "bg-type-design-deep" },
+  { id: "testing", label: "Testing", dot: "bg-type-testing-deep" },
 ];
 
 /* ---------- shared utility-class recipes for the app shell ----------
@@ -140,6 +145,21 @@ const ROLE_SELECT =
 
 const COLUMNS: IColumnConfig[] = [
   { id: "text", header: "Task name", width: 183, flexgrow: 1, sort: true, editor: "text" },
+  /* Status, as the reference's pill rather than only the dot in the name cell.
+     It is the one column the restyle ADDED, and it was weighed rather than
+     assumed: the grid was already tight enough that below ~760px the fixed
+     gridWidth pushes the chart off screen. So the 88px it costs is paid for by
+     the six columns beside it giving up 46px between them, and gridWidth grows
+     by 42 rather than by 88 — the chart gives up a third of a day column, not
+     two. The dot stays: it is what lets a column of names be scanned without
+     reading a word, which is exactly what the reference keeps it for too.
+     `sort: false` — the value is written by the tagger, so there is nothing in
+     the row for SVAR's comparator to sort on. The id is `state`, NOT `status`:
+     a column whose id matches a task field is filled by the widget from that
+     field, so `status` printed a raw `todo` / `progress` beside the pill the
+     tagger had just appended. Every other tagger-filled column here (`scope`,
+     `who`, `tracker`) is already named something the task does not carry. */
+  { id: "state", header: "Status", width: 88, align: "center", sort: false },
   /* Release scope, out of the name cell and into a column of its own. It used
      to be appended after the text, in a cell that already carries the tree
      toggle, the type icon, the status dot, the name and the edit pencil — six
@@ -149,10 +169,13 @@ const COLUMNS: IColumnConfig[] = [
      ghosted on the rows that merely inherit it, which is the same distinction
      the PDF's SCOPE column draws. `sort: false` matters — the header hosts the
      release filter's own trigger, and a sortable header would fight it. */
-  { id: "scope", header: "Scope", width: 72, align: "center", sort: false },
-  { id: "who", header: "Who", width: 78, align: "center", sort: false },
+  { id: "scope", header: "Scope", width: 68, align: "center", sort: false },
+  /* 72, not 78: the chips overlap now, so four of them take less room than
+     three used to */
+  { id: "who", header: "Who", width: 72, align: "center", sort: false },
+  /* back to 100: a `PRODUCT-2907` pill is 88px wide on its own */
   { id: "tracker", header: "ID", width: 100, align: "center", sort: false },
-  { id: "start", header: "Start", width: 92, align: "center", sort: true },
+  { id: "start", header: "Start", width: 84, align: "center", sort: true },
   /* "Effort", not "Hrs"/"Days": these are how much work the row contains, and
      for an epic they are the sum of its tasks' work — a number that sits next
      to a calendar bar of a completely different length. Labelling them by unit
@@ -522,6 +545,26 @@ function renderProjectSpan(api: GanttApi) {
   el.style.width = Math.round(x1 - x0) + "px";
 }
 
+
+/* Today, as a line across the chart. SVAR's `markers` config is a PRO feature
+   this build disables in `init()` (see ./lib/scale), so the line is drawn the
+   same way the epic bands and the project span are — appended to `.wx-area`,
+   positioned through the same `xForDate` every other decoration uses, and
+   removed outright when today falls outside the drawn range rather than
+   clamped to an edge it does not mean. */
+function renderTodayLine(api: GanttApi) {
+  const area = document.querySelector<HTMLElement>(".gantt-holder .wx-area");
+  if (!area) return;
+  let sc: ScaleData = null;
+  try { sc = api.getState()._scales as unknown as ScaleData; } catch (e) { sc = null; }
+  const row = sc && sc.rows && sc.rows[sc.rows.length - 1];
+  const cells = row ? row.cells : [];
+  if (!sc || !cells.length) { setTodayLine(area, null); return; }
+  const today = todayStart();
+  const first = cells[0].date, last = cells[cells.length - 1].date;
+  setTodayLine(area, today >= first && today <= last ? xForDate(sc, today) : null);
+}
+
 /* ---------- what a bar drag actually commits ----------
    The widget does not hand the intercept the dates the user dragged to. On
    pointer-up it reads the task back UNCHANGED and sends those values together
@@ -795,13 +838,28 @@ function watchRowTags(api: GanttApi) {
       const status = t.status === "done" || t.status === "progress" ? t.status : "todo";
       ["st-todo", "st-progress", "st-done"].forEach((c) => row.classList.remove(c));
       row.classList.add("st-" + status);
+      const statusText = status === "done" ? "Done" : status === "progress" ? "In progress" : "To do";
       const content0 = row.querySelector<HTMLElement>('[data-col-id=":text"] .wx-content');
       if (content0) {
         let dot = content0.querySelector<HTMLElement>(".status-dot");
         if (!dot) { dot = document.createElement("span"); dot.className = "status-dot"; content0.appendChild(dot); }
         const dc = "status-dot sd-" + status;
         if (dot.className !== dc) dot.className = dc;
-        dot.title = status === "done" ? "Done" : status === "progress" ? "In progress" : "Not started";
+        dot.title = statusText;
+      }
+      /* the same three states as a pill, in the Status column. Both class
+         strings are literals the scanner can read — `"sp-" + status` would
+         work in dev and lose its styling in the production build. */
+      const statusCell = row.querySelector<HTMLElement>('[data-col-id=":state"]');
+      if (statusCell) {
+        const host = statusCell.querySelector<HTMLElement>(".wx-content") || statusCell;
+        let pill = host.querySelector<HTMLElement>(".status-pill");
+        if (!pill) { pill = document.createElement("span"); host.appendChild(pill); }
+        const pc = status === "done" ? "status-pill sp-done"
+          : status === "progress" ? "status-pill sp-progress"
+          : "status-pill sp-todo";
+        if (pill.className !== pc) pill.className = pc;
+        if (pill.textContent !== statusText) pill.textContent = statusText;
       }
       /* type icon in front of the name (appended, repositioned via flex order —
          never inserted between React-managed nodes) */
@@ -949,7 +1007,12 @@ function watchRowTags(api: GanttApi) {
     });
     syncFoldAllButton(api);
     syncScopeFilterButton();
+    /* the arrowhead the connectors point at, and the hint on the two discs a
+       link is dragged from — both idempotent, both append-only */
+    ensureLinkArrowMarker();
+    labelLinkHandles();
     renderEpicBands(api);
+    renderTodayLine(api);
     renderProjectSpan(api);
     if (rowTagObserver) rowTagObserver.takeRecords(); /* our own writes must not retrigger */
   };
@@ -969,26 +1032,11 @@ const MGantt = memo(Gantt);
 const MToolbar = memo(Toolbar);
 const MContextMenu = memo(ContextMenu);
 const MEditor = memo(TaskEditor);
-const HIGHLIGHT = (d: Date, u: "day" | "hour") => (u === "day" && (d.getDay() === 0 || d.getDay() === 6) ? "wx-weekend" : "");
 const SUMMARY_CFG = { autoConvert: true, autoProgress: true };
 
-/* ---------- the timeline scale ----------
-   One scale, days. The Day / Week / Month switcher is gone: it was three
-   segments of chrome in a header that had run out of room, and the two scales
-   nobody was choosing cost more than they paid for.
-
-   `projects.view` stays in the schema and is left exactly as stored — nothing
-   here writes it any more, so no project row is dirtied by the removal, and a
-   row that still says "week" simply goes unread.
-
-   The PDF is NOT this: `pdf.ts` picks day / week / month from the project's own
-   span, because a nine-month timeline in day columns is unreadable on A4. That
-   logic is untouched and must stay. */
-const DAY_SCALES: IScaleConfig[] = [
-  { unit: "month", step: 1, format: "%F %Y" },
-  { unit: "day", step: 1, format: "%j" },
-];
-const DAY_CELL_WIDTH = 36;
+/* The scale — one, days, with a week band over it — and the weekend
+   highlight both live in ./lib/scale now, because the public viewer draws the
+   same timeline and two copies of it were two chances to disagree. */
 
 interface Picker {
   taskId: TID;
@@ -2061,20 +2109,24 @@ export default function GanttEditor({
                 cellWidth={DAY_CELL_WIDTH}
                 cellHeight={38}
                 scaleHeight={36}
-                /* The Scope column is 72px but the grid only grew by 48, so the
-                   chart gives up less than the new column costs and the task
-                   name gives up the remaining 24. Fixed rather than responsive
-                   on purpose: SVAR re-runs `init(config)` on ANY prop change,
-                   so a gridWidth that tracked the window would re-initialise
-                   the store — and drop the filter — on every resize tick. The
-                   widget's own draggable resizer is how this is adjusted. */
-                gridWidth={748}
+                /* 748 → 812. The Status column costs 88 and Scope and Who
+                   gave back 16 between them, so the chart gives up 64 — about
+                   one day column — rather than the column's full width. The
+                   others could not give: SCOPE and EFFORT H clipped their own
+                   headers at 66/76, and a PRODUCT-2907 pill needs all 100 of
+                   the ID column.
+                   Fixed rather than responsive on purpose: SVAR re-runs
+                   `init(config)` on ANY prop change, so a gridWidth that
+                   tracked the window would re-initialise the store — and drop
+                   the filter — on every resize tick. The widget's own
+                   draggable resizer is how this is adjusted. */
+                gridWidth={812}
                 start={range.start}
                 end={range.end}
                 autoScale={true}
                 undo={true}
                 summary={SUMMARY_CFG}
-                highlightTime={HIGHLIGHT}
+                highlightTime={WEEKEND_HIGHLIGHT}
               />
           </div>
           {api && <MEditor api={api} items={EDITOR_ITEMS} />}

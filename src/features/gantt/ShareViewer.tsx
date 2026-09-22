@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState, useEffect, useCallback, memo } from "react";
 import { Gantt } from "@svar-ui/react-gantt";
-import type { IApi, IColumnConfig, IScaleConfig, ITask, TID } from "@svar-ui/react-gantt";
+import type { IApi, IColumnConfig, ITask, TID } from "@svar-ui/react-gantt";
 import { Willow as CoreWillow } from "@svar-ui/react-core";
 import { Willow as GridWillow } from "@svar-ui/react-grid";
 import { Popover } from "@ark-ui/react/popover";
@@ -9,6 +9,8 @@ import { Funnel, X } from "@phosphor-icons/react";
 import { setGlyph, type GlyphHost } from "./icons";
 import { installWxiMasks } from "./lib/wxi-masks";
 import { trackerId } from "./lib/tracker";
+import { ensureLinkArrowMarker } from "./lib/link-marker";
+import { DAY_CELL_WIDTH, DAY_SCALES, WEEKEND_HIGHLIGHT, setTodayLine, todayStart } from "./lib/scale";
 import { initialsOf, nameHue, parseAssignees } from "../people/roster";
 import {
   EMPTY_FILTER, RELEASE_INCLUSION_NOTE, RELEASES, TASK_TYPES, UNSET, asWidgetType, effectiveType,
@@ -329,24 +331,22 @@ function shapeStore(raw: Feed | null): ViewStore {
   return { projects, active, people: rosterRef };
 }
 
-/* One scale, days — the editor dropped the Day / Week / Month switcher and the
-   read-only page follows it, so a shared link and the editor it came from draw
-   the same timeline. `projects.view` is left unread. */
-const DAY_SCALES: IScaleConfig[] = [
-  { unit: "month", step: 1, format: "%F %Y" },
-  { unit: "day", step: 1, format: "%j" },
-];
-const DAY_CELL_WIDTH = 36;
-const HIGHLIGHT = (d: Date, u: "day" | "hour") => (u === "day" && (d.getDay() === 0 || d.getDay() === 6) ? "wx-weekend" : "");
+/* The scale, the weekend highlight and the today marker come from
+   ./lib/scale, which the editor uses too — a shared link and the editor it
+   came from have to draw the same timeline, and two copies of the week band
+   were two chances to disagree. */
 const COLUMNS: IColumnConfig[] = [
   { id: "text", header: "Task name", width: 183, flexgrow: 1, sort: true },
+  /* the editor's Status column, filled by the decorator below with the same
+     pill. Read-only here, as everything on this page is. */
+  { id: "state", header: "Status", width: 88, align: "center", sort: false },
   /* the editor's Scope column, so the two grids agree. Filled by the decorator
      below: solid on the tier that owns the release, ghosted on the rows that
      inherit it. `sort: false` — the header hosts the release filter's trigger. */
-  { id: "scope", header: "Scope", width: 72, align: "center", sort: false },
-  { id: "who", header: "Who", width: 78, align: "center", sort: false },
+  { id: "scope", header: "Scope", width: 68, align: "center", sort: false },
+  { id: "who", header: "Who", width: 72, align: "center", sort: false },
   { id: "tracker", header: "ID", width: 100, align: "center", sort: false },
-  { id: "start", header: "Start", width: 92, align: "center", sort: true },
+  { id: "start", header: "Start", width: 84, align: "center", sort: true },
   /* "Effort", not "Hrs"/"Days" — the editor labels the same two columns the
      same way. They are how much work a row contains, and on an epic they are
      the sum of its tasks' work, which is nothing like the length of its bar. */
@@ -356,10 +356,10 @@ const COLUMNS: IColumnConfig[] = [
 /* `dot` is a complete literal class string: Tailwind's scanner only sees class
    names spelled out in the source, never ones assembled at runtime */
 const LEGEND = [
-  { id: "backend", label: "Backend", dot: "bg-type-backend" },
-  { id: "frontend", label: "Frontend", dot: "bg-type-frontend" },
-  { id: "design", label: "Design", dot: "bg-type-design" },
-  { id: "testing", label: "Testing", dot: "bg-type-testing" },
+  { id: "backend", label: "Backend", dot: "bg-type-backend-deep" },
+  { id: "frontend", label: "Frontend", dot: "bg-type-frontend-deep" },
+  { id: "design", label: "Design", dot: "bg-type-design-deep" },
+  { id: "testing", label: "Testing", dot: "bg-type-testing-deep" },
 ];
 
 /* the shell recipes the editor uses, kept in step by hand */
@@ -407,6 +407,26 @@ function xForDate(sc: ScaleData, date: Date): number | null {
   }
   return x;
 }
+
+/* Today, as a line across the chart. SVAR's `markers` config is a PRO feature
+   this build disables in `init()` (see ./lib/scale), so the line is drawn the
+   same way the epic bands and the project span are — appended to `.wx-area`,
+   positioned through the same `xForDate` every other decoration uses, and
+   removed outright when today falls outside the drawn range rather than
+   clamped to an edge it does not mean. */
+function renderTodayLine(api: GanttApi) {
+  const area = document.querySelector<HTMLElement>(".gantt-holder .wx-area");
+  if (!area) return;
+  let sc: ScaleData = null;
+  try { sc = api.getState()._scales as unknown as ScaleData; } catch (e) { sc = null; }
+  const row = sc && sc.rows && sc.rows[sc.rows.length - 1];
+  const cells = row ? row.cells : [];
+  if (!sc || !cells.length) { setTodayLine(area, null); return; }
+  const today = todayStart();
+  const first = cells[0].date, last = cells[cells.length - 1].date;
+  setTodayLine(area, today >= first && today <= last ? xForDate(sc, today) : null);
+}
+
 function decorate(api: GanttApi, project: ViewProject) {
   document.querySelectorAll<HTMLElement>(".gantt-holder .wx-row[data-id]").forEach((row) => {
     const raw = row.getAttribute("data-id") || "";
@@ -428,12 +448,27 @@ function decorate(api: GanttApi, project: ViewProject) {
     const status = t.status === "done" || t.status === "progress" ? t.status : "todo";
     ["st-todo", "st-progress", "st-done"].forEach((c) => row.classList.remove(c));
     row.classList.add("st-" + status);
+    const statusText = status === "done" ? "Done" : status === "progress" ? "In progress" : "To do";
+    /* the same pill the editor draws, in the same column — both class strings
+       spelled out so Tailwind and the CSS can both see them */
+    const statusCell = row.querySelector<HTMLElement>('[data-col-id=":state"]');
+    if (statusCell) {
+      const host = statusCell.querySelector<HTMLElement>(".wx-content") || statusCell;
+      let pill = host.querySelector<HTMLElement>(".status-pill");
+      if (!pill) { pill = document.createElement("span"); host.appendChild(pill); }
+      const pc = status === "done" ? "status-pill sp-done"
+        : status === "progress" ? "status-pill sp-progress"
+        : "status-pill sp-todo";
+      if (pill.className !== pc) pill.className = pc;
+      if (pill.textContent !== statusText) pill.textContent = statusText;
+    }
     const content = row.querySelector<HTMLElement>('[data-col-id=":text"] .wx-content');
     if (content) {
       let dot = content.querySelector<HTMLElement>(".status-dot");
       if (!dot) { dot = document.createElement("span"); dot.className = "status-dot"; content.appendChild(dot); }
       const dc = "status-dot sd-" + status;
       if (dot.className !== dc) dot.className = dc;
+      dot.title = statusText;
       const typeKey = "ti-" + tier;
       const iconCls = "type-icon " + typeKey;
       let ic = content.querySelector<GlyphHost>(".type-icon");
@@ -559,6 +594,12 @@ function decorate(api: GanttApi, project: ViewProject) {
     if (layer.__html !== html) { layer.innerHTML = html; layer.__html = html; }
   }
   syncScopeFilterButton();
+  renderTodayLine(api);
+  /* the connectors' arrowhead. Appended to SVAR's own `<svg class="wx-links">`
+     and idempotent — the viewer is read-only, so there are no drag handles to
+     label, but a shared link has to show which way a dependency runs exactly
+     as the editor does. */
+  ensureLinkArrowMarker();
   /* project span line */
   const scaleEl = document.querySelector<HTMLElement>(".gantt-holder .wx-chart > .wx-scale");
   if (scaleEl) {
@@ -940,14 +981,14 @@ function Board({ store, activeId }: { store: ViewStore; activeId: string | null 
               cellWidth={DAY_CELL_WIDTH}
               cellHeight={38}
               scaleHeight={36}
-              /* as in the editor: the grid grows by less than the new column,
-                 so the chart keeps most of its width */
-              gridWidth={668}
+              /* as in the editor: the Status column costs 88 and Scope and
+                 Who give back 16, so the chart gives up 64 */
+              gridWidth={732}
               start={range.start}
               end={range.end}
               autoScale={true}
               readonly={true}
-              highlightTime={HIGHLIGHT}
+              highlightTime={WEEKEND_HIGHLIGHT}
             />
           </div>
         </GridWillow>

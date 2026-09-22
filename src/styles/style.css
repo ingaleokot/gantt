@@ -54,14 +54,21 @@
   --color-summary: #2f6bdf;
   --color-summary-fill: #1e4fb3;
   --color-danger: #c4453c;
-  --color-weekend: rgba(98, 119, 122, 0.07);
-  --color-type-ink: #1c2a2e;
+  --color-weekend: rgba(98, 119, 122, 0.05);
+  /* the weekend column is a wash PLUS a hatch, as in the reference: the wash
+     alone reads as "a slightly different day", the diagonal says "not a
+     working one" without needing any more contrast */
+  --color-weekend-stripe: rgba(98, 119, 122, 0.1);
+  /* the chart's own ruling. Deliberately fainter than --color-line: a grid
+     the eye has to look for is what lets the bars carry the page. */
+  --color-grid-line: #e8eeed;
+  --color-row-hover: rgba(28, 42, 46, 0.035);
   --color-summary-ink: #ffffff;
   --color-epic-row: rgba(47, 107, 223, 0.07);
   --color-epic-rail: #2f6bdf;
   /* the story tier sits between an epic and a task, so it gets its own rail and
      row wash — a violet that is neither the epic's blue nor the design type's
-     pastel purple, which is only ever a bar fill */
+     violet, which is only ever a bar fill */
   --color-story-row: rgba(109, 91, 208, 0.07);
   --color-story-rail: #6d5bd0;
   /* release scope: MVP is the one that has to catch the eye in a dense grid,
@@ -70,16 +77,53 @@
   --color-release-mvp-bg: rgba(192, 124, 30, 0.16);
   --color-release-full: #3f5f7d;
   --color-release-full-bg: rgba(63, 95, 125, 0.12);
-  --color-type-backend: #a8c3ec;
-  --color-type-backend-deep: #7da3dc;
-  --color-type-frontend: #a5dad8;
-  --color-type-frontend-deep: #6fbfbb;
-  --color-type-design: #d4bce4;
-  --color-type-design-deep: #b592ce;
-  --color-type-testing: #bfe0a8;
-  --color-type-testing-deep: #97c877;
+  /* ---- bar fills -------------------------------------------------------
+     Two steps per task type, and the PAIR is what draws a bar: the plain
+     token is the bar's body, `-deep` is the progress segment inside it and
+     the type icon in the grid. The relationship inverts between the themes
+     on purpose — in light the progress is DARKER than the body, in dark it
+     is brighter — because in both cases the filled part has to be the more
+     emphatic of the two against the ground it sits on. That is the same
+     thing the reference does by stacking one translucent layer on another.
+
+     They are saturated now rather than pastel: the bar label moved OUT of
+     the bar (see wx-overrides.css), so nothing has to stay legible on top
+     of these and they are free to carry the chart. */
+  --color-type-backend: #6f9df2;
+  --color-type-backend-deep: #2f63cc;
+  --color-type-frontend: #4fbec4;
+  --color-type-frontend-deep: #0e8891;
+  --color-type-design: #a98ceb;
+  --color-type-design-deep: #6f4cc9;
+  --color-type-testing: #5fbf85;
+  --color-type-testing-deep: #1f8b53;
+  /* the untyped task: a slate that is nobody's discipline */
+  --color-type-task: #8fa2b3;
+  --color-type-task-deep: #5b7186;
+
+  /* ---- status, as a dot AND a pill ------------------------------------
+     The three ids the schema allows and no more. Each carries a text colour
+     and the wash behind it; the dot uses the text colour alone. */
+  --color-status-todo: #67787f;
+  --color-status-todo-bg: rgba(103, 120, 127, 0.12);
   --color-status-progress: #3b82f6;
+  --color-status-progress-bg: rgba(59, 130, 246, 0.13);
   --color-status-done: #22a06b;
+  --color-status-done-bg: rgba(34, 160, 107, 0.13);
+
+  /* ---- dependency links ------------------------------------------------
+     A connector has to be findable without competing with the bars, so it is
+     a step above --color-faint rather than equal to it; hover promotes it to
+     the accent, which is also what the arrowhead and the drag handles use. */
+  --color-link: #93a6a9;
+  --color-link-hover: var(--color-accent);
+
+  /* The container tiers are drawn as a thin rounded rail spanning their
+     children rather than a bracket, so each needs a track behind its filled
+     part. Both are DERIVED from the rail, which every theme block already
+     restates, so they do not need repeating there. */
+  --color-epic-track: color-mix(in srgb, var(--color-epic-rail) 24%, transparent);
+  --color-story-track: color-mix(in srgb, var(--color-story-rail) 24%, transparent);
 
   /* ---- materials (§12) ------------------------------------------------
      The two glass tints are derived from --color-surface, so they follow the
@@ -174,8 +218,10 @@
     --color-summary: #5b8def;
     --color-summary-fill: #3f6fd0;
     --color-danger: #e07a72;
-    --color-weekend: rgba(143, 163, 165, 0.06);
-    --color-type-ink: #10181b;
+    --color-weekend: rgba(143, 163, 165, 0.05);
+    --color-weekend-stripe: rgba(143, 163, 165, 0.075);
+    --color-grid-line: #1e2b2f;
+    --color-row-hover: rgba(227, 235, 235, 0.045);
     --color-summary-ink: #0b1416;
     --color-epic-row: rgba(91, 141, 239, 0.1);
     --color-epic-rail: #5b8def;
@@ -185,14 +231,25 @@
     --color-release-mvp-bg: rgba(223, 160, 74, 0.18);
     --color-release-full: #a3bcd4;
     --color-release-full-bg: rgba(163, 188, 212, 0.16);
-    --color-type-backend: #a8c3ec;
-    --color-type-backend-deep: #7da3dc;
-    --color-type-frontend: #a5dad8;
-    --color-type-frontend-deep: #6fbfbb;
-    --color-type-design: #d4bce4;
-    --color-type-design-deep: #b592ce;
-    --color-type-testing: #bfe0a8;
-    --color-type-testing-deep: #97c877;
+    /* the pair inverts here: the body is the deeper of the two and `-deep`
+       (progress, and the grid's type icon) is the brighter one */
+    --color-type-backend: #2b5099;
+    --color-type-backend-deep: #6ea2f8;
+    --color-type-frontend: #14646a;
+    --color-type-frontend-deep: #45c8d0;
+    --color-type-design: #4e3a96;
+    --color-type-design-deep: #a98ceb;
+    --color-type-testing: #1c6340;
+    --color-type-testing-deep: #4fc98a;
+    --color-type-task: #3c4d5c;
+    --color-type-task-deep: #8fa8bd;
+    --color-status-todo: #92a6a8;
+    --color-status-todo-bg: rgba(146, 166, 168, 0.14);
+    --color-status-progress: #6fa8ff;
+    --color-status-progress-bg: rgba(111, 168, 255, 0.16);
+    --color-status-done: #46c592;
+    --color-status-done-bg: rgba(70, 197, 146, 0.16);
+    --color-link: #6f8487;
     --who-bg: 28% 26%;
     --who-fg: 60% 76%;
     --color-glass-edge: rgba(255, 255, 255, 0.08);
@@ -220,8 +277,10 @@
   --color-summary: #5b8def;
   --color-summary-fill: #3f6fd0;
   --color-danger: #e07a72;
-  --color-weekend: rgba(143, 163, 165, 0.06);
-  --color-type-ink: #10181b;
+  --color-weekend: rgba(143, 163, 165, 0.05);
+  --color-weekend-stripe: rgba(143, 163, 165, 0.075);
+  --color-grid-line: #1e2b2f;
+  --color-row-hover: rgba(227, 235, 235, 0.045);
   --color-summary-ink: #0b1416;
   --color-epic-row: rgba(91, 141, 239, 0.1);
   --color-epic-rail: #5b8def;
@@ -231,14 +290,23 @@
   --color-release-mvp-bg: rgba(223, 160, 74, 0.18);
   --color-release-full: #a3bcd4;
   --color-release-full-bg: rgba(163, 188, 212, 0.16);
-  --color-type-backend: #a8c3ec;
-  --color-type-backend-deep: #7da3dc;
-  --color-type-frontend: #a5dad8;
-  --color-type-frontend-deep: #6fbfbb;
-  --color-type-design: #d4bce4;
-  --color-type-design-deep: #b592ce;
-  --color-type-testing: #bfe0a8;
-  --color-type-testing-deep: #97c877;
+  --color-type-backend: #2b5099;
+  --color-type-backend-deep: #6ea2f8;
+  --color-type-frontend: #14646a;
+  --color-type-frontend-deep: #45c8d0;
+  --color-type-design: #4e3a96;
+  --color-type-design-deep: #a98ceb;
+  --color-type-testing: #1c6340;
+  --color-type-testing-deep: #4fc98a;
+  --color-type-task: #3c4d5c;
+  --color-type-task-deep: #8fa8bd;
+  --color-status-todo: #92a6a8;
+  --color-status-todo-bg: rgba(146, 166, 168, 0.14);
+  --color-status-progress: #6fa8ff;
+  --color-status-progress-bg: rgba(111, 168, 255, 0.16);
+  --color-status-done: #46c592;
+  --color-status-done-bg: rgba(70, 197, 146, 0.16);
+  --color-link: #6f8487;
   --who-bg: 28% 26%;
   --who-fg: 60% 76%;
   --color-glass-edge: rgba(255, 255, 255, 0.08);

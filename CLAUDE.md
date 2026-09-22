@@ -48,7 +48,7 @@ src/
                       chrome) · hooks/ (session redirects, recovery session) · lib/
                       (field validators)
     gantt/            Editor · ShareViewer · pdf · icons · lib/ (render-icon,
-                      wxi-masks, tracker, taxonomy)
+                      wxi-masks, tracker, taxonomy, scale, link-marker)
     people/           roster.ts — the assignee helpers both gantt screens share
                       (the role LIST and the role→type map live in gantt/lib/taxonomy.ts,
                       next to the task types they name)
@@ -75,11 +75,14 @@ would have been a rewrite rather than a move:
 
 `features/people/roster.ts` and everything under `features/gantt/lib/` are imported by
 `ShareViewer.tsx`, so **none of them may import from `lib/`** — that would drag the
-Supabase client onto the public page. `features/gantt/lib/taxonomy.ts` is the newest
+Supabase client onto the public page. `features/gantt/lib/taxonomy.ts` is one
 member of that set: the tier list, the release scopes, the tier↔widget mapping and the
 filter predicate, the roles and the role→task-type map, shared by the editor, the viewer,
 the PDF, the projects list **and the `/p/$projectId` route file** (which validates the
 filter out of the URL and therefore must not reach supabase either).
+`features/gantt/lib/scale.ts` (the week/day scale, the weekend predicate, the today line)
+and `features/gantt/lib/link-marker.ts` (the connectors' arrowhead, the drag handles'
+labels) are the two newest, and both are imported by the viewer — same ban.
 
 The one import that runs the other way is deliberate: **`lib/db.ts` imports `asRole` from
 `taxonomy.ts`**. The ban is one-directional — taxonomy and roster may not reach `lib/` —
@@ -186,9 +189,32 @@ File-based routes in `src/routes/`, `autoCodeSplitting: true`.
 
 ## The timeline scale, and the header
 
-There is **one scale: days.** The Day / Week / Month `SegmentGroup` is gone from the editor
-and from the public viewer, and with it `?view=` on `/p/$projectId`. Consequences worth
-knowing before "restoring" any of it:
+There is **one scale: days**, under a **week band** — `features/gantt/lib/scale.ts` owns
+both, and both gantt screens import it rather than each declaring their own:
+
+```
+W37 Sep 13 – 19            ← unit "week",  format: a FUNCTION
+Mon 14  Tue 15  Wed 16 …   ← unit "day",   format: a FUNCTION
+```
+
+It used to be `[{unit:"month", format:"%F %Y"}, {unit:"day", format:"%j"}]`. A month band
+over bare day numbers told you the month and then let you lose count of the week four
+columns later. Three things about the replacement:
+
+- **`IScaleConfig.format` takes a function**, `(date, next?) => string`, as well as a
+  pattern. That is what makes the week band possible at all — no strftime pattern produces
+  a RANGE — and `next` (the following cell's start) is what makes the range exact whatever
+  SVAR decides a week starts on. The end is stepped back through the date PARTS, not by
+  subtracting 24 hours, which is an hour out on the two DST weekends a year.
+- **`DAY_CELL_WIDTH` is 52 now, and 36 never meant 36.** `autoScale` clamps the cell to
+  `minCellWidth` (50), so the old 36 was drawn at 50 all along. 52 is above the clamp, so
+  it is the number actually used, and it is what `Mon 14` needs at the widget's 12px.
+- The weekend columns keep SVAR's `highlightTime` hook (`WEEKEND_HIGHLIGHT`, same module)
+  and gain a 135° hatch over the wash — see Visual language below.
+
+The Day / Week / Month `SegmentGroup` is still gone from the editor and from the public
+viewer, and with it `?view=` on `/p/$projectId`. Consequences worth knowing before
+"restoring" any of it:
 
 - **`?view=` is not in the route's search schema any more.** `validateSearch` BUILDS the
   search object rather than checking it, so an old bookmarked `?view=week` is dropped on
@@ -199,6 +225,12 @@ knowing before "restoring" any of it:
 - **`pdf.ts` keeps its own day/week/month logic and must.** It picks the unit from the
   project's span (`spanDays <= 62 ? day : <= 260 ? week : month`), because a nine-month
   timeline drawn in day columns is unreadable on A4. That has nothing to do with this UI.
+- **`markers` is a PRO feature and is silently dropped.** `IConfig` declares
+  `markers?: IMarker[]` and passing one type-checks, but this package's `init(config)`
+  does `t.markers = []; t._markers = []` in the same breath as `t.undo = false` and
+  `t.criticalPath = null`. Nothing errors, nothing warns, the line just never appears — so
+  the **today line is drawn by the row tagger**, like the epic bands and the project span
+  (`setTodayLine` in `lib/scale.ts`, positioned through each screen's own `xForDate`).
 
 The header is two groups, not one run: identity on the left — back link, the project's
 name, and a quiet second line under it carrying the save state, the filter pill and the
@@ -217,10 +249,11 @@ What holds it together now:
   epic/story counts and the unscoped total below 1180px — so effort and the MVP/Full split
   survive to ~700px instead of the whole line vanishing at 1100 as it used to.
 
-Verified at 700 / 960 / 1114 / 1440: one row of controls, all six present and inside the
-viewport, header 62px, title never clipped. Below ~760px the fixed `gridWidth` pushes the
-chart off-screen — that is the widget's own layout, not the header's, and is what SVAR's
-draggable resizer is for.
+Verified at 700 / 900 / 1114 / 1280: one row of controls, all six present and inside the
+viewport, header 62px, title never clipped. Below **~825px** the fixed `gridWidth` pushes
+the chart off-screen — that is the widget's own layout, not the header's, and is what
+SVAR's draggable resizer is for. That number **used to be ~760** and moved when the Status
+column was added; see The grid's columns below for what it bought.
 
 ## Auth (`src/features/auth/`)
 
@@ -428,15 +461,14 @@ and "what does MVP cost" would always be zero.
 - **modal**: a "Release scope" select, hidden unless the row is a tier (`isHidden` reads
   the tier, not the drawn type, so an empty nested story is still scopeable). The empty
   option is `""`, which `db.ts` maps back to a NULL column.
-- **grid**: a **Scope column** of its own (`{ id: "scope", width: 72 }`, second in
+- **grid**: a **Scope column** of its own (`{ id: "scope", width: 68 }`, third in
   `COLUMNS` in both gantt screens), filled by the row tagger with a `.release-tag` pill.
   It used to be appended after the task NAME, in a cell that already carried the tree
   toggle, the type icon, the status dot, the text and the edit pencil. Every row in scope
   is tagged now, not only the tier that owns it — solid on the owner, ghosted (`rel-soft`)
   on the rows that inherit — which is the same distinction the PDF's SCOPE column draws
-  with bold and regular, and what makes the column readable as a column. `gridWidth` grew
-  by 48 rather than the column's full 72, so the chart gives up less than the column
-  costs; the widget's own draggable resizer is how a narrow window is rebalanced.
+  with bold and regular, and what makes the column readable as a column. The widget's own
+  draggable resizer is how a narrow window is rebalanced.
   `gridWidth` is deliberately a CONSTANT: SVAR re-runs `init(config)` on any prop change,
   so one that tracked the window would re-initialise the store — and drop the filter — on
   every resize tick.
@@ -626,6 +658,159 @@ Verified against a stubbed PostgREST: one duplicate emits exactly `POST projects
 row), `POST tasks` (4 rows, epic first), `POST links` (1 row), and **no delete of any
 kind**.
 
+## The chart's visual language (the ReUI pass)
+
+The reference is the first block on https://reui.io/blocks/application/gantt. What was
+taken from it is the **treatment**; what stayed is this app's **information** — the
+columns still carry release scope, effort roll-ups and tracker ids, none of which the
+reference has. It is dark-only; this app is not, so every value below is declared in all
+three theme blocks and the two themes are derived, not ported.
+
+### The grid's columns
+
+`Task name · Status · Scope · Who · ID · Start · Effort h · Effort d`, plus the
+`add-task` gutter. **Status is the one column the pass added**, and the cost is real:
+
+| | before | after |
+| --- | --- | --- |
+| declared widths | 724 | 794 |
+| `gridWidth` | 748 | 812 (viewer 668 → 732) |
+| chart starts vanishing at | ~760px | ~825px |
+
+Status costs 88; Scope (72→68) and Who (78→72, the chips overlap now) gave back 16. The
+first pass also tried to pay for it out of ID, Start and the two Effort columns, and had
+to be undone: at 88 the ID column clipped a `PRODUCT-2907` pill, and `SCOPE` / `EFFORT H`
+clipped **their own headers**. What paid for it in the end was **dropping the header's
+uppercase transform** (`--wx-grid-header-text-transform: none`), which is also what the
+reference does — uppercase was making those two headers ~20% wider than the words.
+
+Two things that bite:
+
+- **The column id is `state`, not `status`.** A column whose id matches a task field is
+  filled by the widget from that field, so `status` printed a raw `todo` / `progress`
+  beside the pill the tagger had just appended. Every other tagger-filled column is
+  already named something no task carries (`scope`, `who`, `tracker`).
+- **The status dot in the name cell stays.** It is not redundant with the pill — it is
+  what lets a column of names be scanned without reading a word, and the reference keeps
+  both for the same reason.
+
+### Bars
+
+- **The label sits OUTSIDE the bar, to its right, in `--color-muted`.** This is the single
+  most characteristic thing about the reference and the reason the fills could stop being
+  pastel — nothing has to stay legible on top of them any more. SVAR renders the task text
+  as `.wx-content` INSIDE every non-milestone bar and exposes no slot for anything else,
+  so CSS takes that one element out of the bar (`position: absolute; left: 100%`). Three
+  things stop it running into anything: **one bar per row** (so there is no "next bar" on
+  the same line — split segments would be the exception and `splitTasks` is off),
+  `.wx-bars` is `overflow: hidden` (so a label at the end of the timeline is clipped at
+  the chart's edge rather than escaping it), and `max-width: 15rem` + `text-overflow:
+  ellipsis` stop a long name reaching across half the chart before that clip applies.
+  `pointer-events: none` matters too: the label overhangs empty track, and a hit target
+  there would swallow clicks meant for the chart. A milestone already shipped its label
+  outside as `.wx-text-out`; the same rule styles it.
+- **Solid saturated fill with a deeper segment for progress.** Each type is a PAIR:
+  `--color-type-X` is the body, `--color-type-X-deep` is `.wx-progress-percent` (and the
+  grid's type icon). **The relationship inverts between the themes on purpose** — in light
+  the progress is darker than the body, in dark it is brighter — because in both cases the
+  filled part has to be the more emphatic of the two against the ground. That is what the
+  reference gets by stacking `bg-(--color)/20` under `bg-(--color)/40`.
+  `--color-type-task` / `-deep` (a slate) is new: the untyped task used to be the accent,
+  and a chart full of the accent left nothing for a selection or a link to mean.
+- **A done bar is dimmed (`opacity: .72`), not desaturated.** It used to be `.5` plus
+  `saturate(.6)`, which threw away which discipline it was. Its label is struck through,
+  as the row's name already is.
+- `--wx-gantt-bar-border-radius` is 5px: 7px on a 20px bar rounded the ends away and made
+  a one-day task read as a lozenge.
+
+### Container tiers: a rail, not a bracket
+
+The Merlin bracket (a `clip-path` with two down-pointing wings) is gone. An epic or a
+story is now a 6px rounded track with 13px end caps and a filled portion for progress —
+in the tier's own colour, so epic and story still read apart. It is built from the bar's
+own `::before` (track) and `::after` (both caps, as two background gradients on one
+element), so there is no node for the tagger to build or React to reconcile, and the
+progress wrapper SVAR already renders is re-boxed into the track. New tokens
+`--color-epic-track` / `--color-story-track` are DERIVED from the rails with `color-mix`,
+so they do not need repeating in the dark blocks.
+
+The **epic bands** on the canvas were re-weighted at the same time: a 2px saturated rule
+across the whole chart was louder than the bars it was bracketing. Both edges are
+hairlines mixed back towards the ground now, and the wash carries the grouping.
+
+### Status, assignees, weekend, today
+
+- **Status pill** — `.status-pill` + `.sp-todo` / `.sp-progress` / `.sp-done`, written
+  bare AND scoped like `.who-chip` and `.release-tag`. Three ids, because three is what
+  the schema allows; the labels are `To do` / `In progress` / `Done`. Both the tagger's
+  class string and the CSS spell every variant out — `"sp-" + status` works in dev and
+  loses its styling in the production build.
+- **Assignees overlap.** `.who-chips > .who-chip` is a 22px circle with a
+  `0 0 0 2px var(--color-surface)` ring and `margin-left: -6px` on every chip but the
+  first; hover raises one to the front. The overlap is scoped to `.who-chips` ON PURPOSE —
+  the same `.who-chip` markup stands alone beside a name in the People manager and the Who
+  picker, where overlapping would just look broken. This restyles the existing per-person
+  hue; it does not add a second avatar system.
+- **Weekend columns** keep the wash and gain a 135° hatch (`--color-weekend-stripe`),
+  which is what the reference uses to say "not a working day" without more contrast. It is
+  a background IMAGE, so it survives an epic band painted over it.
+- **The today line** is a 2px `--color-danger` rule with a `::before` "Today" pill,
+  appended LAST inside `.wx-area` so it reads over the bars, `pointer-events: none` so it
+  cannot swallow a click, and removed outright when today is outside the drawn range.
+  It is not `markers` — see The timeline scale.
+
+### Dependency links — the wiring was already there
+
+`links={links}` was already passed, `add-link` / `update-link` / `delete-link` were
+already in `finalEvents`, `extractLinks` already serialised them and `saveStore` already
+diffed them. Nothing about any of that changed. What was missing was being able to see it:
+
+- **the connector** is `--color-link` (a step above `--color-faint`) at 1.6 stroke,
+  thickening on hover/selection. SVAR draws each link as two coincident polylines —
+  `.wx-line-draw` (visible) and `.wx-line-hitbox` (a 20px transparent stroke that makes
+  the thin line clickable);
+- **the arrowhead** is a `<marker>` that does not ship with the library.
+  `lib/link-marker.ts` APPENDS one `<defs>` to `svg.wx-links` — appended, never inserted,
+  the same contract as every tagger-owned node, and safe because React only ever adds at
+  the end, removes by node, or inserts before a node it owns. CSS then points
+  `marker-end: url(#wx-link-arrow)` at it. The head is filled through a class
+  (`.wx-link-arrow-head`) rather than `fill: context-stroke`, which is not safe to rely on
+  everywhere;
+- **the handle** is SVAR's own `.wx-link.wx-left/.wx-right`, which it already reveals on
+  bar hover — it just looked like decoration. It is a ring with a hole now, `cursor:
+  crosshair`, growing slightly on hover, and `labelLinkHandles()` writes a `title` on each
+  (`title` is not a prop the library sets, so it cannot be clobbered).
+
+Verified against the stubbed PostgREST: creating a link emits exactly one
+`POST /links` and no task write; **deleting a link's endpoint removes the connector
+immediately — no ghost until reload** — and emits `DELETE /links?id=in.(…)` BEFORE
+`DELETE /tasks?id=in.(…)`, so the orphan is cleaned up explicitly rather than left to the
+`ON DELETE CASCADE`.
+
+### New tokens
+
+All declared in `@theme static` **and** both dark blocks, except the two marked derived:
+
+```
+--color-grid-line          the chart's ruling, fainter than --color-line
+--color-row-hover          a translucent wash, so an epic's tint shows through it
+--color-weekend-stripe     the hatch over the weekend wash
+--color-type-task[-deep]   the untyped task's slate
+--color-status-todo[-bg]   \
+--color-status-progress-bg  } the pill: text colour + the wash behind it
+--color-status-done-bg     /
+--color-link               the connector, the arrowhead
+--color-link-hover         (= --color-accent)
+--color-epic-track         DERIVED from --color-epic-rail  (no dark copy needed)
+--color-story-track        DERIVED from --color-story-rail (no dark copy needed)
+```
+
+`--color-type-*` and `--color-type-*-deep` kept their names and changed their values;
+`--color-status-progress` / `-done` were already there and now also back the pills.
+`pdf.ts` holds the LIGHT theme's RGB of the four type pairs and had to move with them —
+there is no way to read a custom property from jsPDF, so those two lists are kept in step
+by hand.
+
 ## Styling layer (Tailwind v4 + Ark UI + Phosphor)
 
 - **One token source.** `src/styles/style.css` is the Tailwind entry and holds every token in a
@@ -639,10 +824,14 @@ kind**.
   but CSS. That line points the scanner at `src/`, which is the whole surface — index.html
   carries no utility classes. Drop it and every utility silently vanishes from the build.
 - New tokens keep to the same rule: `--color-story-row` / `--color-story-rail` (the story
-  tier's wash and rail) and `--color-release-mvp[-bg]` / `--color-release-full[-bg]` (the
-  two release pills) are declared in all three theme blocks. The pills themselves are the
-  `.release-tag` rules in `wx-overrides.css` — written bare AND scoped, like `.who-chip`,
-  because the same markup appears inside the grid (tagger-built) and in JSX.
+  tier's wash and rail), `--color-release-mvp[-bg]` / `--color-release-full[-bg]` (the two
+  release pills) and everything the ReUI pass added (see **The chart's visual language**)
+  are declared in all three theme blocks. The two exceptions are `--color-epic-track` and
+  `--color-story-track`, which are `color-mix`ed from the rails and therefore follow the
+  theme on their own — the same trick `--color-glass` already used. The pills themselves
+  are the `.release-tag` and `.status-pill` rules in `wx-overrides.css` — written bare AND
+  scoped, like `.who-chip`, because the same markup appears inside the grid (tagger-built)
+  and in JSX.
 - **Three theme blocks** must stay in step: `@theme` (light), the
   `@media (prefers-color-scheme: dark) :root:not([data-theme="light"])` block, and
   `:root[data-theme="dark"]`. Both dark blocks are unlayered so they beat the layered
@@ -767,6 +956,13 @@ kind**.
   - `@svar-ui/gantt-store` does not re-export `IParsedTask`/`ITaskType`/`ISummaryConfig`
     /`TDurationUnit` through its package index — import only what the index exports and
     spell the rest out locally.
+- **Three config keys type-check and are then blanked out.** `init(config)` in
+  `@svar-ui/gantt-store` assigns `t.markers = []`, `t._markers = []`, `t.undo = false`,
+  `t.criticalPath = null`, `t.splitTasks = false`, `t.baselines = false` — the PRO
+  features this build does not ship. `IConfig` declares all of them, so passing
+  `markers={[…]}` compiles and then does nothing at all, with no error and no warning.
+  Undo was already reimplemented by hand for this reason; the today line is drawn by the
+  row tagger for the same one.
 - Ids: SVAR's `uid()` is an incrementing **number**, so tasks and links created in-session
   carry numeric ids while the Postgres columns are `text`. That is why `TaskId` is
   `string | number` and why the two `insert` calls in `db.ts` carry a commented cast —
@@ -823,6 +1019,10 @@ kind**.
     (`new URL("./fonts/…", import.meta.url)`), fetched on the first export and held in a
     module-scope promise — never bundled. If the fetch fails the export still runs in
     Helvetica with a console warning. Don't reintroduce `setFont("helvetica", …)`.
+  - **`TYPE_COLORS` in `pdf.ts` is the light theme's `--color-type-*` pair list in RGB**,
+    and there is no way to read a custom property from jsPDF — so those four pairs and the
+    ones in `style.css` are kept in step by hand. They were re-saturated with the chart; a
+    PDF still printing the old pastels would not read as the same plan.
   - The table is TASK · ID · **SCOPE** · START · END · EFFORT h. SCOPE prints the release
     the row inherits, bold and coloured on the tier that owns it; stories print with the
     epic's bracket bar in the story colour. The PDF always exports the whole project — it

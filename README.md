@@ -12,14 +12,20 @@ A projects list as the front door — counts, effort and timeline on every card,
 projects sharing a name are still told apart — with create, rename, duplicate and
 delete; a three-tier hierarchy of **epic → story → task**, each tier rolling its
 dates/hours/days up from what is inside it; four task types
-(backend / frontend / design / testing) with pastel colors, Merlin-style epic bars,
+(backend / frontend / design / testing) drawn as solid coloured bars with a deeper segment
+for progress and the task's name set **outside** the bar, container tiers drawn as a thin
+rail spanning their children, a **week band over day columns** (`W37 Sep 13 – 19` /
+`Mon 14`) with hatched weekends and a today line,
 hour-based estimates (7 h = 1 work day) that skip weekends, bidirectional hours/days
-editing, statuses (not started / in progress / done), a people roster with per-task and
-per-epic assignment shown as initials in a Who column — each person optionally carrying a
-**role**, which sets a task's type (and so its colour) the moment they are assigned to
-it — **release scope** (MVP / Full
+editing, statuses (not started / in progress / done) shown as a coloured **pill** in a
+Status column and as a dot beside the name, a people roster with per-task and
+per-epic assignment shown as overlapping initials avatars in a Who column — each person
+optionally carrying a **role**, which sets a task's type (and so its colour) the moment
+they are assigned to it — **release scope** (MVP / Full
 release) on any epic or story shown in a Scope column of its own and totalled per scope —
 MVP is a *subset* of the full release, so the full figure includes it and says so —
+**dependency links** between tasks, drawn as elbow connectors with an arrowhead and
+created by dragging the handle that appears on a bar's edge,
 **filtering** by type, release and assignee held in the URL and reachable from the Scope
 column's own header, Yandex Tracker links with an
 extracted `PRODUCT-XXXX` ID column, a centered edit modal, keyboard copy/paste/undo
@@ -59,7 +65,9 @@ src/
       lib/              render-icon (one detached React root), wxi-masks (the CSS masks
                         for SVAR's own <i> icons), tracker (PRODUCT-XXXX extraction),
                         taxonomy (the three tiers, the release scopes, the filter — and
-                        the one place the story↔summary mapping lives)
+                        the one place the story↔summary mapping lives), scale (the
+                        week/day scale, the weekend predicate, the today line),
+                        link-marker (the connectors' arrowhead and the drag handles)
     people/roster.ts    assignee helpers shared by both gantt screens
     projects/
       store.tsx       the React Query snapshot, the draft, and the write mutations
@@ -217,6 +225,14 @@ parent, and applying a filter must not dirty a row.
 
 Tailwind CSS v4 + [Ark UI](https://ark-ui.com) + [Phosphor icons](https://phosphoricons.com).
 
+- **Look.** The chart follows the first Gantt block on
+  [reui.io](https://reui.io/blocks/application/gantt): quiet ruling and row hover, solid
+  saturated bars with a deeper progress segment, the bar's label outside it, containers as
+  a thin rail rather than a bracket, status as a pill, assignees as overlapping avatars,
+  and light elbow connectors with a visible arrowhead. The reference is dark-only; both
+  themes here are derived from the same rules rather than one being a port of the other,
+  and the app's own information — release scope, effort roll-ups, tracker ids — is
+  untouched. `CLAUDE.md` has the details, including what each decision cost.
 - **Tokens.** `src/styles/style.css` is the Tailwind entry. Every design token lives in one
   `@theme static` block there as `--color-*` / `--font-*` / `--text-*` / `--shadow-*` /
   `--ease-*` / `--dur-*` / `--animate-*`, which gives both the utilities (`bg-surface`,

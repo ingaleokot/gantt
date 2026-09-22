@@ -8,9 +8,11 @@
   --wx-icon-color: var(--color-faint);
   --wx-background: var(--color-surface);
   --wx-background-alt: var(--color-surface-alt);
-  --wx-background-hover: var(--color-surface-hover);
-  --wx-border: 1px solid var(--color-line);
-  --wx-border-medium: 1px solid var(--color-line-soft);
+  /* translucent, not a solid swap: the reference's row hover is a wash over
+     whatever the row already is, so an epic's tint still shows through it */
+  --wx-background-hover: var(--color-row-hover);
+  --wx-border: 1px solid var(--color-grid-line);
+  --wx-border-medium: 1px solid var(--color-grid-line);
   --wx-border-radius: 7px;
   --wx-radius-major: 10px;
   --wx-color-primary: var(--color-accent);
@@ -30,34 +32,60 @@
 
   /* gantt-specific */
   --wx-gantt-select-color: var(--color-accent-hover);
-  --wx-gantt-border: 1px solid var(--color-line-soft);
-  --wx-gantt-border-color: var(--color-line);
-  --wx-border-color: var(--color-line);
-  --wx-gantt-bar-border-radius: 7px;
+  --wx-gantt-border: 1px solid var(--color-grid-line);
+  --wx-gantt-border-color: var(--color-grid-line);
+  --wx-border-color: var(--color-grid-line);
+  /* a small radius on a 20px bar, as in the reference — 7px on a bar that
+     short rounded the ends away and made a one-day task read as a lozenge */
+  --wx-gantt-bar-border-radius: 5px;
   --wx-gantt-bar-font: 500 12px var(--font-ui);
-  --wx-gantt-task-color: var(--color-accent);
-  --wx-gantt-task-fill-color: color-mix(in srgb, var(--color-accent) 72%, var(--color-surface));
+  /* the untyped task is a slate now rather than the accent: the accent is the
+     app's interactive colour and a chart full of it left nothing for a
+     selection or a link to mean */
+  --wx-gantt-task-color: var(--color-type-task);
+  --wx-gantt-task-fill-color: var(--color-type-task-deep);
   --wx-gantt-task-border-color: transparent;
-  --wx-gantt-task-font-color: var(--color-accent-ink);
+  --wx-gantt-task-font-color: var(--color-muted);
   --wx-gantt-summary-color: var(--color-summary);
   --wx-gantt-summary-fill-color: var(--color-summary-fill);
   --wx-gantt-summary-border-color: transparent;
   --wx-gantt-summary-font-color: var(--color-summary-ink);
   --wx-gantt-milestone-color: var(--color-milestone);
-  --wx-gantt-link-color: var(--color-faint);
+  --wx-gantt-link-color: var(--color-link);
+  --wx-gantt-link-color-hovered: var(--color-link-hover);
   --wx-gantt-link-marker-background: var(--color-accent);
   --wx-gantt-link-marker-color: var(--color-accent-ink);
   --wx-gantt-marker-color: var(--color-danger);
   --wx-gantt-holiday-background: var(--color-weekend);
   --wx-gantt-holiday-color: var(--color-muted);
   --wx-gantt-icon-color: var(--color-faint);
-  --wx-grid-header-font: 600 11.5px/1.4 var(--font-ui);
+  /* Sentence case, not uppercase. The reference's column headers read
+     "Name · Status · Assignee · Due date", and it is not only a look: uppercase
+     made "EFFORT H" and "EFFORT D" about 20% wider than the words themselves,
+     which is why both were ellipsised to "EFFOR…" in columns sized for the
+     values under them. Turning the transform off gave the headers back without
+     taking a pixel from the chart. */
+  --wx-grid-header-font: 500 12px/1.4 var(--font-ui);
   --wx-grid-header-font-color: var(--color-muted);
-  --wx-grid-header-text-transform: uppercase;
+  --wx-grid-header-text-transform: none;
   --wx-grid-body-font: 400 13.5px/1.45 var(--font-ui);
   --wx-grid-body-font-color: var(--color-ink);
 }
-.wx-willow-theme .wx-weekend { background: var(--color-weekend); }
+/* ---------- the weekend column: a wash and a hatch ----------
+   The wash on its own only says "a slightly different day". The 135° hatch is
+   what the reference uses to say "not a working one", and it survives being
+   painted over by an epic band or a row tint because it is an image, not a
+   colour. */
+.wx-willow-theme .wx-weekend {
+  background-color: var(--color-weekend);
+  background-image: repeating-linear-gradient(
+    135deg,
+    transparent,
+    transparent 5px,
+    var(--color-weekend-stripe) 5px,
+    var(--color-weekend-stripe) 6px
+  );
+}
 
 /* ---------- epic → task hierarchy in the task list ---------- */
 .wx-willow-theme .wx-row.is-epic { background: var(--color-epic-row); }
@@ -119,7 +147,8 @@
 .wx-willow-theme .who-chips {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  /* no gap: inside the grid the chips OVERLAP, so the spacing is the negative
+     margin on `.who-chips > .who-chip + .who-chip` below */
   max-width: 100%;
   padding: 2px 4px;
   border: 0;
@@ -171,6 +200,29 @@
   background: var(--color-surface-alt);
   border: 1px solid var(--color-line);
 }
+/* ---------- the Who column's chips overlap, the ones outside it do not ----------
+   The reference shows assignees as a stack of small circular avatars that
+   overlap by about a quarter, each ringed in the surface colour so the one in
+   front reads as being in front. This is that — applied ONLY to the chips the
+   tagger puts inside `.who-chips`, because the same `.who-chip` markup is used
+   standing alone beside a person's name in the People manager and the Who
+   picker, where overlapping would just look broken.
+
+   `min-width` gives way to a fixed square so the chip is a circle rather than
+   a lozenge; a two-initial chip that would have grown wider now scales its
+   text down instead of pushing its neighbour along. */
+.who-chips > .who-chip {
+  width: 22px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0;
+  box-shadow: 0 0 0 2px var(--color-surface);
+}
+.who-chips > .who-chip + .who-chip { margin-left: -6px; }
+/* the one under the pointer comes to the front, which is also how you tell
+   two overlapping initials apart without opening the picker */
+.who-chips > .who-chip:hover { z-index: 2; position: relative; }
+.who-chips > .who-chip.who-more { box-shadow: 0 0 0 2px var(--color-surface); }
 
 /* ---------- type icons in front of names ---------- */
 /* visual order inside the name cell: toggle, icon, status dot, text, edit button */
@@ -183,7 +235,11 @@
 /* the release pill used to live here, at order 1, in a cell that already held
    five things. It has its own column now — see the Scope block below. */
 
-/* ---------- statuses ---------- */
+/* ---------- statuses: the dot in the name, the pill in its own column ----------
+   Both, as in the reference: the dot is what lets you scan a column of names
+   without reading a word, the pill is what says which of the three it is. The
+   three ids are the three the schema allows — `todo`, `progress`, `done` —
+   and there is no fourth to add. */
 .wx-willow-theme .status-dot {
   flex: 0 0 auto;
   width: 8px;
@@ -191,11 +247,56 @@
   border-radius: 99px;
   margin-right: 7px;
 }
-.wx-willow-theme .sd-todo { background: transparent; box-shadow: inset 0 0 0 1.5px var(--color-faint); }
+.wx-willow-theme .sd-todo { background: transparent; box-shadow: inset 0 0 0 1.5px var(--color-status-todo); }
 .wx-willow-theme .sd-progress { background: var(--color-status-progress); }
 .wx-willow-theme .sd-done { background: var(--color-status-done); }
 .wx-willow-theme .wx-row.st-done .wx-text { text-decoration: line-through; opacity: 0.6; }
-.wx-willow-theme .wx-bar.st-done { opacity: 0.5; filter: saturate(0.6); }
+/* a done bar is dimmed, not desaturated: the reference keeps completed work in
+   its own colour (it is still the same discipline) and only takes it down a
+   step so the live rows come forward */
+.wx-willow-theme .wx-bar.st-done { opacity: 0.72; }
+
+/* The pill. Written bare AND scoped, like `.who-chip` and `.release-tag`: the
+   tagger builds it inside the grid, and the same markup is spelled out in JSX
+   for the filter panel, so both need to find a rule. */
+.wx-willow-theme [data-col-id=":state"] .wx-content {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.status-pill,
+.wx-willow-theme .status-pill {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border: 1px solid transparent;
+  border-radius: 99px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.55;
+  white-space: nowrap;
+  cursor: default;
+}
+.status-pill.sp-todo,
+.wx-willow-theme .status-pill.sp-todo {
+  color: var(--color-status-todo);
+  background: var(--color-status-todo-bg);
+  border-color: color-mix(in srgb, var(--color-status-todo) 22%, transparent);
+}
+.status-pill.sp-progress,
+.wx-willow-theme .status-pill.sp-progress {
+  color: var(--color-status-progress);
+  background: var(--color-status-progress-bg);
+  border-color: color-mix(in srgb, var(--color-status-progress) 26%, transparent);
+}
+.status-pill.sp-done,
+.wx-willow-theme .status-pill.sp-done {
+  color: var(--color-status-done);
+  background: var(--color-status-done-bg);
+  border-color: color-mix(in srgb, var(--color-status-done) 26%, transparent);
+}
 /* Type icons and the row pencil are real Phosphor SVGs now: the tagger renders
    each glyph once through @phosphor-icons/react (src/icons.jsx) and appends the
    cached markup, so this file only owns the box and the color. */
@@ -221,7 +322,7 @@
 .wx-willow-theme .ti-testing { color: var(--color-type-testing-deep); }
 .wx-willow-theme .ti-story { color: var(--color-story-rail); }
 .wx-willow-theme .ti-milestone { color: var(--color-milestone); }
-.wx-willow-theme .ti-task { color: var(--color-faint); }
+/* .ti-task is set beside the other type colours, below */
 
 /* ---------- release scope: MVP / Full release ----------
    One definition for the pill, used by the tagger inside the grid and spelled
@@ -358,28 +459,217 @@
   .wx-willow-theme .fold-all:active { transform: translateY(-50%); filter: brightness(0.92); }
 }
 
-/* ---------- breathing room for bar labels ---------- */
-.wx-willow-theme .wx-bar .wx-content {
-  padding: 0 9px;
-  box-sizing: border-box;
-  max-width: 100%;
+/* ---------- the bar label lives OUTSIDE the bar ----------
+   The single most characteristic thing about the reference, and the reason the
+   bar fills could be made saturated: nothing has to stay legible on top of
+   them any more. SVAR renders the task text as `.wx-content` INSIDE the bar for
+   every type except milestone (which already ships a `.wx-text-out` at
+   `left: 100%`), so this takes that one element out of the bar rather than
+   asking the library for a slot it does not have.
+
+   Three things keep it from running into anything:
+     * one bar per row — SVAR positions every task on its own row, so there is
+       no "next bar" on the same line to collide with (split segments would be
+       the exception, and `splitTasks` is off);
+     * `.wx-bars` is `overflow: hidden`, so a label at the far end of the
+       timeline is clipped at the chart's edge instead of escaping it;
+     * `max-width` + `text-overflow: ellipsis` stop a long name from reaching
+       across half the chart before that clip ever applies.
+   `pointer-events: none` matters too: the label overhangs the empty track to
+   the right of its bar, and a stray hit target there would swallow clicks that
+   belong to the chart. */
+.wx-willow-theme .wx-bar:not(.wx-milestone) > .wx-content,
+.wx-willow-theme .wx-bar.wx-milestone > .wx-text-out {
+  position: absolute;
+  left: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  margin-left: 10px;
+  max-width: 15rem;
+  padding: 0;
+  height: auto;
+  line-height: 1.3;
+  text-align: left;
+  font-weight: 500;
+  color: var(--color-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+/* the row's own bar says which row you are reading; hovering it brings the
+   label up to full contrast so a dense stack can still be scanned */
+.wx-willow-theme .wx-bar:hover > .wx-content,
+.wx-willow-theme .wx-bar.wx-selected > .wx-content { color: var(--color-ink); }
+/* a done bar keeps its colour (the reference does not grey them out) but its
+   label is struck through, exactly as the row's name is */
+.wx-willow-theme .wx-bar.st-done > .wx-content { text-decoration: line-through; }
+
+/* ---------- the bar body, and the darker segment inside it ----------
+   Solid fill, small radius, and a progress segment a step deeper than the
+   body. `.wx-progress-wrapper` is absolutely positioned at 100%×100% with its
+   own radius and `overflow: hidden`, so the segment is already clipped to the
+   bar's rounded corners — all this adds is the hairline that separates the two
+   where the progress stops. */
+.wx-willow-theme .wx-bar .wx-progress-percent {
+  box-shadow: inset -1px 0 0 rgba(0, 0, 0, 0.18);
 }
 
-/* ---------- Merlin-style epic bars: bracket with down-pointing wings ---------- */
+/* ---------- container tiers: a thin rail, not a bracket ----------
+   The Merlin bracket (a clip-path with two down-pointing wings) was heavier
+   than everything under it, which is backwards — a container's job is to say
+   how far its children reach, not to be the loudest thing on the chart. The
+   reference draws it as a 6px rounded track with end caps, and this is that,
+   in each tier's own colour so an epic and a story still read apart.
+
+   The track is `::before` and the caps are `::after`, so both are the bar's
+   own pseudo-elements and the tagger never has to build (or React to re-own)
+   a node here. `::before` paints first, the progress wrapper over it, the caps
+   last. */
 .wx-willow-theme .wx-bar.wx-summary {
-  border-radius: 3px 3px 0 0;
-  clip-path: polygon(0 0, 100% 0, 100% 100%, calc(100% - 9px) 16px, 9px 16px, 0 100%);
+  background-color: transparent;
   border: none;
+  border-radius: 0;
+  clip-path: none;
+  box-shadow: none;
 }
-.wx-willow-theme .wx-bar.wx-summary .wx-content {
-  line-height: 16px;
-  height: 16px;
+.wx-willow-theme .wx-bar.wx-summary:hover,
+.wx-willow-theme .wx-bar.wx-summary.wx-selected { box-shadow: none; border: none; }
+.wx-willow-theme .wx-bar.wx-summary::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 99px;
+  background: var(--color-epic-track);
+  pointer-events: none;
 }
-/* the same bracket, in the story tier's colour */
-.wx-willow-theme .wx-bar.wx-summary.is-story,
-.wx-willow-theme .wx-bar.wx-summary.is-story .wx-segment {
-  background-color: var(--color-story-rail);
-  border-color: transparent;
+/* the two end caps, drawn as one element with two background gradients rather
+   than two more pseudo-elements there is nowhere to hang */
+.wx-willow-theme .wx-bar.wx-summary::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 13px;
+  margin-top: -6.5px;
+  background:
+    linear-gradient(var(--color-epic-rail), var(--color-epic-rail)) left center / 2px 13px no-repeat,
+    linear-gradient(var(--color-epic-rail), var(--color-epic-rail)) right center / 2px 13px no-repeat;
+  pointer-events: none;
+}
+.wx-willow-theme .wx-bar.wx-summary .wx-progress-wrapper {
+  top: 50%;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 99px;
+  background-color: transparent;
+}
+.wx-willow-theme .wx-bar.wx-summary .wx-progress-percent {
+  background-color: var(--color-epic-rail);
+  border-radius: 99px;
+  box-shadow: none;
+}
+/* the same rail, in the story tier's colour */
+.wx-willow-theme .wx-bar.wx-summary.is-story::before { background: var(--color-story-track); }
+.wx-willow-theme .wx-bar.wx-summary.is-story::after {
+  background:
+    linear-gradient(var(--color-story-rail), var(--color-story-rail)) left center / 2px 13px no-repeat,
+    linear-gradient(var(--color-story-rail), var(--color-story-rail)) right center / 2px 13px no-repeat;
+}
+.wx-willow-theme .wx-bar.wx-summary.is-story .wx-progress-percent { background-color: var(--color-story-rail); }
+
+/* ---------- dependency links: the connector, its head, and the handle ----------
+   None of this is new machinery. `links={links}` is already passed, add-link /
+   update-link / delete-link already trigger a save, and `extractLinks`
+   already serialises them — the only thing missing was being able to SEE any
+   of it. So: a connector a step above --color-faint, a real arrowhead at the
+   end that says which way the dependency runs, and a handle on bar hover
+   obvious enough that dragging one is discoverable.
+
+   SVAR draws each link as two coincident polylines inside one `<svg class=
+   "wx-links">`: `.wx-line-draw` (what you see) and `.wx-line-hitbox` (a 20px
+   transparent stroke, so the thin line is still clickable). It ships no marker
+   at all, so `features/gantt/lib/link-marker.ts` APPENDS one `<defs>` to that
+   svg — appended, never inserted, exactly like every other node the tagger
+   owns — and this is what points the line at it. */
+.wx-willow-theme .wx-links .wx-line > .wx-line-draw {
+  stroke: var(--color-link);
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+  marker-end: url(#wx-link-arrow);
+}
+.wx-willow-theme .wx-links .wx-line-selectable:hover > .wx-line-draw,
+.wx-willow-theme .wx-links .wx-line-selected > .wx-line-draw {
+  stroke-width: 2.2;
+}
+/* the head is filled from the same token rather than `context-stroke`, which
+   is still not safe to rely on across the browsers this has to run in */
+.wx-willow-theme .wx-links .wx-link-arrow-head { fill: var(--color-link); }
+
+/* The drag handle. SVAR already reveals `.wx-link.wx-target` on bar hover; it
+   arrived as a flat 16px disc that read as decoration. A ring with a hole in
+   the middle reads as a port to pull from, `cursor: crosshair` confirms it,
+   and the grow-in gives the hover somewhere to go. */
+.wx-willow-theme .wx-bar .wx-link {
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--color-surface);
+  background-color: var(--color-accent);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.28);
+  cursor: crosshair;
+  transition: opacity var(--dur-hover) ease-out, transform var(--dur-hover) var(--ease-emphasized);
+}
+.wx-willow-theme .wx-bar .wx-link .wx-inner {
+  width: 4px;
+  height: 4px;
+  border-width: 2px;
+  border-color: var(--color-surface);
+}
+.wx-willow-theme .wx-bar .wx-link.wx-left { left: -18px; }
+.wx-willow-theme .wx-bar .wx-link.wx-right { right: -18px; }
+.wx-willow-theme .wx-bar .wx-link:hover { transform: translateY(-50%) scale(1.18); }
+@media (prefers-reduced-motion: reduce) {
+  .wx-willow-theme .wx-bar .wx-link { transition: opacity var(--dur-hover) ease-out; }
+  .wx-willow-theme .wx-bar .wx-link:hover { transform: translateY(-50%); filter: brightness(1.15); }
+}
+
+/* ---------- the today line ----------
+   Built by the row tagger, not by SVAR's `markers` config — that is a PRO
+   feature this build blanks out inside `init()`, silently (see lib/scale.ts).
+   It is appended last inside `.wx-area`, so it reads over the bars the way the
+   reference's does; `pointer-events: none` is what keeps it from swallowing a
+   click meant for one. The label is a `::before` pill at the top of the line
+   rather than a node of its own: there is nothing to build, nothing for React
+   to reconcile, and nothing to keep in step. */
+.wx-willow-theme .today-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--color-danger);
+  opacity: 0.8;
+  z-index: 3;
+  pointer-events: none;
+}
+.wx-willow-theme .today-line::before {
+  content: "Today";
+  position: absolute;
+  top: 3px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 1px 7px;
+  border-radius: 99px;
+  background: var(--color-danger);
+  color: #fff;
+  font: 600 10.5px/1.5 var(--font-ui);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
 }
 
 /* ---------- epic bands on the chart canvas ---------- */
@@ -388,19 +678,24 @@
   inset: 0;
   pointer-events: none;
 }
+/* The band's job is to say how far an epic reaches down the rows, and a 2px
+   saturated rule across the whole chart was doing it louder than the bars it
+   was bracketing — the one thing the reference is most careful about. Both
+   edges are hairlines mixed back towards the ground now; the wash still
+   carries the grouping. */
 .wx-willow-theme .epic-band {
   position: absolute;
   left: 0;
   right: 0;
   box-sizing: border-box;
   background: var(--color-epic-row);
-  border-top: 2px solid var(--color-epic-rail);
-  border-bottom: 1px solid color-mix(in srgb, var(--color-epic-rail) 45%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--color-epic-rail) 50%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-epic-rail) 26%, transparent);
 }
 .wx-willow-theme .epic-band.band-story {
   background: var(--color-story-row);
-  border-top-color: var(--color-story-rail);
-  border-bottom-color: color-mix(in srgb, var(--color-story-rail) 45%, transparent);
+  border-top-color: color-mix(in srgb, var(--color-story-rail) 50%, transparent);
+  border-bottom-color: color-mix(in srgb, var(--color-story-rail) 26%, transparent);
 }
 
 /* ---------- the timeline scale stays put while the rows scroll ----------
@@ -512,19 +807,23 @@
 .editor-okay:active { transform: scale(0.97); filter: brightness(0.94); }
 .editor-okay:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 
-/* ---------- custom task-type bar colors ---------- */
+/* ---------- custom task-type bar colors ----------
+   The `color` these used to set was the bar's own text, which now lives
+   outside the bar and takes --color-muted from the label rule above. What is
+   left is the pair: the body, and the deeper segment the progress fills. */
 .wx-willow-theme .wx-bar.backend,
-.wx-willow-theme .wx-bar.backend .wx-segment { color: var(--color-type-ink); background-color: var(--color-type-backend); border: 1px solid transparent; }
+.wx-willow-theme .wx-bar.backend .wx-segment { background-color: var(--color-type-backend); border: 1px solid transparent; }
 .wx-willow-theme .wx-bar.backend .wx-progress-percent { background-color: var(--color-type-backend-deep); }
 .wx-willow-theme .wx-bar.frontend,
-.wx-willow-theme .wx-bar.frontend .wx-segment { color: var(--color-type-ink); background-color: var(--color-type-frontend); border: 1px solid transparent; }
+.wx-willow-theme .wx-bar.frontend .wx-segment { background-color: var(--color-type-frontend); border: 1px solid transparent; }
 .wx-willow-theme .wx-bar.frontend .wx-progress-percent { background-color: var(--color-type-frontend-deep); }
 .wx-willow-theme .wx-bar.design,
-.wx-willow-theme .wx-bar.design .wx-segment { color: var(--color-type-ink); background-color: var(--color-type-design); border: 1px solid transparent; }
+.wx-willow-theme .wx-bar.design .wx-segment { background-color: var(--color-type-design); border: 1px solid transparent; }
 .wx-willow-theme .wx-bar.design .wx-progress-percent { background-color: var(--color-type-design-deep); }
 .wx-willow-theme .wx-bar.testing,
-.wx-willow-theme .wx-bar.testing .wx-segment { color: var(--color-type-ink); background-color: var(--color-type-testing); border: 1px solid transparent; }
+.wx-willow-theme .wx-bar.testing .wx-segment { background-color: var(--color-type-testing); border: 1px solid transparent; }
 .wx-willow-theme .wx-bar.testing .wx-progress-percent { background-color: var(--color-type-testing-deep); }
+.wx-willow-theme .ti-task { color: var(--color-type-task-deep); }
 
 /* ---------- single fold-all toggle in the Task name header ---------- */
 .wx-willow-theme [data-header-id=":text"] { position: relative; }
@@ -589,6 +888,21 @@
   }
   .wx-willow-theme .wx-gantt-editor { border-color: var(--color-ink); }
   .wx-willow-theme .status-dot { box-shadow: inset 0 0 0 1.5px var(--color-ink); }
+  /* the bar label is the only thing naming a bar now, so it stops being muted */
+  .wx-willow-theme .wx-bar > .wx-content,
+  .wx-willow-theme .wx-bar > .wx-text-out { color: var(--color-ink); }
+  .wx-willow-theme .wx-bar.st-done { opacity: 1; }
+  /* the weekend's hatch is carried by a near-transparent stripe, which is
+     exactly what this mode cannot see — give the column a border instead */
+  .wx-willow-theme .wx-weekend {
+    background-image: none;
+    box-shadow: inset 1px 0 0 var(--color-ink), inset -1px 0 0 var(--color-ink);
+  }
+  .wx-willow-theme .status-pill,
+  .status-pill { border-color: currentcolor; }
+  .wx-willow-theme .wx-links .wx-line > .wx-line-draw { stroke: var(--color-ink); stroke-width: 2.2; }
+  .wx-willow-theme .wx-links .wx-link-arrow-head { fill: var(--color-ink); }
+  .who-chips > .who-chip { box-shadow: 0 0 0 2px var(--color-ink); }
   .wx-willow-theme .who-chip,
   .who-chip { border: 1px solid currentcolor; }
   .wx-willow-theme .release-tag,
