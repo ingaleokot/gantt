@@ -17,9 +17,13 @@ export const ERROR_TEXT = "m-0 mt-1.5 text-mini text-danger";
 export const NOTICE_TEXT = "m-0 text-mini text-accent";
 export const SUBMIT =
   `press mt-1.5 cursor-pointer rounded-lg border-0 bg-accent px-3 py-[0.5625rem] font-ui text-body font-semibold text-accent-ink hover:brightness-[1.08] active:brightness-[0.94] disabled:cursor-default disabled:opacity-60 ${FOCUS}`;
-/* the cross-links between the pages ("No account? Sign up", "Back to sign in") */
+/* The cross-links between the pages ("No account? Sign up", "Back to sign in").
+   They used to render as plain grey body text with no underline under a
+   divider — and on the sign-in page these are the ONLY routes out, so nothing
+   on screen said they could be clicked. Accent colour plus an underline that
+   thickens on hover: the two signals that do not depend on each other. */
 export const QUIET_LINK =
-  `press inline-block cursor-pointer rounded-md bg-transparent p-1 font-ui text-mini text-muted no-underline hover:text-ink ${FOCUS}`;
+  `press inline-block cursor-pointer rounded-md bg-transparent p-1 font-ui text-mini font-medium text-accent underline decoration-from-font underline-offset-2 hover:brightness-110 ${FOCUS}`;
 export const FORM = "flex flex-col gap-2.5";
 
 export function AuthCard({ title, intro, children }: { title: string; intro: string; children: ReactNode }) {

@@ -233,6 +233,15 @@ Tailwind CSS v4 + [Ark UI](https://ark-ui.com) + [Phosphor icons](https://phosph
   themes here are derived from the same rules rather than one being a port of the other,
   and the app's own information — release scope, effort roll-ups, tracker ids — is
   untouched. `CLAUDE.md` has the details, including what each decision cost.
+- **The shell carries no hue.** Its neutrals are shadcn's zero-chroma ramp —
+  `#f5f5f5` / `#ffffff` / `#0a0a0a` in light, `#0a0a0a` / `#1a1a1a` / `#fafafa` in dark —
+  because the teal-tinted greys it used to have fought every saturated bar on the chart.
+  Colour belongs to the bars, the status pills, the release pills and the accent.
+  Separators are the reference's own technique rather than a borrowed hex: translucent
+  white over near-black (translucent ink over paper in light), so the same rule really is
+  a different colour over a raised surface than over the ground. The per-person avatar
+  hues are generated from the name rather than tokenised, so they are checked across all
+  360 — worst case 6.0:1 text on chip, in both themes.
 - **Tokens.** `src/styles/style.css` is the Tailwind entry. Every design token lives in one
   `@theme static` block there as `--color-*` / `--font-*` / `--text-*` / `--shadow-*` /
   `--ease-*` / `--dur-*` / `--animate-*`, which gives both the utilities (`bg-surface`,
@@ -313,10 +322,32 @@ The shell follows Apple's interface-design guidance, translated to CSS:
   `prefers-contrast: more` (near-solid, defined borders) are all honoured, and every
   interactive element has a visible `:focus-visible` ring.
 
+## Safety and reach
+
+Two rules run through the whole interface, and both came out of an interaction review.
+
+**Nothing destructive happens silently.** Deleting a row asks first and names what it
+costs — *"Everything inside it goes too — 4 rows, including 2 tasks, 1 story and 1
+milestone, and 2 links"* — because the foreign key cascades and an epic takes its whole
+subtree with it. Removing a person asks too, and counts the rows across every project, not
+just the open one. Both confirms put focus on the safe option and back out on Escape, the
+same shape the projects list uses. Undo and redo are buttons in the toolbar as well as
+⌘Z, so the safety net exists on a touch device and in the accessibility tree.
+
+**Nothing is mouse-only.** The grid has a roving tab stop with arrow-key movement, so the
+toolbar's Move up / Move down are reachable without a click; the per-row `+` and the
+toolbar's four icon buttons carry real names; and the task editor is a genuine modal —
+focus on open, a Tab trap, Escape to close, a named close button and two distinctly
+labelled counter buttons. The save state is a live region rather than a silent pill, and
+it is an *event*: it appears after a change you made, says "All changes saved", and
+settles — except when a write has failed, which stays on screen until it succeeds.
+
 ## Auth and access
 
 The editor is gated behind Supabase Auth (email + password), with four separate pages —
-sign in, sign up, forgot password, reset password — each linking to the others. Forms are
+sign in, sign up, forgot password, reset password — each linking to the others in the
+accent colour with an underline, because on the sign-in page those cross-links are the
+only routes out and grey body text did not say so. Forms are
 [TanStack Form](https://tanstack.com/form) over Ark UI `Field`, so validation, error text
 and the busy state are the same everywhere.
 

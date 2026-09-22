@@ -6,6 +6,12 @@
       "runtimeExecutable": "/opt/homebrew/bin/bun",
       "runtimeArgs": ["run", "dev"],
       "port": 5173
+    },
+    {
+      "name": "gantt-preview",
+      "runtimeExecutable": "/opt/homebrew/bin/bun",
+      "runtimeArgs": ["run", "preview", "--port", "4173"],
+      "port": 4173
     }
   ]
 }

@@ -37,46 +37,72 @@
 /* `static` so every token is emitted even when only wx-overrides.css reads it
    through var() — Tailwind cannot see uses that live in another stylesheet. */
 @theme static {
-  --color-ground: #edf1f0;
-  --color-surface: #fcfdfd;
-  --color-surface-alt: #f1f5f4;
-  --color-surface-hover: #e9efee;
-  --color-ink: #1c2a2e;
-  --color-muted: #62777a;
-  --color-faint: #93a5a7;
-  --color-line: #dbe3e2;
-  --color-line-soft: #e6ecec;
+  /* ---- the neutral scale ------------------------------------------------
+     These are shadcn's default NEUTRAL ramp — oklch lightness with a=b=0, so
+     every grey here has literally ZERO hue. That is the point: the shell used
+     to be teal-tinted (#edf1f0 / #1c2a2e), which fought every saturated bar on
+     the chart and made the whole app read as "a teal product" rather than a
+     plan drawn on paper. The hues live in the bars, the status pills and the
+     accent; the chrome carries none at all.
+       oklch(1     0 0) → #ffffff   surface
+       oklch(0.97  0 0) → #f5f5f5   ground / alt surface
+       oklch(0.145 0 0) → #0a0a0a   ink
+       oklch(0.556 0 0) → #737373   muted
+       oklch(0.708 0 0) → #a1a1a1   faint                                    */
+  --color-ground: #f5f5f5;
+  --color-surface: #ffffff;
+  /* alt stays OPAQUE while `-hover` is translucent, and the difference is
+     load-bearing: `.who-more` overlaps the chip beside it by 6px, so a
+     see-through fill there would show the initials underneath it. Anything
+     that layers gets the translucent token; anything that COVERS gets this. */
+  --color-surface-alt: #f5f5f5;
+  --color-surface-hover: rgba(10, 10, 10, 0.06);
+  --color-ink: #0a0a0a;
+  --color-muted: #737373;
+  --color-faint: #a1a1a1;
+  /* ---- separators are a TRANSLUCENT wash, not an opaque grey -------------
+     The reference draws every rule and every subtle fill as `oklch(1 0 0 /
+     0.1)` — white at low alpha over whatever is behind it — and that layering
+     is what makes it read as depth rather than as a flat diagram of boxes. The
+     light counterpart is the same technique with the ink instead of the paper.
+     A consequence worth knowing: a rule over the raised surface and the same
+     rule over the ground are genuinely different colours, which is exactly
+     what an opaque hairline could never do. */
+  --color-line: rgba(10, 10, 10, 0.12);
+  --color-line-soft: rgba(10, 10, 10, 0.07);
   --color-accent: #10767f;
   --color-accent-hover: rgba(16, 118, 127, 0.1);
-  --color-accent-selected: #d7e9ea;
+  /* derived from the accent rather than restated as a hex, so it follows the
+     theme on its own and cannot drift out of step with it */
+  --color-accent-selected: color-mix(in srgb, var(--color-accent) 18%, transparent);
   --color-accent-ink: #ffffff;
-  --color-milestone: #c07c1e;
-  --color-summary: #2f6bdf;
-  --color-summary-fill: #1e4fb3;
-  --color-danger: #c4453c;
-  --color-weekend: rgba(98, 119, 122, 0.05);
+  --color-milestone: #b45309;
+  --color-summary: #2563eb;
+  --color-summary-fill: #1d4ed8;
+  --color-danger: #dc2626;
+  --color-weekend: rgba(10, 10, 10, 0.035);
   /* the weekend column is a wash PLUS a hatch, as in the reference: the wash
      alone reads as "a slightly different day", the diagonal says "not a
      working one" without needing any more contrast */
-  --color-weekend-stripe: rgba(98, 119, 122, 0.1);
+  --color-weekend-stripe: rgba(10, 10, 10, 0.07);
   /* the chart's own ruling. Deliberately fainter than --color-line: a grid
      the eye has to look for is what lets the bars carry the page. */
-  --color-grid-line: #e8eeed;
-  --color-row-hover: rgba(28, 42, 46, 0.035);
+  --color-grid-line: rgba(10, 10, 10, 0.06);
+  --color-row-hover: rgba(10, 10, 10, 0.035);
   --color-summary-ink: #ffffff;
-  --color-epic-row: rgba(47, 107, 223, 0.07);
-  --color-epic-rail: #2f6bdf;
+  --color-epic-row: rgba(37, 99, 235, 0.07);
+  --color-epic-rail: #2563eb;
   /* the story tier sits between an epic and a task, so it gets its own rail and
      row wash — a violet that is neither the epic's blue nor the design type's
-     violet, which is only ever a bar fill */
-  --color-story-row: rgba(109, 91, 208, 0.07);
-  --color-story-rail: #6d5bd0;
+     purple, which is only ever a bar fill */
+  --color-story-row: rgba(124, 92, 240, 0.07);
+  --color-story-rail: #7c5cf0;
   /* release scope: MVP is the one that has to catch the eye in a dense grid,
      Full release reads as the calmer "everything else" */
-  --color-release-mvp: #9c4f16;
-  --color-release-mvp-bg: rgba(192, 124, 30, 0.16);
-  --color-release-full: #3f5f7d;
-  --color-release-full-bg: rgba(63, 95, 125, 0.12);
+  --color-release-mvp: #b45309;
+  --color-release-mvp-bg: rgba(217, 119, 6, 0.14);
+  --color-release-full: #475569;
+  --color-release-full-bg: rgba(71, 85, 105, 0.1);
   /* ---- bar fills -------------------------------------------------------
      Two steps per task type, and the PAIR is what draws a bar: the plain
      token is the bar's body, `-deep` is the progress segment inside it and
@@ -86,36 +112,44 @@
      emphatic of the two against the ground it sits on. That is the same
      thing the reference does by stacking one translucent layer on another.
 
-     They are saturated now rather than pastel: the bar label moved OUT of
-     the bar (see wx-overrides.css), so nothing has to stay legible on top
-     of these and they are free to carry the chart. */
-  --color-type-backend: #6f9df2;
-  --color-type-backend-deep: #2f63cc;
-  --color-type-frontend: #4fbec4;
-  --color-type-frontend-deep: #0e8891;
-  --color-type-design: #a98ceb;
-  --color-type-design-deep: #6f4cc9;
-  --color-type-testing: #5fbf85;
-  --color-type-testing-deep: #1f8b53;
-  /* the untyped task: a slate that is nobody's discipline */
-  --color-type-task: #8fa2b3;
-  --color-type-task-deep: #5b7186;
+     The hues are the reference's own set — blue · teal · purple · green,
+     with a slate for the untyped row — re-pitched to sit on a NEUTRAL ground
+     rather than a teal-tinted one. They are saturated rather than pastel:
+     the bar label moved OUT of the bar (see wx-overrides.css), so nothing
+     has to stay legible on top of these and they are free to carry the
+     chart. */
+  --color-type-backend: #60a5fa;
+  --color-type-backend-deep: #2563eb;
+  --color-type-frontend: #2dd4bf;
+  --color-type-frontend-deep: #0d9488;
+  --color-type-design: #c084fc;
+  --color-type-design-deep: #9333ea;
+  --color-type-testing: #4ade80;
+  --color-type-testing-deep: #16a34a;
+  /* the untyped task: a slate that is nobody's discipline. It keeps a trace
+     of hue ON PURPOSE — a zero-hue bar on a zero-hue shell would read as a
+     piece of the chrome rather than as a task. */
+  --color-type-task: #94a3b8;
+  --color-type-task-deep: #475569;
 
   /* ---- status, as a dot AND a pill ------------------------------------
      The three ids the schema allows and no more. Each carries a text colour
-     and the wash behind it; the dot uses the text colour alone. */
-  --color-status-todo: #67787f;
-  --color-status-todo-bg: rgba(103, 120, 127, 0.12);
-  --color-status-progress: #3b82f6;
-  --color-status-progress-bg: rgba(59, 130, 246, 0.13);
-  --color-status-done: #22a06b;
-  --color-status-done-bg: rgba(34, 160, 107, 0.13);
+     and the wash behind it; the dot uses the text colour alone. "Not started"
+     is the only one drawn in the neutral ramp — nothing has happened to it
+     yet, so it should not compete with the two that mean something. */
+  --color-status-todo: #737373;
+  --color-status-todo-bg: rgba(10, 10, 10, 0.07);
+  --color-status-progress: #2563eb;
+  --color-status-progress-bg: rgba(37, 99, 235, 0.12);
+  --color-status-done: #16a34a;
+  --color-status-done-bg: rgba(22, 163, 74, 0.13);
 
   /* ---- dependency links ------------------------------------------------
      A connector has to be findable without competing with the bars, so it is
      a step above --color-faint rather than equal to it; hover promotes it to
-     the accent, which is also what the arrowhead and the drag handles use. */
-  --color-link: #93a6a9;
+     the accent, which is also what the arrowhead and the drag handles use.
+     Neutral in both themes — it is a line, not a category. */
+  --color-link: #8a8a8a;
   --color-link-hover: var(--color-accent);
 
   /* The container tiers are drawn as a thin rounded rail spanning their
@@ -133,16 +167,23 @@
   --color-glass: color-mix(in srgb, var(--color-surface) 82%, transparent);
   --color-glass-chrome: color-mix(in srgb, var(--color-surface) 58%, transparent);
   --color-glass-edge: rgba(255, 255, 255, 0.75);
-  --color-scrim: rgba(8, 14, 16, 0.42);
+  --color-scrim: rgba(10, 10, 10, 0.45);
 
-  /* not colors: the lightness/saturation pair the per-person chip hue plugs into */
+  /* not colors: the lightness/saturation pair the per-person chip hue plugs
+     into. The chips are the one place in the app where the colour is GENERATED
+     (a hue per name), so the pair has to keep every hue legible: at 88%
+     saturation and 55% lightness the wash stays pale enough for 25%-lightness
+     text on it in light, and the dark pair is re-pitched for a near-black
+     ground rather than a teal-tinted one — see the dark blocks. */
   --who-bg: 55% 88%;
-  --who-fg: 45% 26%;
+  --who-fg: 45% 25%;
 
-  /* ---- depth: small chips read thinner than big floating surfaces ------ */
-  --shadow-pop: 0 1px 2px rgba(28, 42, 46, 0.05), 0 4px 16px rgba(28, 42, 46, 0.07);
-  --shadow-material: 0 2px 6px rgba(28, 42, 46, 0.07), 0 14px 38px rgba(28, 42, 46, 0.16);
-  --shadow-modal: 0 12px 32px rgba(8, 16, 18, 0.22), 0 32px 80px rgba(8, 16, 18, 0.3);
+  /* ---- depth: small chips read thinner than big floating surfaces ------
+     Neutral black, like everything else here: a shadow with a hue in it was
+     half of what made the light theme read as tinted. */
+  --shadow-pop: 0 1px 2px rgba(0, 0, 0, 0.05), 0 4px 16px rgba(0, 0, 0, 0.07);
+  --shadow-material: 0 2px 6px rgba(0, 0, 0, 0.07), 0 14px 38px rgba(0, 0, 0, 0.16);
+  --shadow-modal: 0 12px 32px rgba(0, 0, 0, 0.22), 0 32px 80px rgba(0, 0, 0, 0.3);
 
   --font-display: "Bricolage Grotesque", "Instrument Sans", system-ui, sans-serif;
   --font-ui: "Instrument Sans", "Segoe UI", system-ui, Arial, sans-serif;
@@ -201,116 +242,136 @@
    @theme values regardless of specificity. Keep all three in step. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --color-ground: #0e1517;
-    --color-surface: #151f22;
-    --color-surface-alt: #1a262a;
-    --color-surface-hover: #202e32;
-    --color-ink: #e3ebeb;
-    --color-muted: #8fa3a5;
-    --color-faint: #6c8083;
-    --color-line: #27363a;
-    --color-line-soft: #223034;
+    /* The reference is dark-only, and these are the values read off it: the same
+       zero-hue neutral ramp, a near-black ground, and separators that are
+       translucent WHITE over it rather than a lighter grey.
+         oklch(0.145 0 0)     → #0a0a0a  ground
+         oklch(0.205 0 0)     → #1a1a1a  raised surface
+         oklch(0.269 0 0)     → #242424  alt surface
+         oklch(0.985 0 0)     → #fafafa  foreground
+         oklch(0.708 0 0)     → #a1a1a1  muted foreground
+         oklch(1 0 0 / 0.1)   → the border
+         oklch(1 0 0 / 0.045) → the subtle fill                                */
+    --color-ground: #0a0a0a;
+    --color-surface: #1a1a1a;
+    --color-surface-alt: #242424;
+    --color-surface-hover: rgba(255, 255, 255, 0.07);
+    --color-ink: #fafafa;
+    --color-muted: #a1a1a1;
+    --color-faint: #737373;
+    --color-line: rgba(255, 255, 255, 0.1);
+    --color-line-soft: rgba(255, 255, 255, 0.06);
     --color-accent: #4bb3bb;
     --color-accent-hover: rgba(75, 179, 187, 0.14);
-    --color-accent-selected: #1d3a3e;
-    --color-accent-ink: #0b1416;
-    --color-milestone: #dfa04a;
-    --color-summary: #5b8def;
-    --color-summary-fill: #3f6fd0;
-    --color-danger: #e07a72;
-    --color-weekend: rgba(143, 163, 165, 0.05);
-    --color-weekend-stripe: rgba(143, 163, 165, 0.075);
-    --color-grid-line: #1e2b2f;
-    --color-row-hover: rgba(227, 235, 235, 0.045);
-    --color-summary-ink: #0b1416;
-    --color-epic-row: rgba(91, 141, 239, 0.1);
-    --color-epic-rail: #5b8def;
-    --color-story-row: rgba(154, 139, 234, 0.11);
-    --color-story-rail: #9a8bea;
-    --color-release-mvp: #edb377;
-    --color-release-mvp-bg: rgba(223, 160, 74, 0.18);
-    --color-release-full: #a3bcd4;
-    --color-release-full-bg: rgba(163, 188, 212, 0.16);
+    --color-accent-ink: #0a0a0a;
+    --color-milestone: #fbbf24;
+    --color-summary: #60a5fa;
+    --color-summary-fill: #3b82f6;
+    --color-danger: #f87171;
+    --color-weekend: rgba(255, 255, 255, 0.035);
+    --color-weekend-stripe: rgba(255, 255, 255, 0.07);
+    --color-grid-line: rgba(255, 255, 255, 0.055);
+    --color-row-hover: rgba(255, 255, 255, 0.045);
+    --color-summary-ink: #0a0a0a;
+    --color-epic-row: rgba(96, 165, 250, 0.12);
+    --color-epic-rail: #60a5fa;
+    --color-story-row: rgba(165, 160, 250, 0.12);
+    --color-story-rail: #a5a0fa;
+    --color-release-mvp: #fcd34d;
+    --color-release-mvp-bg: rgba(251, 191, 36, 0.16);
+    --color-release-full: #cbd5e1;
+    --color-release-full-bg: rgba(148, 163, 184, 0.16);
     /* the pair inverts here: the body is the deeper of the two and `-deep`
        (progress, and the grid's type icon) is the brighter one */
-    --color-type-backend: #2b5099;
-    --color-type-backend-deep: #6ea2f8;
-    --color-type-frontend: #14646a;
-    --color-type-frontend-deep: #45c8d0;
-    --color-type-design: #4e3a96;
-    --color-type-design-deep: #a98ceb;
-    --color-type-testing: #1c6340;
-    --color-type-testing-deep: #4fc98a;
-    --color-type-task: #3c4d5c;
-    --color-type-task-deep: #8fa8bd;
-    --color-status-todo: #92a6a8;
-    --color-status-todo-bg: rgba(146, 166, 168, 0.14);
-    --color-status-progress: #6fa8ff;
-    --color-status-progress-bg: rgba(111, 168, 255, 0.16);
-    --color-status-done: #46c592;
-    --color-status-done-bg: rgba(70, 197, 146, 0.16);
-    --color-link: #6f8487;
-    --who-bg: 28% 26%;
-    --who-fg: 60% 76%;
-    --color-glass-edge: rgba(255, 255, 255, 0.08);
-    --color-scrim: rgba(0, 0, 0, 0.58);
+    --color-type-backend: #1e40af;
+    --color-type-backend-deep: #60a5fa;
+    --color-type-frontend: #0f766e;
+    --color-type-frontend-deep: #2dd4bf;
+    --color-type-design: #6b21a8;
+    --color-type-design-deep: #c084fc;
+    --color-type-testing: #15803d;
+    --color-type-testing-deep: #4ade80;
+    --color-type-task: #475569;
+    --color-type-task-deep: #94a3b8;
+    --color-status-todo: #a1a1a1;
+    --color-status-todo-bg: rgba(255, 255, 255, 0.08);
+    --color-status-progress: #60a5fa;
+    --color-status-progress-bg: rgba(96, 165, 250, 0.16);
+    --color-status-done: #4ade80;
+    --color-status-done-bg: rgba(74, 222, 128, 0.16);
+    --color-link: #8a8a8a;
+    --who-bg: 30% 26%;
+    --who-fg: 60% 80%;
+    --color-glass-edge: rgba(255, 255, 255, 0.09);
+    --color-scrim: rgba(0, 0, 0, 0.65);
     --shadow-pop: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 16px rgba(0, 0, 0, 0.35);
     --shadow-material: 0 2px 6px rgba(0, 0, 0, 0.34), 0 14px 38px rgba(0, 0, 0, 0.5);
     --shadow-modal: 0 12px 32px rgba(0, 0, 0, 0.45), 0 32px 80px rgba(0, 0, 0, 0.55);
   }
 }
 :root[data-theme="dark"] {
-  --color-ground: #0e1517;
-  --color-surface: #151f22;
-  --color-surface-alt: #1a262a;
-  --color-surface-hover: #202e32;
-  --color-ink: #e3ebeb;
-  --color-muted: #8fa3a5;
-  --color-faint: #6c8083;
-  --color-line: #27363a;
-  --color-line-soft: #223034;
+  /* The reference is dark-only, and these are the values read off it: the same
+     zero-hue neutral ramp, a near-black ground, and separators that are
+     translucent WHITE over it rather than a lighter grey.
+       oklch(0.145 0 0)     → #0a0a0a  ground
+       oklch(0.205 0 0)     → #1a1a1a  raised surface
+       oklch(0.269 0 0)     → #242424  alt surface
+       oklch(0.985 0 0)     → #fafafa  foreground
+       oklch(0.708 0 0)     → #a1a1a1  muted foreground
+       oklch(1 0 0 / 0.1)   → the border
+       oklch(1 0 0 / 0.045) → the subtle fill                                */
+  --color-ground: #0a0a0a;
+  --color-surface: #1a1a1a;
+  --color-surface-alt: #242424;
+  --color-surface-hover: rgba(255, 255, 255, 0.07);
+  --color-ink: #fafafa;
+  --color-muted: #a1a1a1;
+  --color-faint: #737373;
+  --color-line: rgba(255, 255, 255, 0.1);
+  --color-line-soft: rgba(255, 255, 255, 0.06);
   --color-accent: #4bb3bb;
   --color-accent-hover: rgba(75, 179, 187, 0.14);
-  --color-accent-selected: #1d3a3e;
-  --color-accent-ink: #0b1416;
-  --color-milestone: #dfa04a;
-  --color-summary: #5b8def;
-  --color-summary-fill: #3f6fd0;
-  --color-danger: #e07a72;
-  --color-weekend: rgba(143, 163, 165, 0.05);
-  --color-weekend-stripe: rgba(143, 163, 165, 0.075);
-  --color-grid-line: #1e2b2f;
-  --color-row-hover: rgba(227, 235, 235, 0.045);
-  --color-summary-ink: #0b1416;
-  --color-epic-row: rgba(91, 141, 239, 0.1);
-  --color-epic-rail: #5b8def;
-  --color-story-row: rgba(154, 139, 234, 0.11);
-  --color-story-rail: #9a8bea;
-  --color-release-mvp: #edb377;
-  --color-release-mvp-bg: rgba(223, 160, 74, 0.18);
-  --color-release-full: #a3bcd4;
-  --color-release-full-bg: rgba(163, 188, 212, 0.16);
-  --color-type-backend: #2b5099;
-  --color-type-backend-deep: #6ea2f8;
-  --color-type-frontend: #14646a;
-  --color-type-frontend-deep: #45c8d0;
-  --color-type-design: #4e3a96;
-  --color-type-design-deep: #a98ceb;
-  --color-type-testing: #1c6340;
-  --color-type-testing-deep: #4fc98a;
-  --color-type-task: #3c4d5c;
-  --color-type-task-deep: #8fa8bd;
-  --color-status-todo: #92a6a8;
-  --color-status-todo-bg: rgba(146, 166, 168, 0.14);
-  --color-status-progress: #6fa8ff;
-  --color-status-progress-bg: rgba(111, 168, 255, 0.16);
-  --color-status-done: #46c592;
-  --color-status-done-bg: rgba(70, 197, 146, 0.16);
-  --color-link: #6f8487;
-  --who-bg: 28% 26%;
-  --who-fg: 60% 76%;
-  --color-glass-edge: rgba(255, 255, 255, 0.08);
-  --color-scrim: rgba(0, 0, 0, 0.58);
+  --color-accent-ink: #0a0a0a;
+  --color-milestone: #fbbf24;
+  --color-summary: #60a5fa;
+  --color-summary-fill: #3b82f6;
+  --color-danger: #f87171;
+  --color-weekend: rgba(255, 255, 255, 0.035);
+  --color-weekend-stripe: rgba(255, 255, 255, 0.07);
+  --color-grid-line: rgba(255, 255, 255, 0.055);
+  --color-row-hover: rgba(255, 255, 255, 0.045);
+  --color-summary-ink: #0a0a0a;
+  --color-epic-row: rgba(96, 165, 250, 0.12);
+  --color-epic-rail: #60a5fa;
+  --color-story-row: rgba(165, 160, 250, 0.12);
+  --color-story-rail: #a5a0fa;
+  --color-release-mvp: #fcd34d;
+  --color-release-mvp-bg: rgba(251, 191, 36, 0.16);
+  --color-release-full: #cbd5e1;
+  --color-release-full-bg: rgba(148, 163, 184, 0.16);
+  /* the pair inverts here: the body is the deeper of the two and `-deep`
+     (progress, and the grid's type icon) is the brighter one */
+  --color-type-backend: #1e40af;
+  --color-type-backend-deep: #60a5fa;
+  --color-type-frontend: #0f766e;
+  --color-type-frontend-deep: #2dd4bf;
+  --color-type-design: #6b21a8;
+  --color-type-design-deep: #c084fc;
+  --color-type-testing: #15803d;
+  --color-type-testing-deep: #4ade80;
+  --color-type-task: #475569;
+  --color-type-task-deep: #94a3b8;
+  --color-status-todo: #a1a1a1;
+  --color-status-todo-bg: rgba(255, 255, 255, 0.08);
+  --color-status-progress: #60a5fa;
+  --color-status-progress-bg: rgba(96, 165, 250, 0.16);
+  --color-status-done: #4ade80;
+  --color-status-done-bg: rgba(74, 222, 128, 0.16);
+  --color-link: #8a8a8a;
+  --who-bg: 30% 26%;
+  --who-fg: 60% 80%;
+  --color-glass-edge: rgba(255, 255, 255, 0.09);
+  --color-scrim: rgba(0, 0, 0, 0.65);
   --shadow-pop: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 16px rgba(0, 0, 0, 0.35);
   --shadow-material: 0 2px 6px rgba(0, 0, 0, 0.34), 0 14px 38px rgba(0, 0, 0, 0.5);
   --shadow-modal: 0 12px 32px rgba(0, 0, 0, 0.45), 0 32px 80px rgba(0, 0, 0, 0.55);
@@ -371,6 +432,19 @@
   .press:active { transform: scale(0.97); }
   /* small icon-sized targets need a larger ratio to read as the same push */
   .press-sm:active { transform: scale(0.9); }
+
+  /* ---- the save pill's exit -------------------------------------------
+     "All changes saved" is an event, not a label: it reports that a save
+     landed and then leaves the line to the totals. It goes on the exit curve
+     rather than the entrance one — the mirror pair, same as every other
+     surface that leaves — and it is a fade, which is exactly what the
+     reduced-motion block below already prefers, so it needs no exception
+     there. */
+  .save-pill {
+    opacity: 1;
+    transition: opacity var(--dur-exit) var(--ease-exit);
+  }
+  .save-pill-out { opacity: 0; }
 
   /* ---- §12 Materials --------------------------------------------------
      Two weights. Chrome is the thin one (the topbar); pop is the thick one

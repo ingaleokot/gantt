@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ArrowRight, CopySimple, Plus, SignOut, TrashSimple } from "@phosphor-icons/react";
 import { signOut } from "../auth/api/auth";
-import { useStore } from "./store";
+import { useSavePhase, useStore } from "./store";
 import { formatRelease, formatSpan, spanDays, summarizeProject } from "./summary";
 import type { ProjectSummary } from "./summary";
 import type { StoreProject } from "../../lib/db";
@@ -270,9 +270,19 @@ export default function ProjectsPage() {
     await navigate({ to: "/login", replace: true });
   }, [st.flushSave, navigate]);
 
-  const statusText = {
-    idle: "", saving: "Saving…", saved: "Saved · Supabase", local: "Not saved — Supabase unavailable",
-  }[st.status];
+  /* the same pill as the editor's, from the same rule: an event that appears
+     after a write the user caused and then settles, rather than a permanent
+     "Saved · Supabase" label naming the backend. No `gate` is needed here —
+     nothing writes when this screen mounts, so every save it reports is one
+     of its own create / rename / duplicate / delete actions. */
+  const savePhase = useSavePhase(st.status);
+  const failed = st.status === "local";
+  const statusText = failed ? "Not saved" : {
+    idle: "", saving: "Saving…", saved: "All changes saved", leaving: "All changes saved",
+  }[savePhase];
+  const statusTitle = failed
+    ? "Not saved — Supabase unavailable" + (st.error ? " · " + st.error : "")
+    : savePhase === "saving" ? "Saving your changes…" : "Every change you have made is saved";
   /* the store reports the mutation's own failure, and the page catches the
      same rejection — `seen` is what keeps a failed create or copy from being
      said twice. The page notice still carries what the store cannot: the
@@ -306,12 +316,25 @@ export default function ProjectsPage() {
             </span>
           )}
         </div>
+        {/* the same live region the editor's pill carries: saving, saved and
+            NOT saved were all silent for a screen-reader user, who got no
+            signal at all that a write had failed */}
         {statusText && (
           <span
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            title={statusTitle}
+            /* literal class strings per branch — never concatenated, or the
+               scanner loses them in the production build */
             className={
-              st.status === "saved"
-                ? "rounded-full border border-transparent bg-accent-hover px-2.5 py-[0.1875rem] text-mini whitespace-nowrap text-accent"
-                : "rounded-full border border-line bg-surface px-2.5 py-[0.1875rem] text-mini whitespace-nowrap text-muted"
+              failed
+                ? "save-pill rounded-full border border-danger bg-surface px-2.5 py-[0.1875rem] text-mini font-semibold whitespace-nowrap text-danger"
+                : savePhase === "leaving"
+                  ? "save-pill save-pill-out rounded-full border border-transparent bg-accent-hover px-2.5 py-[0.1875rem] text-mini whitespace-nowrap text-accent"
+                  : savePhase === "saved"
+                    ? "save-pill rounded-full border border-transparent bg-accent-hover px-2.5 py-[0.1875rem] text-mini whitespace-nowrap text-accent"
+                    : "save-pill rounded-full border border-line bg-surface px-2.5 py-[0.1875rem] text-mini whitespace-nowrap text-muted"
             }
           >{statusText}</span>
         )}

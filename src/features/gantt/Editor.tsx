@@ -6,10 +6,10 @@ import { Willow as GridWillow } from "@svar-ui/react-grid";
 import { Popover } from "@ark-ui/react/popover";
 import { Portal } from "@ark-ui/react/portal";
 import { Link } from "@tanstack/react-router";
-import { CaretDown, CaretLeft, Check, DownloadSimple, Funnel, ShareNetwork, SignOut, Users, X } from "@phosphor-icons/react";
+import { ArrowArcLeft, ArrowArcRight, CaretDown, CaretLeft, Check, DownloadSimple, Funnel, ShareNetwork, SignOut, Trash, Users, X } from "@phosphor-icons/react";
 import { buildGanttPdf } from "./pdf";
 import type { Person, StoreLink, StoreProject, StoreTask, TaskId } from "../../lib/db";
-import { uid, useStore } from "../projects/store";
+import { uid, useSavePhase, useStore } from "../projects/store";
 import { setGlyph, type GlyphHost } from "./icons";
 import { installWxiMasks } from "./lib/wxi-masks";
 import { trackerId } from "./lib/tracker";
@@ -34,6 +34,18 @@ import type { FilterRow, FilterState, ReleaseTotals } from "./lib/taxonomy";
 installWxiMasks();
 
 const DAY = 24 * 60 * 60 * 1000;
+
+/* The clipboard can refuse (an insecure origin, a denied permission, a browser
+   that never had execCommand). The Copy button then tells the user which keys
+   to press instead — and which keys those are is not the same everywhere, so
+   it is read off the platform rather than assuming a Mac. */
+/* one chip in the header's alert row. `text` is the sentence the user can act
+   on; `detail` is the technical string behind it, which goes in the tooltip
+   rather than on screen. */
+interface Alert { key: string; text: string; detail?: string; dismiss?: () => void }
+
+const COPY_KEYS = typeof navigator !== "undefined"
+  && /Mac|iPhone|iPad|iPod/.test(navigator.userAgent) ? "\u2318C" : "Ctrl+C";
 
 /* ---------- library types we have to narrow ----------
    IApi declares getTask as ITask (every field optional), but the store hands
@@ -182,6 +194,14 @@ const COLUMNS: IColumnConfig[] = [
      alone read as duration. The arithmetic is untouched. */
   { id: "hours", header: "Effort h", width: 84, align: "center", sort: true, editor: "text" },
   { id: "days", header: "Effort d", width: 78, align: "center", sort: true, editor: "text" },
+  /* The "+" column: a bare <i> per row and a bare <i> in the header, with no
+     name, no tooltip and nothing in the accessibility tree — a user had to
+     click one to find out what it did. `header` is NOT the fix: SVAR
+     special-cases this column (`wx-action`) and renders its own "+" in the
+     header cell instead of the text, so the header is itself a button. The
+     tagger names both — each row's icon says which row it will add under, the
+     header's says it adds at the end — and gives them `role="button"` and the
+     grid's roving tab stop. */
   { id: "add-task", header: "", width: 37, align: "center", sort: false, resize: false },
 ];
 
@@ -225,14 +245,37 @@ function scheduleFromHours(hours: number | undefined, startLike: Date | undefine
   return { hours: h, days, start, end, duration: Math.round((+end - +start) / DAY) };
 }
 
+/* `title` is not decoration here. For `comp: "icon"` the toolbar renders a
+   <button> whose only child is an <i>, and it forwards exactly one of these
+   fields to the DOM — `title`. `menuText` and `text` are read only by the
+   overflow menu, which this configuration never shows, so Edit / Delete /
+   Move up / Move down used to render as four buttons with `title=""`: no
+   tooltip for a mouse, no accessible name for a screen reader, and the
+   shortcuts the config means to advertise invisible. The tagger stamps the
+   same string onto `aria-label` as well, because the accessible-name fallback
+   to `title` only applies while the button has no text content, and the
+   library renders a `" "` child that could be read as content. */
 const TOOLBAR_ITEMS = [
-  { id: "add-task", comp: "button", icon: "wxi-plus", text: "New task", type: "primary" },
-  { id: "edit-task", comp: "icon", icon: "wxi-edit", menuText: "Edit", text: "Ctrl+E" },
-  { id: "delete-task", comp: "icon", icon: "wxi-delete", menuText: "Delete", text: "Ctrl+D, Backspace" },
+  { id: "add-task", comp: "button", icon: "wxi-plus", text: "New task", type: "primary",
+    title: "Add a task to the end of the list" },
+  { id: "edit-task", comp: "icon", icon: "wxi-edit", menuText: "Edit", text: "Ctrl+E",
+    title: "Edit the selected row (Ctrl+E)" },
+  { id: "delete-task", comp: "icon", icon: "wxi-delete", menuText: "Delete", text: "Ctrl+D, Backspace",
+    title: "Delete the selected row (Ctrl+D or Backspace)" },
   { comp: "separator" },
-  { id: "move-task:up", comp: "icon", icon: "wxi-angle-up", menuText: "Move up" },
-  { id: "move-task:down", comp: "icon", icon: "wxi-angle-down", menuText: "Move down" },
+  { id: "move-task:up", comp: "icon", icon: "wxi-angle-up", menuText: "Move up",
+    title: "Move the selected row up" },
+  { id: "move-task:down", comp: "icon", icon: "wxi-angle-down", menuText: "Move down",
+    title: "Move the selected row down" },
 ];
+/* what the tagger copies onto aria-label, keyed by the glyph the button wears */
+const TOOLBAR_LABELS: Record<string, string> = {
+  "wxi-plus": "Add a task to the end of the list",
+  "wxi-edit": "Edit the selected row (Ctrl+E)",
+  "wxi-delete": "Delete the selected row (Ctrl+D or Backspace)",
+  "wxi-angle-up": "Move the selected row up",
+  "wxi-angle-down": "Move the selected row down",
+};
 
 /* "" rather than null: SVAR's select needs a value for the empty choice, and
    db.ts maps anything that is not "mvp"/"full" back to a NULL column.
@@ -266,7 +309,9 @@ const EDITOR_ITEMS = [
     { id: "progress", label: "In progress" },
     { id: "done", label: "Done" },
   ] },
-  { key: "url", comp: "text", label: "Link (e.g. Yandex Tracker)", config: { placeholder: "https://tracker.yandex.com/PRODUCT-123" } },
+  /* just "Link". The placeholder already carries the example, and a field
+     label is not the place to name one tracker out of all of them. */
+  { key: "url", comp: "text", label: "Link", config: { placeholder: "https://tracker.yandex.com/PRODUCT-123" } },
   { key: "start", comp: "date", label: "Start date", config: { format: "%d-%m-%Y" }, isHidden: (t: ITask) => t.type === "summary" },
   /* effort, not elapsed time — 7 h of effort is one working day of it */
   { key: "hours", comp: "counter", label: "Effort (hours of work)", config: { min: 1 }, isHidden: (t: ITask) => !isBar(t) },
@@ -809,11 +854,259 @@ function renderEpicBands(api: GanttApi) {
   }
   if (layer.__html !== html) { layer.innerHTML = html; layer.__html = html; }
 }
+/* ---------- what a delete actually costs ----------
+   `tasks.parent_id` is ON DELETE CASCADE, so deleting an epic takes every
+   story, task and milestone under it — and every link attached to any of them
+   — with it. The widget asked for none of that out loud: one click on the
+   trash removed a container and its whole subtree, silently and permanently,
+   while deleting a PROJECT armed a two-step confirm. This is what lets the
+   editor say the same sentence the projects list says.
+
+   It is a pure read of the serialized tree: no exec, no event, no write. */
+export interface DeletionCost {
+  id: TID;
+  name: string;
+  /* the tier of the row itself, for the verb: epic / story / task / milestone */
+  tier: string;
+  rows: number;      /* descendants, not counting the row itself */
+  tasks: number;
+  epics: number;
+  stories: number;
+  milestones: number;
+  links: number;
+}
+function deletionCost(api: GanttApi, id: TID): DeletionCost | null {
+  let list: StoreTask[] = [];
+  let linkList: StoreLink[] = [];
+  try {
+    list = serializeSide(api, "tasks");
+    linkList = serializeSide(api, "links");
+  } catch (e) { return null; }
+  const row = list.find((t) => String(t.id) === String(id));
+  if (!row) return null;
+  const kids: Record<string, StoreTask[]> = {};
+  list.forEach((t) => {
+    const k = String(t.parent === undefined || t.parent === null ? 0 : t.parent);
+    (kids[k] = kids[k] || []).push(t);
+  });
+  const doomed = new Set<string>([String(row.id)]);
+  let tasks = 0, epics = 0, stories = 0, milestones = 0;
+  const walk = (parent: StoreTask) => {
+    (kids[String(parent.id)] || []).forEach((c) => {
+      doomed.add(String(c.id));
+      const ty = c.type || "task";
+      if (ty === "story") stories++;
+      else if (isTierType(ty)) epics++;
+      else if (ty === "milestone") milestones++;
+      else tasks++;
+      walk(c);
+    });
+  };
+  walk(row);
+  const links = linkList.filter(
+    (l) => doomed.has(String(l.source)) || doomed.has(String(l.target)),
+  ).length;
+  return {
+    id,
+    name: typeof row.text === "string" && row.text ? row.text : "this row",
+    tier: effectiveType(row.type, undefined),
+    rows: doomed.size - 1,
+    tasks, epics, stories, milestones, links,
+  };
+}
+/* the noun for the row itself — "epic", not "summary" */
+function tierNoun(tier: string): string {
+  if (tier === "summary") return "epic";
+  if (tier === "story") return "story";
+  if (tier === "milestone") return "milestone";
+  return "task";
+}
+/* "and everything in it \u2014 4 rows, including 2 tasks and 1 story" */
+function costSentence(c: DeletionCost): string {
+  if (!c.rows) {
+    return c.links
+      ? "Its " + c.links + (c.links === 1 ? " link" : " links") + " will go too."
+      : "";
+  }
+  const parts: string[] = [];
+  if (c.tasks) parts.push(c.tasks + (c.tasks === 1 ? " task" : " tasks"));
+  if (c.stories) parts.push(c.stories + (c.stories === 1 ? " story" : " stories"));
+  if (c.epics) parts.push(c.epics + (c.epics === 1 ? " epic" : " epics"));
+  if (c.milestones) parts.push(c.milestones + (c.milestones === 1 ? " milestone" : " milestones"));
+  const inner = parts.length
+    ? ", including " + (parts.length > 1
+        ? parts.slice(0, -1).join(", ") + " and " + parts[parts.length - 1]
+        : parts[0])
+    : "";
+  const links = c.links ? ", and " + c.links + (c.links === 1 ? " link" : " links") : "";
+  return "Everything inside it goes too \u2014 " + c.rows + (c.rows === 1 ? " row" : " rows") + inner + links + ".";
+}
+
+/* ---------- names for the four toolbar buttons the library leaves bare ------
+   `title` comes from the item config (see TOOLBAR_ITEMS); this adds the
+   matching `aria-label`, because the accessible-name fallback to `title` only
+   holds while the button has no text content and the library renders a `" "`
+   child. Append-only in spirit: it sets attributes on nodes the library owns
+   and inserts nothing. */
+function labelToolbarButtons() {
+  document.querySelectorAll<HTMLElement>(".toolbar-row .wx-button").forEach((btn) => {
+    const icon = btn.querySelector("i");
+    if (!icon) return;
+    let label: string | undefined;
+    for (const cls of Array.from(icon.classList)) {
+      if (TOOLBAR_LABELS[cls]) { label = TOOLBAR_LABELS[cls]; break; }
+    }
+    if (!label) return;
+    if (btn.getAttribute("aria-label") !== label) btn.setAttribute("aria-label", label);
+    if (!btn.title) btn.title = label;
+  });
+}
+
+/* Edit / Delete / Move up / Move down are mounted and unmounted by the toolbar
+   as the SELECTION changes, and the toolbar row sits outside `.gantt-holder` —
+   which is what the row tagger's observer watches. So it gets a small observer
+   of its own rather than widening that one: this does nothing but re-stamp the
+   names, and only when the toolbar's own children move. */
+let toolbarObserver: MutationObserver | null = null;
+function watchToolbar() {
+  if (toolbarObserver) { toolbarObserver.disconnect(); toolbarObserver = null; }
+  const row = document.querySelector(".toolbar-row");
+  if (!row) return;
+  toolbarObserver = new MutationObserver(() => {
+    if (toolbarObserver) toolbarObserver.takeRecords();
+    labelToolbarButtons();
+  });
+  toolbarObserver.observe(row, { childList: true, subtree: true });
+  labelToolbarButtons();
+}
+
+/* the "+" in the Add column's HEADER is a control of its own — it appends a
+   task at the end of the list — and shipped with no name at all */
+function labelAddColumnHeader() {
+  const icon = document.querySelector<HTMLElement>(
+    '.gantt-holder [data-header-id=":add-task"] i',
+  );
+  if (!icon || icon.getAttribute("aria-label")) return;
+  const label = "Add a task at the end of the list";
+  icon.setAttribute("role", "button");
+  icon.setAttribute("tabindex", "0");
+  icon.setAttribute("aria-label", label);
+  icon.title = label;
+  icon.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); icon.click(); }
+  });
+}
+
+/* ---------- keyboard reach into a grid the library made mouse-only ----------
+   Edit, Delete, Move up and Move down only light up once a row is SELECTED,
+   and selection was a click — so Move up and Move down were unreachable by
+   keyboard entirely. The rows already carry `tabindex="-1"`, so the missing
+   piece is a roving tab stop and arrow-key movement, which is what this and
+   `rowKeyHandler` below add. One tab stop for the whole grid (the selected
+   row, or the first row when nothing is selected), never one per row.
+
+   It sets attributes and listens; it inserts no nodes and rewrites no
+   library-rendered content. */
+function rovingRow(row: HTMLElement, active: boolean) {
+  const want = active ? "0" : "-1";
+  if (row.getAttribute("tabindex") !== want) row.setAttribute("tabindex", want);
+  /* the "+" cell rides the same tab stop, so the whole grid costs two of them
+     rather than two per row */
+  const add = row.querySelector<HTMLElement>('[data-col-id=":add-task"] i');
+  if (add && add.getAttribute("tabindex") !== want) add.setAttribute("tabindex", want);
+}
+/* installed once per widget mount by watchRowTags, removed by the next one */
+let rowKeyTarget: HTMLElement | null = null;
+let rowKeyHandler: ((e: KeyboardEvent) => void) | null = null;
+let rowFocusHandler: ((e: FocusEvent) => void) | null = null;
+function gridRows(): HTMLElement[] {
+  return Array.from(
+    document.querySelectorAll<HTMLElement>(".gantt-holder .wx-row[data-id]"),
+  ).filter((r) => r.querySelector('[data-col-id=":text"]'));
+}
+function taskIdOfRow(row: HTMLElement): string | number | null {
+  const raw = row.getAttribute("data-id") || "";
+  const id = raw.startsWith(":") ? raw.slice(1) : raw;
+  if (!id) return null;
+  return /^\d+$/.test(id) ? Number(id) : id;
+}
+function installRowKeys(api: GanttApi) {
+  const target = document.querySelector<HTMLElement>(".gantt-holder");
+  if (rowKeyTarget && rowKeyHandler) rowKeyTarget.removeEventListener("keydown", rowKeyHandler);
+  if (rowKeyTarget && rowFocusHandler) rowKeyTarget.removeEventListener("focusin", rowFocusHandler);
+  rowKeyTarget = target;
+  if (!target) { rowKeyHandler = null; rowFocusHandler = null; return; }
+
+  /* focusing a row selects it — that is the whole point: the toolbar's Edit,
+     Delete, Move up and Move down read the selection, so without this half the
+     toolbar stays disabled for anyone not using a mouse. `select-task` is not
+     in `finalEvents`, so it schedules no save and takes no undo snapshot. */
+  rowFocusHandler = (e) => {
+    const el = e.target;
+    if (!(el instanceof HTMLElement)) return;
+    const row = el.classList.contains("wx-row") ? el : null;
+    if (!row) return;
+    const id = taskIdOfRow(row);
+    if (id === null) return;
+    try { api.exec("select-task", { id }); } catch (err) {}
+  };
+  rowKeyHandler = (e) => {
+    const el = e.target;
+    if (!(el instanceof HTMLElement)) return;
+    /* an editable cell, the Who button, the pencil, a tracker link: those own
+       their own keys */
+    if (!el.classList.contains("wx-row")) return;
+    const rows = gridRows();
+    const i = rows.indexOf(el);
+    if (i < 0) return;
+    const select = (row: HTMLElement) => {
+      const id = taskIdOfRow(row);
+      if (id === null) return;
+      try { api.exec("select-task", { id }); } catch (err) {}
+    };
+    const go = (j: number) => {
+      const next = rows[Math.max(0, Math.min(rows.length - 1, j))];
+      if (!next) return;
+      e.preventDefault();
+      next.setAttribute("tabindex", "0");
+      next.focus();
+      /* select here as well as in `focusin`. Moving with the arrows is the
+         path that has to work, and a programmatic .focus() does not always
+         produce a focus event — a background or unfocused document swallows
+         it — so the selection cannot be left to depend on one. */
+      select(next);
+    };
+    if (e.key === "ArrowDown") return go(i + 1);
+    if (e.key === "ArrowUp") return go(i - 1);
+    if (e.key === "Home") return go(0);
+    if (e.key === "End") return go(rows.length - 1);
+    if (e.key === " ") { e.preventDefault(); select(el); return; }
+    if (e.key === "Enter") {
+      const id = taskIdOfRow(el);
+      if (id === null) return;
+      e.preventDefault();
+      select(el);
+      try { api.exec("show-editor", { id }); } catch (err) {}
+    }
+  };
+  target.addEventListener("keydown", rowKeyHandler);
+  target.addEventListener("focusin", rowFocusHandler);
+}
+
 function watchRowTags(api: GanttApi) {
   if (rowTagObserver) { rowTagObserver.disconnect(); rowTagObserver = null; }
   let raf = 0;
   const tag = () => {
     raf = 0;
+    /* which row owns the grid's single tab stop: the selected one, or the
+       first if nothing is selected */
+    let selectedId = "";
+    try {
+      const sel = api.getState().selected;
+      if (sel && sel.length) selectedId = String(sel[sel.length - 1]);
+    } catch (e) {}
+    let rowIndex = -1;
+    let sawSelected = false;
     document.querySelectorAll<HTMLElement>(".gantt-holder .wx-row[data-id]").forEach((row) => {
       const raw = row.getAttribute("data-id") || "";
       const id = raw.startsWith(":") ? raw.slice(1) : raw;
@@ -821,6 +1114,31 @@ function watchRowTags(api: GanttApi) {
       try { t = api.getTask(id); } catch (e) {}
       if (!t && /^\d+$/.test(id)) { try { t = api.getTask(Number(id)); } catch (e) {} }
       if (!t) return;
+      /* the roving tab stop. `rowIndex` counts only GRID rows — the chart's
+         own rows match the same selector and have no `:text` cell. */
+      if (row.querySelector('[data-col-id=":text"]')) {
+        rowIndex++;
+        const isSel = selectedId !== "" && String(t.id) === selectedId;
+        if (isSel) sawSelected = true;
+        rovingRow(row, isSel || (selectedId === "" && rowIndex === 0));
+      }
+      /* the "+" cell: a labelled button rather than an anonymous glyph */
+      const addCell = row.querySelector<HTMLElement>('[data-col-id=":add-task"] i');
+      if (addCell) {
+        const name = typeof t.text === "string" && t.text ? t.text : "this row";
+        const label = "Add a task under " + name;
+        if (addCell.getAttribute("role") !== "button") addCell.setAttribute("role", "button");
+        if (addCell.getAttribute("aria-label") !== label) {
+          addCell.setAttribute("aria-label", label);
+          addCell.title = label;
+        }
+        if (!(addCell as GlyphHost & { __keyed?: boolean }).__keyed) {
+          (addCell as GlyphHost & { __keyed?: boolean }).__keyed = true;
+          addCell.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); addCell.click(); }
+          });
+        }
+      }
       /* the row's real tier, not the widget's coerced one */
       const tier = tierOf(t);
       const nested = !isTierType(tier) && (t.$level || 1) > 1;
@@ -941,8 +1259,14 @@ function watchRowTags(api: GanttApi) {
             host.appendChild(more);
           }
         }
-        const label = assigned.length ? assigned.map((h) => h.name).join(", ") : "Assign people";
-        if (host.title !== label) { host.title = label; host.setAttribute("aria-label", label); }
+        /* The tooltip says who; the accessible name has to say what the
+           control DOES as well. "Inga Kot, button" told a screen-reader user
+           nothing about the picker it opens. */
+        const names = assigned.map((h) => h.name).join(", ");
+        const label = names || "Assign people";
+        const aria = names ? "Assigned to " + names + " \u2014 change" : "Assign people to this row";
+        if (host.title !== label) host.title = label;
+        if (host.getAttribute("aria-label") !== aria) host.setAttribute("aria-label", aria);
         /* the tagger owns this node, so hand React the element itself — the
            Who popover anchors to it through Ark's getAnchorRect */
         host.onclick = (e) => {
@@ -993,6 +1317,12 @@ function watchRowTags(api: GanttApi) {
         };
       }
     });
+    /* the selected row was filtered away or deleted: the grid must not be left
+       with no tab stop at all */
+    if (selectedId !== "" && !sawSelected) {
+      const first = gridRows()[0];
+      if (first) rovingRow(first, true);
+    }
     document.querySelectorAll<HTMLElement>(".gantt-holder .wx-bar[data-task-id]").forEach((bar) => {
       const raw = bar.getAttribute("data-task-id") || "";
       const id = raw.startsWith(":") ? raw.slice(1) : raw;
@@ -1007,6 +1337,8 @@ function watchRowTags(api: GanttApi) {
     });
     syncFoldAllButton(api);
     syncScopeFilterButton();
+    labelToolbarButtons();
+    labelAddColumnHeader();
     /* the arrowhead the connectors point at, and the hint on the two discs a
        link is dragged from — both idempotent, both append-only */
     ensureLinkArrowMarker();
@@ -1018,6 +1350,8 @@ function watchRowTags(api: GanttApi) {
   };
   const sched = () => { if (!raf) raf = requestAnimationFrame(tag); };
   retagHook = sched;
+  installRowKeys(api);
+  watchToolbar();
   const target = document.querySelector(".gantt-holder");
   if (target) {
     rowTagObserver = new MutationObserver(sched);
@@ -1087,6 +1421,9 @@ export default function GanttEditor({
      next to the save status, because "Saved" on its own is a half-truth while
      any of them is true. */
   const [notice, setNotice] = useState<string | null>(null);
+  /* the raw exception behind `notice`, if there was one: the chip says the
+     sentence, the tooltip keeps the detail */
+  const [noticeDetail, setNoticeDetail] = useState<string | null>(null);
   const people = st.people;
   const [newPerson, setNewPerson] = useState("");
   const [picker, setPicker] = useState<Picker | null>(null); /* { taskId, el, rect, ids } */
@@ -1097,10 +1434,37 @@ export default function GanttEditor({
      popover has to be told where it is */
   const [scopePick, setScopePick] = useState<HTMLElement | null>(null);
   const lastScopeRef = useRef<{ el: HTMLElement | null; rect: DOMRect | null }>({ el: null, rect: null });
-  const [copied, setCopied] = useState(false);
+  /* "fail" is a real state, not the absence of "ok": both clipboard paths can
+     refuse, and a Copy button that just stays reading "Copy" is
+     indistinguishable from one that was never clicked */
+  const [copyState, setCopyState] = useState<"idle" | "ok" | "fail">("idle");
   const shareInputRef = useRef<HTMLInputElement>(null);
+  const addPersonRef = useRef<HTMLInputElement>(null);
+  /* the armed confirms. Both follow the projects list's pattern — the
+     destructive step names what it costs, the safe option takes focus, and
+     Escape backs out — because a rule the user learns in one screen has to
+     hold in the others. */
+  const [pendingDelete, setPendingDelete] = useState<DeletionCost | null>(null);
+  const deleteOkRef = useRef<string | null>(null);
+  const keepDeleteRef = useRef<HTMLButtonElement>(null);
+  const [confirmPerson, setConfirmPerson] = useState<string | null>(null);
+  const [addPersonError, setAddPersonError] = useState<string | null>(null);
+  /* undo/redo used to be reachable only by ⌘Z, with no button, no menu and
+     nothing in the accessibility tree — and since nothing confirmed a delete,
+     that invisible shortcut was the app's only safety net and did not exist at
+     all on a touch device. The stacks are refs (they are written from event
+     handlers), so this mirrors their depth into render. */
+  const [hist, setHist] = useState({ u: 0, r: 0 });
   const nameRef = useRef(activeProject().name);
   const clipRef = useRef<Clipboard | null>(null);
+  /* Has the user changed anything this session? The gate on the save pill:
+     merely opening a project fires a write (the roll-up normalises stored
+     rows), and "Saved" on arrival is not a report about anything the user
+     did. `touched()` in the widget's change handler sets it, and deliberately
+     does not while ROLLUP_WRITE is on. The settling itself lives in
+     `useSavePhase` — one definition, shared with the projects list. */
+  const touchedRef = useRef(false);
+  const savePhase = useSavePhase(st.status, touchedRef);
   const undoRef = useRef<string[]>([]);
   const redoRef = useRef<string[]>([]);
   const snapTimer = useRef<number | null>(null);
@@ -1195,12 +1559,19 @@ export default function GanttEditor({
     const p = snapshotActive();
     return JSON.stringify({ t: p.tasks, l: p.links, h: stRef.current.draft.people, n: p.name });
   }, [snapshotActive]);
+  const syncHist = useCallback(() => {
+    setHist((h) => {
+      const u = undoRef.current.length, r = redoRef.current.length;
+      return h.u === u && h.r === r ? h : { u, r };
+    });
+  }, []);
   const seedSnapshot = useCallback(() => {
     const s = serializeActive();
     const u = undoRef.current;
     if (!u.length || u[u.length - 1] !== s) u.push(s);
     if (u.length > 60) u.shift();
-  }, [serializeActive]);
+    syncHist();
+  }, [serializeActive, syncHist]);
   const flushSnapshot = useCallback(() => {
     if (snapTimer.current) { clearTimeout(snapTimer.current); snapTimer.current = null; }
     const s = serializeActive();
@@ -1210,7 +1581,8 @@ export default function GanttEditor({
       redoRef.current = [];
       if (u.length > 60) u.shift();
     }
-  }, [serializeActive]);
+    syncHist();
+  }, [serializeActive, syncHist]);
   const scheduleSnapshot = useCallback(() => {
     clearTimeout(snapTimer.current ?? undefined);
     snapTimer.current = setTimeout(() => { snapTimer.current = null; flushSnapshot(); }, 350);
@@ -1239,6 +1611,27 @@ export default function GanttEditor({
     }
   }, [activeProject]);
 
+  /* The one implementation of a step back and a step forward. The keyboard
+     handler below and the two toolbar buttons both call these, so the shortcut
+     and the button can never come to mean different things. */
+  const doUndo = useCallback(() => {
+    flushSnapshot();
+    const u = undoRef.current, r = redoRef.current;
+    if (u.length < 2) { syncHist(); return; }
+    r.push(u.pop()!);
+    restoreSnapshot(u[u.length - 1]);
+    syncHist();
+  }, [flushSnapshot, restoreSnapshot, syncHist]);
+  const doRedo = useCallback(() => {
+    flushSnapshot();
+    const r = redoRef.current;
+    if (!r.length) { syncHist(); return; }
+    const next = r.pop()!;
+    undoRef.current.push(next);
+    restoreSnapshot(next);
+    syncHist();
+  }, [flushSnapshot, restoreSnapshot, syncHist]);
+
   /* keyboard shortcuts: ⌘/Ctrl+C copy, +X cut, +V paste (into epics), +Z undo, +Shift+Z redo */
   useEffect(() => {
     if (!api) return;
@@ -1255,18 +1648,7 @@ export default function GanttEditor({
 
       if (k === "z") {
         e.preventDefault(); e.stopPropagation();
-        flushSnapshot();
-        const u = undoRef.current, r = redoRef.current;
-        if (e.shiftKey) {
-          if (!r.length) return;
-          const next = r.pop()!;
-          u.push(next);
-          restoreSnapshot(next);
-        } else {
-          if (u.length < 2) return;
-          r.push(u.pop()!);
-          restoreSnapshot(u[u.length - 1]);
-        }
+        if (e.shiftKey) doRedo(); else doUndo();
         return;
       }
       if (k === "c" || k === "x") {
@@ -1303,7 +1685,7 @@ export default function GanttEditor({
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
-  }, [api, projectId, flushSnapshot, restoreSnapshot]);
+  }, [api, projectId, doUndo, doRedo]);
 
   /* editor modal: close (with autosave) on backdrop click; inject an Okay button */
   useEffect(() => {
@@ -1322,25 +1704,102 @@ export default function GanttEditor({
       const side = e.target.closest(".wx-sidearea.wx-pos-right");
       if (side && !e.target.closest(".wx-gantt-editor")) commitAndClose();
     };
-    const ensureOkay = () => {
-      const ed = document.querySelector(".wx-gantt-editor");
-      if (!ed || ed.querySelector(".editor-okay")) return;
+    /* ---------- the editor panel was not a modal at all ----------
+       On open, focus stayed on <body>. There was no role, no aria-modal, the
+       close X had no accessible name, the hours counter's increment and
+       decrement buttons BOTH read aria-label="-", and Escape did nothing — so
+       a keyboard user tabbed straight out behind the panel with no way back or
+       out. All of that is fixed by SETTING ATTRIBUTES on nodes the library
+       rendered and appending one bar, which is the same contract the row
+       tagger keeps: nothing is inserted between React-managed nodes and no
+       library-rendered content is rewritten. */
+    const focusables = (ed: HTMLElement): HTMLElement[] =>
+      Array.from(
+        ed.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((el) => el.offsetParent !== null || el === document.activeElement);
+
+    const ensureEditorChrome = () => {
+      const ed = document.querySelector<HTMLElement>(".wx-gantt-editor");
+      if (!ed) return;
+      if (ed.getAttribute("role") !== "dialog") {
+        ed.setAttribute("role", "dialog");
+        ed.setAttribute("aria-modal", "true");
+        ed.setAttribute("aria-label", "Edit row");
+      }
+      /* the close X: an <i> with a click handler and nothing else. Give it a
+         name, put it in the tab order, and make the keyboard fire it. */
+      const x = ed.querySelector<HTMLElement>(".wxi-close");
+      if (x && !x.getAttribute("aria-label")) {
+        x.setAttribute("role", "button");
+        x.setAttribute("tabindex", "0");
+        x.setAttribute("aria-label", "Close \u2014 your changes are already applied");
+        x.title = "Close (Esc)";
+        x.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); x.click(); }
+        });
+      }
+      /* the counter's two buttons shipped with the SAME aria-label. `hours` is
+         the only `comp: "counter"` in EDITOR_ITEMS, so the field can be named
+         outright rather than guessed at. */
+      const dec = ed.querySelector<HTMLElement>(".wx-btn-dec");
+      if (dec && dec.getAttribute("aria-label") !== "Decrease the effort by an hour") {
+        dec.setAttribute("aria-label", "Decrease the effort by an hour");
+      }
+      const inc = ed.querySelector<HTMLElement>(".wx-btn-inc");
+      if (inc && inc.getAttribute("aria-label") !== "Increase the effort by an hour") {
+        inc.setAttribute("aria-label", "Increase the effort by an hour");
+      }
+      if (ed.querySelector(".editor-okay")) return;
       const bar = document.createElement("div");
       bar.className = "editor-okay-bar";
+      /* "Okay" beside a red Delete read as commit/cancel, which is not what
+         either does: every field applies live and the X keeps the changes too.
+         "Done" describes what the button actually is, and the line above it
+         says so out loud rather than leaving it to be discovered. */
+      const hint = document.createElement("span");
+      hint.className = "editor-okay-hint";
+      hint.textContent = "Changes apply as you make them.";
       const btn = document.createElement("button");
       btn.className = "editor-okay";
       btn.type = "button";
-      btn.textContent = "Okay";
+      btn.textContent = "Done";
       btn.onclick = commitAndClose;
+      bar.appendChild(hint);
       bar.appendChild(btn);
       ed.appendChild(bar);
+      /* focus the first field — the Name text input — once, on open */
+      const first = ed.querySelector<HTMLElement>("input, textarea, select");
+      if (first) setTimeout(() => { if (first.isConnected) first.focus(); }, 0);
     };
+
+    /* Escape closes, Tab stays inside. Both on the bubble phase, so a date
+       picker or a select inside the panel gets first refusal on the key. */
+    const onKey = (e: KeyboardEvent) => {
+      const ed = document.querySelector<HTMLElement>(".wx-gantt-editor");
+      if (!ed) return;
+      if (e.key === "Escape") { e.preventDefault(); commitAndClose(); return; }
+      if (e.key !== "Tab") return;
+      const list = focusables(ed);
+      if (!list.length) return;
+      const first = list[0], last = list[list.length - 1];
+      const active = document.activeElement;
+      if (!(active instanceof HTMLElement) || !ed.contains(active)) {
+        e.preventDefault(); first.focus(); return;
+      }
+      if (e.shiftKey && active === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); }
+    };
+
     document.addEventListener("mousedown", onDown, true);
-    const mo = new MutationObserver(ensureOkay);
+    document.addEventListener("keydown", onKey);
+    const mo = new MutationObserver(ensureEditorChrome);
     mo.observe(document.body, { childList: true, subtree: true });
-    ensureOkay();
+    ensureEditorChrome();
     return () => {
       document.removeEventListener("mousedown", onDown, true);
+      document.removeEventListener("keydown", onKey);
       mo.disconnect();
     };
   }, [api]);
@@ -1349,12 +1808,17 @@ export default function GanttEditor({
   const copyShareLink = async () => {
     let ok = false;
     try { await navigator.clipboard.writeText(shareUrl(projectId)); ok = true; } catch (e) {}
-    if (!ok) {
-      const inp = shareInputRef.current;
-      if (inp) { inp.focus(); inp.select(); try { ok = document.execCommand("copy"); } catch (e) {} }
+    const inp = shareInputRef.current;
+    if (!ok && inp) {
+      inp.focus(); inp.select();
+      try { ok = document.execCommand("copy"); } catch (e) {}
     }
-    setCopied(ok);
-    if (ok) setTimeout(() => setCopied(false), 2500);
+    setCopyState(ok ? "ok" : "fail");
+    /* the failure is not silent any more: the link is left SELECTED and the
+       button says what to press, so the user has something to do about it
+       rather than a button that looks unclicked */
+    if (!ok && inp) { inp.focus(); inp.select(); }
+    if (ok) setTimeout(() => setCopyState("idle"), 2500);
   };
 
   const exportPdf = useCallback(async () => {
@@ -1362,6 +1826,7 @@ export default function GanttEditor({
     const p = snapshotActive();
     setExporting(true);
     setNotice(null);
+    setNoticeDetail(null);
     try {
       /* async now: it fetches jsPDF and the Unicode font on demand */
       const doc = await buildGanttPdf(p.name, p.tasks, p.links);
@@ -1369,9 +1834,13 @@ export default function GanttEditor({
       doc.save(safe + ".pdf"); /* plain browser download */
     } catch (e) {
       /* there is nothing to fall back to, but the button going quiet and
-         nothing arriving is the worst of both — say what happened */
+         nothing arriving is the worst of both — say what happened. The
+         sentence is the one the user can act on; the exception's own message
+         is a technical string and belongs in the tooltip and the console, not
+         in the chip. (The same rule the save pill follows for its error.) */
       console.error("gantt: PDF export failed", e);
-      setNotice("The PDF could not be created: " + (e instanceof Error ? e.message : String(e)));
+      setNotice("The PDF could not be created, so nothing was downloaded. The timeline itself is untouched — try again.");
+      setNoticeDetail(e instanceof Error ? e.message : String(e));
     } finally {
       setExporting(false);
     }
@@ -1406,6 +1875,25 @@ export default function GanttEditor({
       if (t.type === "milestone") return;
       const fixed = scheduleFromHours(t.hours || (t.duration || 1) * HOURS_PER_DAY, t.start || new Date());
       Object.assign(t, fixed);
+    });
+    /* ---------- nothing is deleted without saying what goes with it ------
+       Every route to a deletion ends here: the toolbar trash, Ctrl+D,
+       Backspace, the context menu and the editor modal's red Delete all
+       `exec("delete-task")`. Returning false cancels the action, so the
+       intercept is the one place that can hold it. `deleteOkRef` is the
+       confirmed row's id, set immediately before the re-exec and cleared the
+       moment it is honoured — so a confirm covers exactly one deletion and
+       never leaks into the next. */
+    a.intercept("delete-task", (ev) => {
+      if (deleteOkRef.current !== null && deleteOkRef.current === String(ev.id)) {
+        deleteOkRef.current = null;
+        return true;
+      }
+      const cost = deletionCost(a, ev.id);
+      /* a row we cannot describe is a row we have no business blocking */
+      if (!cost) return true;
+      setPendingDelete(cost);
+      return false;
     });
     a.intercept("update-task", (ev) => {
       const t = ev.task;
@@ -1491,6 +1979,9 @@ export default function GanttEditor({
       "indent-task", "add-link", "update-link", "delete-link", "open-task",
     ];
     const touched = () => {
+      /* the mount's own roll-up write runs inside ROLLUP_WRITE; anything else
+         reaching here is a change the user made */
+      if (!ROLLUP_WRITE) touchedRef.current = true;
       if (!ROLLUP_WRITE) { try { rollupEpics(a); } catch (e) {} }
       scheduleSave();
       scheduleSnapshot();
@@ -1574,7 +2065,29 @@ export default function GanttEditor({
 
   const addPerson = useCallback(() => {
     const name = newPerson.trim();
-    if (!name) return;
+    /* an empty Add used to do nothing and say nothing, which is
+       indistinguishable from a broken button */
+    if (!name) {
+      setAddPersonError("Type a name first.");
+      addPersonRef.current?.focus();
+      return;
+    }
+    /* Two people with exactly the same name are indistinguishable everywhere
+       the app shows them: same initials in the Who column, same generated chip
+       hue (nameHue is a function of the name), same row in the picker. Refuse
+       the exact collision and say why — the fix is a surname, not a second
+       colour system. */
+    const clash = stRef.current.draft.people.some(
+      (h) => (h.name || "").trim().toLowerCase() === name.toLowerCase(),
+    );
+    if (clash) {
+      setAddPersonError(
+        "Someone on the list is already called that — they would share their initials and their chip colour. Add a surname or an initial.",
+      );
+      addPersonRef.current?.focus();
+      return;
+    }
+    setAddPersonError(null);
     /* a discrete act, so pin the state it starts from rather than hoping the
        debounced snapshot already fired */
     flushSnapshot();
@@ -1667,6 +2180,45 @@ export default function GanttEditor({
     if (retagHook) setTimeout(() => retagHook!(), 0);
   }, []);
 
+  /* the armed delete, released. `flushSnapshot` first so ⌘Z comes back to the
+     state before the row went, rather than to whatever the debounce had. */
+  const confirmDelete = useCallback(() => {
+    const c = pendingDelete;
+    setPendingDelete(null);
+    const a = apiRef.current;
+    if (!c || !a) return;
+    flushSnapshot();
+    deleteOkRef.current = String(c.id);
+    try { a.exec("delete-task", { id: c.id }); } catch (e) {}
+    /* if the exec never reached the intercept, do not leave the pass armed */
+    deleteOkRef.current = null;
+  }, [pendingDelete, flushSnapshot]);
+
+  /* focus lands on the SAFE option, and Escape backs out — the same contract
+     the projects list's delete confirm makes */
+  useEffect(() => {
+    if (!pendingDelete) return;
+    keepDeleteRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { e.stopPropagation(); setPendingDelete(null); }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [pendingDelete]);
+
+  /* what removing a person would actually cost, counted across the whole
+     account rather than the open project — which is the part that made it
+     more destructive than anything else in the app */
+  const personUsage = useCallback((id: string) => {
+    let rows = 0, projects = 0;
+    stRef.current.draft.projects.forEach((pr) => {
+      let hit = 0;
+      (pr.tasks || []).forEach((t) => { if (parseAssignees(t.assignees).includes(id)) hit++; });
+      if (hit) { rows += hit; projects++; }
+    });
+    return { rows, projects };
+  }, []);
+
   /* one dimension at a time; the three are ANDed by makeFilter */
   const toggleFilter = (dim: "types" | "releases" | "people", id: string) => {
     const next: FilterState = { types: filter.types, releases: filter.releases, people: filter.people };
@@ -1720,27 +2272,36 @@ export default function GanttEditor({
   /* The pill sits on the quiet second line now, so it says the short thing and
      keeps the sentence in its tooltip — "Saved · Supabase" was 110px of a row
      the project's own name was being clipped out of. */
-  const statusText = {
-    idle: "", saving: "Saving…", saved: "Saved", local: "Not saved",
-  }[st.status];
-  let statusTitle = {
-    idle: "", saving: "Saving to Supabase…", saved: "Saved to Supabase",
-    local: "Not saved — Supabase unavailable",
-  }[st.status];
+  /* It reads off `savePhase`, not `st.status` — see `useSavePhase`, which is
+     where the "appears only after a change the user made, then settles" rule
+     lives, shared with the projects list. The wording is about the work
+     ("All changes saved") rather than the backend; the backend keeps the
+     tooltip. "Not saved" bypasses the phase entirely: a write that failed has
+     to stay on screen whether the user caused it or not. */
+  const failed = st.status === "local";
+  const statusText = failed ? "Not saved" : {
+    idle: "", saving: "Saving…", saved: "All changes saved", leaving: "All changes saved",
+  }[savePhase];
+  let statusTitle = failed ? "Not saved — Supabase unavailable" : {
+    idle: "", saving: "Saving your changes…",
+    saved: "Every change you have made is saved",
+    leaving: "Every change you have made is saved",
+  }[savePhase];
   /* only a failed save belongs on the save pill; a failed create, delete or
      "last opened" write is its own thing and gets its own pill below */
-  if (st.status === "local" && st.error) statusTitle += " · " + st.error;
+  if (failed && st.error) statusTitle += " · " + st.error;
   /* everything the user has to be told, in the order it matters: a write that
      failed, a timeline that moved under them, then anything the editor itself
      could not do */
-  const alerts: { key: string; text: string; dismiss?: () => void }[] = [
+  const alerts: Alert[] = ([
     /* a failed save already reads on the pill above; these are the ones that
        had nowhere to go: a failed create/delete/"last opened" write, a
        timeline that moved elsewhere, and the editor's own failures */
     st.status !== "local" && st.error ? { key: "store", text: st.error } : null,
     st.warning ? { key: "remote", text: st.warning } : null,
-    notice ? { key: "editor", text: notice, dismiss: () => setNotice(null) } : null,
-  ].filter((x): x is { key: string; text: string; dismiss?: () => void } => !!x);
+    notice ? { key: "editor", text: notice, detail: noticeDetail || undefined,
+      dismiss: () => { setNotice(null); setNoticeDetail(null); } } : null,
+  ] as (Alert | null)[]).filter((x): x is Alert => !!x);
 
   return (
     <div className="flex h-full flex-col">
@@ -1797,7 +2358,7 @@ export default function GanttEditor({
                 <button
                   key={a.key}
                   type="button"
-                  title={a.text + " — click to dismiss"}
+                  title={(a.detail ? a.text + " (" + a.detail + ")" : a.text) + " — click to dismiss"}
                   onClick={a.dismiss}
                   className={`press max-w-[24vw] flex-none cursor-pointer overflow-hidden rounded-full border border-danger bg-surface px-2.5 py-[0.1875rem] text-left text-mini text-ellipsis whitespace-nowrap text-danger ${FOCUS}`}
                 >{a.text}</button>
@@ -1806,7 +2367,7 @@ export default function GanttEditor({
                 <span
                   key={a.key}
                   role="status"
-                  title={a.text}
+                  title={a.detail ? a.text + " (" + a.detail + ")" : a.text}
                   className="max-w-[24vw] flex-none overflow-hidden rounded-full border border-danger bg-surface px-2.5 py-[0.1875rem] text-mini text-ellipsis whitespace-nowrap text-danger"
                 >{a.text}</span>
               ),
@@ -1819,15 +2380,28 @@ export default function GanttEditor({
               narrows, so effort and the release split survive down to ~700px
               rather than the whole line disappearing at 1100 as it used to. */}
           <div className="flex min-w-0 items-center gap-x-3 overflow-hidden pl-1.5 text-mini whitespace-nowrap text-muted tabular-nums">
+            {/* The pill was the app's only channel for saving / saved / NOT
+                saved, and it was silent for a screen-reader user — who got no
+                signal at all that their work had failed to persist. There was
+                no aria-live region anywhere in src/. */}
             {statusText && (
               <span
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
                 title={statusTitle}
+                /* literal class strings per branch — never concatenated, or
+                   the scanner loses them in the production build.
+                   `.save-pill` / `.save-pill-out` are the fade, and they are
+                   plain CSS in style.css because the duration is a token. */
                 className={
-                  st.status === "saved"
-                    ? "flex-none text-accent"
-                    : st.status === "local"
-                      ? "flex-none font-semibold text-danger"
-                      : "flex-none text-muted"
+                  failed
+                    ? "save-pill flex-none font-semibold text-danger"
+                    : savePhase === "leaving"
+                      ? "save-pill save-pill-out flex-none text-accent"
+                      : savePhase === "saved"
+                        ? "save-pill flex-none text-accent"
+                        : "save-pill flex-none text-muted"
                 }
               >{statusText}</span>
             )}
@@ -1892,7 +2466,16 @@ export default function GanttEditor({
 
         {/* actions: one group, right-aligned, and none of them ever wraps */}
         <div className="flex flex-none items-center gap-1.5">
-        <Popover.Root positioning={{ placement: "bottom-end", gutter: 8 }}>
+        <Popover.Root
+          positioning={{ placement: "bottom-end", gutter: 8 }}
+          /* THE data-loss trap this app had. Ark focuses the first focusable
+             element, which is the first roster row's NAME input — so someone
+             who clicked People and started typing renamed an existing person,
+             per keystroke, across every project. The caret belongs in the field
+             the button is named after. */
+          initialFocusEl={() => addPersonRef.current}
+          onOpenChange={(e) => { if (!e.open) { setConfirmPerson(null); setAddPersonError(null); } }}
+        >
           <Popover.Trigger className={BTN} title="People on this account">
             <Users size={14} aria-hidden="true" />
             <span className="max-[1080px]:sr-only">People</span>
@@ -1910,6 +2493,40 @@ export default function GanttEditor({
                   <ul className="m-0 mb-2.5 max-h-[240px] list-none overflow-y-auto p-0">
                     {people.map((h) => (
                       <li key={h.id} className="py-[0.1875rem]">
+                        {confirmPerson === h.id ? (
+                          /* Removing a person was the most destructive control in
+                             the app and the only one that asked nothing: it
+                             stripped them from every task in EVERY project. It
+                             is undoable now (the snapshot carries the roster),
+                             but undo only reaches the open project, so the
+                             confirm has to name the whole cost. */
+                          <div className="rounded-lg border border-danger bg-surface-alt p-2.5" role="group" aria-label={"Confirm removing " + h.name}>
+                            <p className="m-0 mb-2 text-mini text-ink">
+                              Remove <strong>{h.name}</strong>
+                              {(() => {
+                                const u = personUsage(h.id);
+                                if (!u.rows) return " from the roster?";
+                                return " \u2014 and unassign them from " + u.rows +
+                                  (u.rows === 1 ? " row" : " rows") +
+                                  (u.projects > 1 ? " across " + u.projects + " projects" : "") + "?";
+                              })()}
+                            </p>
+                            <div className="flex gap-1.5">
+                              <button
+                                type="button"
+                                className={BTN}
+                                ref={(el) => { if (el && confirmPerson === h.id) el.focus(); }}
+                                onClick={() => setConfirmPerson(null)}
+                              >Keep them</button>
+                              <button
+                                type="button"
+                                className={`press cursor-pointer rounded-lg border-0 bg-danger px-3 py-[0.4375rem] font-ui text-small font-semibold text-accent-ink hover:brightness-[1.08] ${FOCUS}`}
+                                onClick={() => { setConfirmPerson(null); removePerson(h.id); }}
+                              >Remove</button>
+                            </div>
+                          </div>
+                        ) : (
+                        <>
                         <div className="flex items-center gap-2">
                           {/* .who-chip is styled unscoped in wx-overrides.css, so the pill
                               looks identical here, in the Who picker and in the grid */}
@@ -1924,7 +2541,8 @@ export default function GanttEditor({
                             type="button"
                             className={`press press-sm inline-flex h-[22px] w-[22px] flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent p-0 leading-none text-faint hover:bg-surface-hover hover:text-danger ${FOCUS}`}
                             title={"Remove " + h.name}
-                            onClick={() => removePerson(h.id)}
+                            aria-label={"Remove " + h.name + " from the roster"}
+                            onClick={() => setConfirmPerson(h.id)}
                           ><X size={14} aria-hidden="true" /></button>
                         </div>
                         {/* the role, on its own line and aligned under the name — the
@@ -1951,27 +2569,39 @@ export default function GanttEditor({
                             className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 text-faint"
                           />
                         </div>
+                        </>
+                        )}
                       </li>
                     ))}
                   </ul>
                 )}
                 <div className="flex gap-1.5">
                   <input
+                    ref={addPersonRef}
                     className={POP_INPUT}
                     value={newPerson}
                     placeholder="Add a person"
-                    onChange={(e) => setNewPerson(e.target.value)}
+                    aria-label="Add a person"
+                    aria-invalid={addPersonError ? true : undefined}
+                    onChange={(e) => { setNewPerson(e.target.value); if (addPersonError) setAddPersonError(null); }}
                     onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addPerson(); } }}
                   />
                   <button type="button" className={POP_ACTION} onClick={addPerson}>Add</button>
                 </div>
+                {addPersonError && (
+                  <p className="m-0 mt-1.5 text-mini text-danger" role="alert">{addPersonError}</p>
+                )}
               </Popover.Content>
             </Popover.Positioner>
           </Portal>
         </Popover.Root>
         <Popover.Root
           positioning={{ placement: "bottom-end", gutter: 8 }}
-          onOpenChange={(e) => { if (!e.open) setCopied(false); }}
+          onOpenChange={(e) => { if (!e.open) setCopyState("idle"); }}
+          /* both header popovers now put the caret in the same place: the field
+             you came to use. Share used to focus nothing, so Tab walked off
+             into the header behind it. */
+          initialFocusEl={() => shareInputRef.current}
         >
           {/* icon-only, but never nameless: the label moves to `aria-label` and
               `title` rather than disappearing */}
@@ -1984,8 +2614,10 @@ export default function GanttEditor({
                 <Popover.Title className={POP_TITLE}>View-only link</Popover.Title>
                 <Popover.Description className={POP_HINT}>Anyone with this link can see the chart live — data loads fresh on every open, no editing.</Popover.Description>
                 <div className="flex gap-1.5">
-                  <input ref={shareInputRef} className={POP_INPUT} readOnly value={shareUrl(projectId)} onFocus={(e) => e.target.select()} />
-                  <button type="button" className={POP_ACTION} onClick={copyShareLink}>{copied ? "Copied!" : "Copy"}</button>
+                  <input ref={shareInputRef} className={POP_INPUT} readOnly aria-label="View-only link" value={shareUrl(projectId)} onFocus={(e) => e.target.select()} />
+                  <button type="button" className={POP_ACTION} onClick={copyShareLink}>
+                    {copyState === "ok" ? "Copied!" : copyState === "fail" ? "Press " + COPY_KEYS : "Copy"}
+                  </button>
                 </div>
               </Popover.Content>
             </Popover.Positioner>
@@ -2083,6 +2715,30 @@ export default function GanttEditor({
             {/* api is null until the widget mounts; the toolbar handles that, its
                 prop type just does not model it */}
             <MToolbar api={api!} items={TOOLBAR_ITEMS} />
+            {/* ⌘Z and ⌘⇧Z still work and always did — but they were the whole
+                story: no button, no menu, no tooltip, nothing in the
+                accessibility tree, and nothing at all on a touch device. Since
+                a delete now asks first, these are no longer the only safety
+                net, but "the only way back is a shortcut you have to already
+                know" was never a defensible place to leave them. */}
+            <div className="flex flex-none items-center gap-1 border-l border-l-line-soft pl-2">
+              <button
+                type="button"
+                className={BTN_ICON}
+                disabled={hist.u < 2}
+                onClick={doUndo}
+                title="Undo (⌘Z)"
+                aria-label="Undo the last change"
+              ><ArrowArcLeft size={14} aria-hidden="true" /></button>
+              <button
+                type="button"
+                className={BTN_ICON}
+                disabled={hist.r < 1}
+                onClick={doRedo}
+                title="Redo (⌘⇧Z)"
+                aria-label="Redo the change that was undone"
+              ><ArrowArcRight size={14} aria-hidden="true" /></button>
+            </div>
             <div className="flex flex-none items-center gap-[14px] px-4 text-tiny whitespace-nowrap text-muted max-[900px]:hidden" aria-hidden="true">
               {LEGEND.map((t) => (
                 <span key={t.id} className="inline-flex items-center gap-[5px]">
@@ -2149,7 +2805,7 @@ export default function GanttEditor({
           <div className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center">
             <div className="material-pop pointer-events-auto max-w-[380px] rounded-[14px] border border-line px-[1.625rem] py-[1.375rem] text-center motion-safe:animate-rise">
               <div className="mb-1.5 font-display text-title font-semibold">Plan your first task</div>
-              <p className="m-0 text-copy text-muted">Use <strong>“+”</strong> in the toolbar to add a task, then drag its bar to
+              <p className="m-0 text-copy text-muted">Use <strong>New task</strong> in the toolbar to add one, then drag its bar to
               reschedule, drag its edge to resize, and double&#8209;click it to edit details.
               Double&#8209;click a task&#8217;s name in the list to rename it in place. Make a
               task an <strong>Epic</strong> and indent tasks under it — its length follows its
@@ -2158,6 +2814,58 @@ export default function GanttEditor({
           </div>
         )}
       </div>
+      {/* ---------- the delete confirm ----------
+          Deleting an epic took every story and task inside it with it — the
+          FK is ON DELETE CASCADE — on one click, with no dialog, no count and
+          no visible undo, while deleting a PROJECT armed a two-step "Sure?".
+          The rule the user learns on the projects list holds here now, and the
+          sentence names what it costs. Focus is on the safe option and Escape
+          backs out (see the effect above). */}
+      {pendingDelete && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-scrim p-6">
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="del-title"
+            aria-describedby="del-body"
+            className="material-pop w-full max-w-[400px] rounded-[14px] border border-line px-[1.375rem] py-5 motion-safe:animate-rise"
+          >
+            <div id="del-title" className="mb-1.5 flex items-center gap-2 font-display text-title font-semibold">
+              <Trash size={17} className="flex-none text-danger" aria-hidden="true" />
+              Delete this {tierNoun(pendingDelete.tier)}?
+            </div>
+            <p id="del-body" className="m-0 mb-4 text-copy text-muted">
+              <strong className="font-semibold text-ink">{pendingDelete.name}</strong>
+              {" "}
+              {costSentence(pendingDelete) || "It will be removed from the timeline."}
+            </p>
+            {/* ⌘Z really does bring a deleted subtree back — the undo snapshot
+                carries this project's tasks AND links — so say so rather than
+                threatening permanence the app does not actually impose. It is
+                worth saying now that Undo is a button as well as a shortcut. */}
+            <p className="m-0 mb-4 text-mini text-faint">
+              Undo (⌘Z, or the arrow in the toolbar) will bring it back until you leave the page.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                ref={keepDeleteRef}
+                className={BTN}
+                onClick={() => setPendingDelete(null)}
+              >Keep it</button>
+              <button
+                type="button"
+                className={`press cursor-pointer rounded-[9px] border-0 bg-danger px-3.5 py-1.5 font-ui text-small font-semibold text-accent-ink hover:brightness-[1.08] ${FOCUS}`}
+                onClick={confirmDelete}
+              >
+                {pendingDelete.rows > 0
+                  ? "Delete all " + (pendingDelete.rows + 1) + " rows"
+                  : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {/* The Scope column's own filter. Same bridge as the Who picker: the
           trigger is a node the tagger appended into a header cell the widget
           owns, so React cannot render the popover inside it — it anchors to the

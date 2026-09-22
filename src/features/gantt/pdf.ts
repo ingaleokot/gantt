@@ -16,22 +16,25 @@ type ColorName =
   | "progress" | "summary" | "story" | "milestone" | "link" | "today" | "headerBg"
   | "relMvp" | "relFull";
 const C: Record<ColorName, Rgb> = {
-  ink: [28, 42, 46],
-  muted: [98, 119, 122],
-  line: [220, 227, 226],
-  zebra: [244, 247, 246],
-  weekend: [238, 242, 241],
+  /* the LIGHT theme's neutral ramp, flattened onto white paper. Zero hue, like
+     the shell: the translucent tokens (`--color-line` etc.) are resolved here
+     by hand, because a PDF has no layer to be translucent over. */
+  ink: [10, 10, 10],
+  muted: [115, 115, 115],
+  line: [224, 224, 224],
+  zebra: [246, 246, 246],
+  weekend: [240, 240, 240],
   accent: [16, 118, 127],
-  progress: [10, 82, 89],
-  summary: [47, 107, 223],
+  progress: [16, 118, 127],
+  summary: [37, 99, 235],
   /* the story tier's rail, matching --color-story-rail in the light theme */
-  story: [109, 91, 208],
-  milestone: [192, 124, 30],
-  link: [160, 175, 177],
-  today: [196, 69, 60],
-  headerBg: [241, 245, 244],
-  relMvp: [156, 79, 22],
-  relFull: [63, 95, 125],
+  story: [124, 92, 240],
+  milestone: [180, 83, 9],
+  link: [138, 138, 138],
+  today: [220, 38, 38],
+  headerBg: [245, 245, 245],
+  relMvp: [180, 83, 9],
+  relFull: [71, 85, 105],
 };
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 type TypeColor = { bar: Rgb; deep: Rgb; label: string };
@@ -42,10 +45,10 @@ type TypeColor = { bar: Rgb; deep: Rgb; label: string };
    `styles/style.css` in step by hand; there is no way to read a CSS custom
    property from jsPDF. */
 const TYPE_COLORS: Record<string, TypeColor> = {
-  backend:  { bar: [111, 157, 242], deep: [47, 99, 204],  label: "Backend" },
-  frontend: { bar: [79, 190, 196],  deep: [14, 136, 145], label: "Frontend" },
-  design:   { bar: [169, 140, 235], deep: [111, 76, 201], label: "Design" },
-  testing:  { bar: [95, 191, 133],  deep: [31, 139, 83],  label: "Testing" },
+  backend:  { bar: [96, 165, 250], deep: [37, 99, 235],  label: "Backend" },
+  frontend: { bar: [45, 212, 191], deep: [13, 148, 136],  label: "Frontend" },
+  design:   { bar: [192, 132, 252], deep: [147, 51, 234], label: "Design" },
+  testing:  { bar: [74, 222, 128], deep: [22, 163, 74],   label: "Testing" },
 };
 
 function toDate(v: unknown): Date | null {

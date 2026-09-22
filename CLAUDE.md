@@ -658,6 +658,79 @@ Verified against a stubbed PostgREST: one duplicate emits exactly `POST projects
 row), `POST tasks` (4 rows, epic first), `POST links` (1 row), and **no delete of any
 kind**.
 
+## Nothing destructive is silent, and nothing is mouse-only (the interaction pass)
+
+The interaction review found six broken things and twelve gaps. The rules they left
+behind are load-bearing; each one below is the fix to a specific, reproducible failure.
+
+- **Every delete asks first, and names what it costs.** `tasks.parent_id` is
+  ON DELETE CASCADE, so one click on the trash used to take an epic's whole subtree and
+  every link attached to it, silently — while deleting a *project* armed a two-step
+  confirm. The hold is a single **`a.intercept("delete-task", …)`** in `Editor.tsx`, which
+  is the one place that can catch all five routes to a deletion (toolbar trash, Ctrl+D,
+  Backspace, the context menu, the modal's red Delete — they all `exec("delete-task")`).
+  Returning `false` cancels; `deletionCost()` reads the serialized tree (no exec, no
+  event, no write) and `costSentence()` phrases it — *"Everything inside it goes too — 4
+  rows, including 2 tasks, 1 story and 1 milestone, and 2 links."* `deleteOkRef` arms the
+  pass for exactly one id and is cleared the moment it is honoured, so a confirm can never
+  leak into the next delete. Focus lands on **Keep it**; Escape backs out.
+- **Removing a person asks too, and counts across the whole account** (`personUsage`),
+  because that control strips someone from every task in *every* project — it was the most
+  destructive thing in the app and the only one that asked nothing.
+- **The People popover's `initialFocusEl` points at "Add a person".** Ark focuses the
+  first focusable element by default, which was the first roster row's NAME input: someone
+  who clicked People and started typing renamed an existing person, per keystroke, across
+  every project. Share now sets `initialFocusEl` too, so both header popovers behave the
+  same on open.
+- **Undo and redo are buttons as well as ⌘Z.** Both call the same `doUndo` / `doRedo`, so
+  the shortcut and the button cannot come to mean different things; `hist` mirrors the two
+  ref-held stacks into render for the disabled state. A shortcut you have to already know
+  is not a safety net, and does not exist at all on a touch device.
+- **The task editor is a real modal.** `ensureEditorChrome()` sets `role="dialog"` +
+  `aria-modal`, names the close X, focuses the Name field, binds Escape, traps Tab, and
+  fixes the counter's two buttons, which the library ships with the **same**
+  `aria-label="-"`. All of it is attributes on library-rendered nodes plus one appended
+  bar — the same append-only contract the row tagger keeps. The button says **"Done"**,
+  not "Okay", with *"Changes apply as you make them."* beside it, because every field
+  applies live and closing with the X keeps the changes too.
+- **The grid has one roving tab stop.** Rows ship `tabindex="-1"` and selection was a
+  click, so Move up / Move down were unreachable by keyboard entirely. `rovingRow` gives
+  the selected row (or the first) `tabindex="0"`, Arrow/Home/End move it, `focusin` runs
+  `select-task` — which is *not* in `finalEvents`, so it schedules no save and takes no
+  undo snapshot — and Enter opens the editor. The `+` cell rides the same tab stop, so the
+  whole grid costs two, not two per row.
+- **The four `comp: "icon"` toolbar buttons are named.** For that comp the library
+  forwards exactly one config field to the DOM — `title` — and reads `menuText`/`text`
+  only in an overflow menu this configuration never shows, so Edit / Delete / Move up /
+  Move down rendered as `title=""`. `TOOLBAR_ITEMS` carries real titles and
+  `labelToolbarButtons()` stamps the matching `aria-label` (the `title` fallback only
+  applies while a button has no text content, and the library renders a `" "` child). It
+  needs **its own small observer**: the toolbar remounts those buttons as the selection
+  changes and it sits outside `.gantt-holder`, which is what the row tagger watches.
+- **The save pill is an event, not a label** — `useSavePhase` in `store.tsx`, shared by
+  the editor and the projects list so they cannot drift. `SaveStatus` is the *mutation's*
+  state: it turns `saved` on the first successful write and never leaves, and in the
+  editor the first write is the roll-up the mount fires, so the pill said
+  "Saved · Supabase" before the user had touched anything and then said it all session.
+  The hook gates on the caller's "did the user do this?" ref (`touchedRef`, set by
+  `touched()` and deliberately **not** while `ROLLUP_WRITE` is on), never fires on its
+  first run (arriving from the editor mounts `/` on an already-`saved` mutation), holds
+  "All changes saved" for 2.4 s, then fades through a `leaving` phase that `.save-pill` /
+  `.save-pill-out` animate on `--dur-exit`. **`local` is never routed through it**: a
+  write that failed has to stay on screen whether the user caused it or not.
+- **`role="status" aria-live="polite"` on both save pills.** There was no live region
+  anywhere in `src/`, so the app's only channel for *not saved* was silent for a
+  screen-reader user.
+- **User-facing text says what to do; the raw exception goes in the `title`.** The PDF
+  failure is the example: the chip reads "The PDF could not be created, so nothing was
+  downloaded…" and the exception's own message rides along as `Alert.detail`.
+- Two things the review asked for that are deliberately **not** done, and why:
+  `gridWidth` stays a constant (SVAR re-runs `init(config)` on any prop change, so a
+  responsive one re-initialises the store and drops the filter on every resize tick — the
+  widget's own draggable resizer is the answer), and `/share` with no id still has nothing
+  to click, because the only place to send the recipient is a login page they have no
+  account for. Its copy says so honestly instead.
+
 ## The chart's visual language (the ReUI pass)
 
 The reference is the first block on https://reui.io/blocks/application/gantt. What was
@@ -665,6 +738,65 @@ taken from it is the **treatment**; what stayed is this app's **information** �
 columns still carry release scope, effort roll-ups and tracker ids, none of which the
 reference has. It is dark-only; this app is not, so every value below is declared in all
 three theme blocks and the two themes are derived, not ported.
+
+### The neutrals carry no hue at all
+
+The shell used to be teal-biased — `#edf1f0` / `#1c2a2e` light, `#0e1517` / `#151f22`
+dark — and it fought every saturated bar on the chart: the whole app read as "a teal
+product" rather than as a plan drawn on paper. The reference uses shadcn's **neutral**
+ramp, which is `oklch(L 0 0)`: literally zero chroma. That is now the shell, and the hue
+lives only in the bars, the status pills, the release pills and the accent.
+
+| token | light | dark |
+| --- | --- | --- |
+| `--color-ground` | `#f5f5f5` | `#0a0a0a` |
+| `--color-surface` | `#ffffff` | `#1a1a1a` |
+| `--color-surface-alt` | `#f5f5f5` | `#242424` |
+| `--color-ink` | `#0a0a0a` | `#fafafa` |
+| `--color-muted` | `#737373` | `#a1a1a1` |
+| `--color-faint` | `#a1a1a1` | `#737373` |
+
+**Five separators are translucent, not opaque grey, and that is the technique — not just
+the hex.** The reference draws every rule and every subtle fill as white at low alpha over
+near-black, which is what makes it read as depth rather than as a flat diagram of boxes;
+light is the same trick with the ink instead of the paper. A consequence worth knowing
+before "simplifying" one back to a hex: a rule over the raised surface and the same rule
+over the ground are genuinely **different colours**, which an opaque hairline could never
+be.
+
+```
+--color-surface-hover   rgba(10,10,10,.06)   / rgba(255,255,255,.07)
+--color-line            rgba(10,10,10,.12)   / rgba(255,255,255,.10)
+--color-line-soft       rgba(10,10,10,.07)   / rgba(255,255,255,.06)
+--color-grid-line       rgba(10,10,10,.06)   / rgba(255,255,255,.055)
+--color-row-hover       rgba(10,10,10,.035)  / rgba(255,255,255,.045)
+```
+
+**`--color-surface-alt` stays OPAQUE while `-hover` is translucent, deliberately.**
+`.who-more` overlaps the chip beside it by 6px, so a see-through fill there would show the
+initials underneath. Anything that *layers* gets the translucent token; anything that
+*covers* gets `-alt`.
+
+`--color-accent-selected` is now `color-mix`ed from `--color-accent` rather than restated
+as a hex, so it cannot drift out of step with it. The three shadow tokens lost their hue
+too — a tinted shadow was half of what made the light theme read as teal.
+
+**The per-person Who chip hues are GENERATED, not tokens** (`nameHue` in
+`features/people/roster.ts` hashes the name to 0–360), so the palette move had to be
+checked across all 360. It was, with the `--who-bg` / `--who-fg` lightness/saturation
+pairs re-pitched for a near-black ground (`28% 26%` / `60% 76%` → `30% 26%` / `60% 80%`):
+worst-case text-on-chip contrast is **6.03:1 light (hue 60) and 6.05:1 dark (hue 240)**,
+both above AA and both better than the pairs they replaced. Change either pair and re-run
+that sweep — a hue that looks fine at 200 can be illegible at 60.
+
+Measured contrast elsewhere, for the same reason: `muted` on `surface` is 4.74:1 light /
+6.74:1 dark (up from 4.64 / 6.36), `accent` 5.36 / 7.02, `danger` 4.83 / 6.29. `--color-faint`
+is 2.58:1 light and is for uppercase micro-labels and decorative glyphs only — it was
+never body text and must not become it.
+
+`pdf.ts` holds its own flattened copy of the light ramp (a PDF has no layer to be
+translucent over, so `--color-line` etc. are resolved by hand there). It moves with the
+palette; there is no way to read a custom property from jsPDF.
 
 ### The grid's columns
 
@@ -944,6 +1076,13 @@ by hand.
   of the screen with the bars. Sticky is itself a positioned ancestor, so `.project-span`
   works either way, and sticky only pins on the axis it is given a threshold for, so the
   scale still scrolls SIDEWAYS with the bars. Never set that back to `relative`.
+- **Both gantt screens must pass `taskTypes={TASK_TYPES}`.** SVAR knows only its own
+  three types (`task` / `summary` / `milestone`) and rewrites anything else to `task`, and
+  the bar's class is what `wx-overrides.css` colours by. `ShareViewer.tsx` did not pass it
+  — so every bar on the **public page** came out in the untyped slate, under a legend
+  naming four colours no bar on it ever wore, while the editor beside it was correct. A
+  prop the two screens do not share is a place the share page can silently fall behind the
+  editor; it is `readonly`, so the list only decides how a bar is drawn.
 - Four places where SVAR's shipped types are wrong or too narrow, each narrowed locally
   rather than cast to `any` — don't "fix" them by widening the api:
   - `IApi.getTask` is typed `ITask` (everything optional) but returns a parsed task, so

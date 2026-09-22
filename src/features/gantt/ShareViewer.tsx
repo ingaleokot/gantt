@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState, useEffect, useCallback, memo } from "react";
+import type { ReactNode } from "react";
 import { Gantt } from "@svar-ui/react-gantt";
 import type { IApi, IColumnConfig, ITask, TID } from "@svar-ui/react-gantt";
 import { Willow as CoreWillow } from "@svar-ui/react-core";
@@ -381,6 +382,24 @@ const GROUP_LABEL = "m-0 mt-3 mb-1.5 text-label font-semibold text-faint upperca
 const BRAND_MARK =
   "block h-3.5 w-3.5 rounded-[4px] bg-[linear-gradient(135deg,var(--color-accent)_0_50%,var(--color-summary-fill)_50%_100%)]";
 const BOOT = "grid min-h-screen place-items-center bg-ground font-ui text-body text-muted";
+/* A dead end deserves more than one line of grey text. These pages are seen by
+   someone who was handed a link and has no other way into the app — so the
+   message has to be accurate about what went wrong and honest about whether
+   there is anything they can do. */
+const BOOT_CARD =
+  "max-w-[26rem] rounded-[14px] border border-line bg-surface px-6 py-5 text-center shadow-pop";
+const BOOT_TITLE = "m-0 mb-1.5 font-display text-title font-semibold text-ink";
+const BOOT_BODY = "m-0 text-copy text-muted";
+function BootNotice({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className={BOOT}>
+      <div className={BOOT_CARD} role="status">
+        <p className={BOOT_TITLE}>{title}</p>
+        <p className={BOOT_BODY}>{children}</p>
+      </div>
+    </div>
+  );
+}
 const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const fmtD = (d: Date) => d.getDate() + " " + MON[d.getMonth()];
 
@@ -976,6 +995,13 @@ function Board({ store, activeId }: { store: ViewStore; activeId: string | null 
               init={init}
               tasks={revivedTasks}
               links={links}
+              /* The editor passes the same list, and this page has to as well.
+                 Without it SVAR knows only its three shipped types and rewrites
+                 every other one to `task` — so every bar on the public page
+                 came out in the untyped slate, under a legend naming four
+                 colours no bar ever wore. `readonly` means this only decides
+                 how a bar is drawn; there is no Convert list here to feed. */
+              taskTypes={TASK_TYPES}
               columns={COLUMNS}
               scales={DAY_SCALES}
               cellWidth={DAY_CELL_WIDTH}
@@ -1020,6 +1046,9 @@ function Board({ store, activeId }: { store: ViewStore; activeId: string | null 
 type BootState =
   | { phase: "loading" }
   | { phase: "ready"; store: ViewStore }
+  /* `/share` with no project id: a distinct state, because it is not a failure
+     that retrying could fix — the link itself is missing a part */
+  | { phase: "incomplete" }
   | { phase: "error"; message: string };
 
 /* The page is public and holds no Supabase client: it just pulls the JSON the
@@ -1030,7 +1059,12 @@ export default function ShareViewer({ projectId }: { projectId: string | null })
   const [state, setState] = useState<BootState>({ phase: "loading" });
 
   useEffect(() => {
-    if (!projectId) { setState({ phase: "error", message: "this link does not name a timeline" }); return; }
+    /* `/share` with no id. The feed deliberately has no "everything" mode — it
+       returns exactly one project and needs a token or a project id to say
+       which — so there is genuinely nothing to fall back to, and the old copy
+       ("refresh to retry") promised a recovery that could never happen. Say
+       what is actually wrong instead. */
+    if (!projectId) { setState({ phase: "incomplete" }); return; }
     let alive = true;
     fetchStore(projectId)
       .then((raw) => { if (alive) setState({ phase: "ready", store: shapeStore(raw) }); })
@@ -1041,14 +1075,40 @@ export default function ShareViewer({ projectId }: { projectId: string | null })
   }, [projectId]);
 
   if (state.phase === "loading") return <div className={BOOT}>Loading timeline…</div>;
+  if (state.phase === "incomplete") {
+    return (
+      <BootNotice title="This link is incomplete">
+        It does not name a timeline, so there is nothing to open — refreshing will
+        not help. Ask whoever sent it for the full link; a working one ends in
+        <code className="px-1">/share/</code> followed by the timeline’s id.
+      </BootNotice>
+    );
+  }
   if (state.phase === "error") {
-    return <div className={BOOT}>Could not load the chart: {state.message} — refresh to retry.</div>;
+    return (
+      <BootNotice title="Could not load this timeline">
+        {state.message}. This is usually temporary — try refreshing.
+      </BootNotice>
+    );
   }
   const { store } = state;
-  if (!store.projects.length) return <div className={BOOT}>Nothing has been shared yet.</div>;
+  /* ORDER MATTERS. This used to test the empty feed first, so an unknown or
+     revoked share id — which comes back with zero projects — rendered
+     "Nothing has been shared yet.", and the recipient concluded the sender had
+     never shared anything at all. The accurate message sat one line below,
+     permanently unreachable. A link that NAMED a project gets answered about
+     that project. */
   const known = projectId && store.projects.some((p) => p.id === projectId) ? projectId : null;
   if (projectId && !known) {
-    return <div className={BOOT}>That timeline is not shared, or no longer exists.</div>;
+    return (
+      <BootNotice title="That timeline is not shared">
+        It may have been unshared, renamed to a new link, or deleted. Ask whoever
+        sent it for a current link.
+      </BootNotice>
+    );
+  }
+  if (!store.projects.length) {
+    return <BootNotice title="Nothing has been shared yet">There is no timeline behind this link.</BootNotice>;
   }
   return (
     <Board

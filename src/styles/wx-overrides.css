@@ -28,7 +28,9 @@
   --wx-modal-background: var(--color-surface);
   --wx-popup-background: var(--color-surface);
   --wx-notice-background: var(--color-surface);
-  --wx-modal-backdrop: rgba(15, 23, 25, 0.45);
+  /* the app's own scrim token, so the modal behind-layer is neutral in both
+     themes rather than the teal-tinted one it used to hardcode */
+  --wx-modal-backdrop: var(--color-scrim);
 
   /* gantt-specific */
   --wx-gantt-select-color: var(--color-accent-hover);
@@ -787,9 +789,22 @@
 .editor-okay-bar {
   flex: 0 0 auto;
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   padding: 12px 16px;
   border-top: 1px solid var(--color-line-soft);
+}
+/* "Done", not "Okay" — and this says why there is no Cancel beside it. Every
+   field in the panel applies live and closing with the X keeps the changes
+   too, so a commit/cancel pair would have been a lie about what the buttons
+   do. */
+.editor-okay-hint {
+  min-width: 0;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--color-faint);
 }
 .editor-okay {
   font-family: var(--font-ui);

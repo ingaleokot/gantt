@@ -96,6 +96,57 @@ const RETRY_BACKOFF = [2000, 5000, 15000, 30000];
 
 export type SaveStatus = "idle" | "saving" | "saved" | "local";
 
+/* ---------- the save pill is an event, not a label ----------
+   `SaveStatus` is the MUTATION's state, and it is not what a save pill should
+   render directly: `sync` turns "saved" on the first successful write of the
+   session and never leaves, so a pill bound to it said "Saved · Supabase" from
+   the moment a screen opened — in the editor, before the user had touched
+   anything, because merely arriving fires the roll-up's normalising write —
+   and then said the same thing all session whatever happened. A label that
+   cannot change is not a signal.
+
+   This turns that permanent state into something with a beginning and an end,
+   in one place so the editor and the projects list cannot drift apart:
+
+   - `gate` (optional) is the caller's "did the user actually do this?" flag,
+     held in a ref so it does not re-run the effect. The editor passes the flag
+     its widget change handler sets, which deliberately skips the mount
+     roll-up; the projects list needs none, because nothing writes on its mount.
+   - the FIRST run is never an event. Navigating back from the editor mounts a
+     screen on a mutation that is already "saved", and that is not something
+     the user just did here.
+   - "saved" holds, then fades through `leaving` — a real phase rather than an
+     unmount, so the caller can put an exit transition on it (`.save-pill` in
+     style.css) instead of blinking the text away.
+
+   "local" is never routed through here. A write that failed has to stay on
+   screen whether the user caused it or not, and it must not settle. */
+export type SavePhase = "idle" | "saving" | "saved" | "leaving";
+/* long enough to read at a glance, short enough to be a report; the fade
+   matches --dur-exit, which is what `.save-pill` animates on */
+const SAVED_HOLD = 2400;
+const SAVED_FADE = 130;
+export function useSavePhase(status: SaveStatus, gate?: { current: boolean }): SavePhase {
+  const [phase, setPhase] = useState<SavePhase>("idle");
+  const started = useRef(false);
+  useEffect(() => {
+    const first = !started.current;
+    started.current = true;
+    if (status === "local") return;
+    const allowed = !gate || gate.current;
+    if (status === "saving") { if (allowed) setPhase("saving"); return; }
+    if (status !== "saved" || !allowed || first) { setPhase("idle"); return; }
+    setPhase("saved");
+    const fade = window.setTimeout(() => setPhase("leaving"), SAVED_HOLD);
+    const gone = window.setTimeout(() => setPhase("idle"), SAVED_HOLD + SAVED_FADE);
+    return () => { clearTimeout(fade); clearTimeout(gone); };
+    /* `status` alone re-arms it: every save passes through "saving" on its way
+       back to "saved", and `gate` is a ref, so neither a keystroke nor a
+       re-render restarts the fade. */
+  }, [status, gate]);
+  return phase;
+}
+
 export interface StoreApi {
   ownerId: string;
   /* the live draft; mutate it, then call scheduleSave() */
