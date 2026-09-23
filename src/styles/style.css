@@ -100,7 +100,13 @@
   /* derived from the accent rather than restated as a hex, so it follows the
      theme on its own and cannot drift out of step with it. Resolves to about
      #d1d1d1 over the light surface and #414141 over the dark one. */
-  --color-accent-selected: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  /* The percentage is per-theme because the accent's LIGHTNESS is: 18% of a
+     mid-lightness teal read as a tint, but the accent is near-white in dark
+     and near-black in light now, so one figure cannot serve both. These land
+     a selected leaf row on the reference's own selected surface — #f5f5f5
+     light, #262626 dark — while staying translucent so a tier's wash still
+     shows through underneath. */
+  --color-accent-selected: color-mix(in srgb, var(--color-accent) 5%, transparent);
   --color-accent-ink: #fafafa;
   /* ---- focus, split off the accent --------------------------------------
      The reference's own `--ring` is oklch(0.556 0 0): a mid grey, not the
@@ -331,6 +337,8 @@
     --color-accent: #ebebeb;
     --color-accent-hover: rgba(255, 255, 255, 0.14);
     --color-accent-ink: #171717;
+  --color-accent-selected: color-mix(in srgb, var(--color-accent) 11%, transparent);
+    --color-accent-selected: color-mix(in srgb, var(--color-accent) 11%, transparent);
     --color-ring: #8a8a8a;
     --color-milestone: #fbbf24;
     --color-summary: #60a5fa;
