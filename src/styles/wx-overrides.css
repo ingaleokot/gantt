@@ -6,7 +6,7 @@
   --wx-color-font: var(--color-ink);
   --wx-color-font-alt: var(--color-muted);
   --wx-icon-color: var(--color-faint);
-  --wx-background: var(--color-surface);
+  --wx-background: var(--color-board);
   --wx-background-alt: var(--color-surface-alt);
   /* translucent, not a solid swap: the reference's row hover is a wash over
      whatever the row already is, so an epic's tint still shows through it */

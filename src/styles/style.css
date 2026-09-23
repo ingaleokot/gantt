@@ -51,6 +51,8 @@
        oklch(0.708 0 0) → #a1a1a1   faint                                    */
   --color-ground: #f5f5f5;
   --color-surface: #ffffff;
+  /* the board's own field — see the dark blocks for why it is a token */
+  --color-board: #ffffff;
   /* alt stays OPAQUE while `-hover` is translucent, and the difference is
      load-bearing: `.who-more` overlaps the chip beside it by 6px, so a
      see-through fill there would show the initials underneath it. Anything
@@ -89,7 +91,7 @@
      below. The accent is a FILL (a primary button, the link handle, the
      project span); the ring is an outline. Keeping them apart is what lets
      the fill be emphatic and the ring be quiet. */
-  --color-accent: #1a1a1a;
+  --color-accent: #171717;
   /* the tinted chip/selection wash. Translucent, not an opaque grey, for the
      same reason the separators are: it has to layer over whatever the row
      already is. Roughly double --color-surface-hover so that "this option is
@@ -307,15 +309,16 @@
        zero-hue neutral ramp, a near-black ground, and separators that are
        translucent WHITE over it rather than a lighter grey.
          oklch(0.145 0 0)     → #0a0a0a  ground
-         oklch(0.205 0 0)     → #1a1a1a  raised surface
+         oklch(0.205 0 0)     → #171717  raised surface
          oklch(0.269 0 0)     → #242424  alt surface
          oklch(0.985 0 0)     → #fafafa  foreground
          oklch(0.708 0 0)     → #a1a1a1  muted foreground
          oklch(1 0 0 / 0.1)   → the border
          oklch(1 0 0 / 0.045) → the subtle fill                                */
     --color-ground: #0a0a0a;
-    --color-surface: #1a1a1a;
-    --color-surface-alt: #242424;
+    --color-surface: #171717;
+    --color-board: #0a0a0a;
+    --color-surface-alt: #262626;
     --color-surface-hover: rgba(255, 255, 255, 0.07);
     --color-ink: #fafafa;
     --color-muted: #a1a1a1;
@@ -327,7 +330,7 @@
        accent carries no hue and why the focus ring is a separate token. */
     --color-accent: #ebebeb;
     --color-accent-hover: rgba(255, 255, 255, 0.14);
-    --color-accent-ink: #1a1a1a;
+    --color-accent-ink: #171717;
     --color-ring: #8a8a8a;
     --color-milestone: #fbbf24;
     --color-summary: #60a5fa;
@@ -381,15 +384,16 @@
      zero-hue neutral ramp, a near-black ground, and separators that are
      translucent WHITE over it rather than a lighter grey.
        oklch(0.145 0 0)     → #0a0a0a  ground
-       oklch(0.205 0 0)     → #1a1a1a  raised surface
+       oklch(0.205 0 0)     → #171717  raised surface
        oklch(0.269 0 0)     → #242424  alt surface
        oklch(0.985 0 0)     → #fafafa  foreground
        oklch(0.708 0 0)     → #a1a1a1  muted foreground
        oklch(1 0 0 / 0.1)   → the border
        oklch(1 0 0 / 0.045) → the subtle fill                                */
   --color-ground: #0a0a0a;
-  --color-surface: #1a1a1a;
-  --color-surface-alt: #242424;
+  --color-surface: #171717;
+  --color-board: #0a0a0a;
+  --color-surface-alt: #262626;
   --color-surface-hover: rgba(255, 255, 255, 0.07);
   --color-ink: #fafafa;
   --color-muted: #a1a1a1;
@@ -401,7 +405,7 @@
      accent carries no hue and why the focus ring is a separate token. */
   --color-accent: #ebebeb;
   --color-accent-hover: rgba(255, 255, 255, 0.14);
-  --color-accent-ink: #1a1a1a;
+  --color-accent-ink: #171717;
   --color-ring: #8a8a8a;
   --color-milestone: #fbbf24;
   --color-summary: #60a5fa;
