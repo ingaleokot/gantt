@@ -514,6 +514,7 @@
   .wx-willow-theme .row-edit:active,
   .wx-willow-theme .who-chips:active,
   .wx-willow-theme .tracker-link:active,
+  .editor-move:active,
   .editor-okay:active { transform: none; filter: brightness(0.92); }
   .wx-willow-theme .fold-all:active { transform: translateY(-50%); filter: brightness(0.92); }
 }
@@ -863,6 +864,15 @@
    field in the panel applies live and closing with the X keeps the changes
    too, so a commit/cancel pair would have been a lie about what the buttons
    do. */
+/* two lines, stacked: what the panel does, and how to move the row it is
+   about. The bar is space-between, so they share one flex child rather than
+   drifting apart around the Done button. */
+.editor-okay-hints {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
 .editor-okay-hint {
   min-width: 0;
   font-family: var(--font-ui);
@@ -870,6 +880,42 @@
   line-height: 1.4;
   color: var(--color-faint);
 }
+/* ---------- the mouse's route to reordering a row ----------
+   Two icon buttons in the task editor's footer. They replace the toolbar's
+   Move up / Move down, which were two permanently visible (and mostly greyed)
+   glyphs; here they are contextual, because the panel is already open on
+   exactly one row. Secondary weight — Done is the one filled control in the
+   bar — and the same press/focus treatment as every other widget-owned button.
+   Only the tagger builds them, so they keep semantic classes backed by CSS. */
+.editor-move-group {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  margin-right: 8px;
+}
+.editor-move {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: 9px;
+  color: var(--color-muted);
+  cursor: pointer;
+  transition: transform var(--dur-press) ease-out,
+    background-color var(--dur-hover) ease-out, color var(--dur-hover) ease-out;
+}
+.editor-move:hover { background: var(--color-surface-hover); color: var(--color-ink); }
+.editor-move:active { transform: scale(0.9); }
+.editor-move:focus-visible { outline: 2px solid var(--color-ring); outline-offset: 1px; }
+.editor-move .ci { display: flex; width: 15px; height: 15px; }
+.editor-move .ci svg { width: 100%; height: 100%; }
+
 .editor-okay {
   font-family: var(--font-ui);
   font-size: 13.5px;

@@ -6,7 +6,7 @@ import { Willow as GridWillow } from "@svar-ui/react-grid";
 import { Popover } from "@ark-ui/react/popover";
 import { Portal } from "@ark-ui/react/portal";
 import { Link } from "@tanstack/react-router";
-import { ArrowArcLeft, ArrowArcRight, CaretDown, CaretLeft, Check, DownloadSimple, Funnel, ShareNetwork, SignOut, Trash, Users, X } from "@phosphor-icons/react";
+import { ArrowArcLeft, ArrowArcRight, CaretDown, CaretLeft, Check, Columns, DownloadSimple, Funnel, ShareNetwork, SignOut, Trash, Users, X } from "@phosphor-icons/react";
 import { buildGanttPdf } from "./pdf";
 import type { Person, StoreLink, StoreProject, StoreTask, TaskId } from "../../lib/db";
 import { uid, useSavePhase, useStore } from "../projects/store";
@@ -15,6 +15,10 @@ import { installWxiMasks } from "./lib/wxi-masks";
 import { trackerId, trackerNumber } from "./lib/tracker";
 import { ensureLinkArrowMarker, labelLinkHandles } from "./lib/link-marker";
 import { DAY_CELL_WIDTH, DAY_SCALES, WEEKEND_HIGHLIGHT, setTodayLine, shortDate, todayStart } from "./lib/scale";
+import {
+  EDITOR_COLUMNS_KEY, HIDEABLE_COLUMNS, applyColumnVisibility, hiddenKey,
+  readHiddenColumns, toggleHiddenColumn, writeHiddenColumns,
+} from "./lib/columns";
 import { initialsOf, nameHue, parseAssignees } from "../people/roster";
 import { HOURS_PER_DAY } from "../projects/summary";
 import {
@@ -155,6 +159,13 @@ const GROUP_LABEL = "m-0 mt-3 mb-1.5 text-label font-semibold text-faint upperca
 const ROLE_SELECT =
   `w-full cursor-pointer appearance-none rounded-[7px] border border-line-soft bg-surface-alt py-[0.1875rem] pr-[1.375rem] pl-2 font-ui text-mini text-muted transition-colors duration-[130ms] ease-out hover:border-line hover:text-ink ${FOCUS}`;
 
+/* The width the grid pane takes when EVERY column is shown. It is still a
+   constant handed to the widget as a prop — see the note at the `gridWidth`
+   prop below — and hiding a column subtracts that column's width from it
+   through the store's own `resize-grid` action rather than by moving the prop.
+   features/gantt/lib/columns.ts does the arithmetic and explains why. */
+const BASE_GRID_WIDTH = 812;
+
 const COLUMNS: IColumnConfig[] = [
   { id: "text", header: "Task name", width: 183, flexgrow: 1, sort: true, editor: "text" },
   /* Status, as the reference's pill rather than only the dot in the name cell.
@@ -245,37 +256,37 @@ function scheduleFromHours(hours: number | undefined, startLike: Date | undefine
   return { hours: h, days, start, end, duration: Math.round((+end - +start) / DAY) };
 }
 
-/* `title` is not decoration here. For `comp: "icon"` the toolbar renders a
-   <button> whose only child is an <i>, and it forwards exactly one of these
-   fields to the DOM — `title`. `menuText` and `text` are read only by the
-   overflow menu, which this configuration never shows, so Edit / Delete /
-   Move up / Move down used to render as four buttons with `title=""`: no
-   tooltip for a mouse, no accessible name for a screen reader, and the
-   shortcuts the config means to advertise invisible. The tagger stamps the
-   same string onto `aria-label` as well, because the accessible-name fallback
-   to `title` only applies while the button has no text content, and the
-   library renders a `" "` child that could be read as content. */
+/* ---------- the toolbar is one button now ----------
+   Edit, Delete, Move up and Move down are gone. Each was the SECOND way to
+   reach something that already had a first, and all four only lit up once a row
+   was selected — so the strip spent most of its life showing four greyed
+   glyphs:
+
+     · Edit       — the row's own pencil, Ctrl+E, and Enter on a focused row all
+                    open the same modal;
+     · Delete     — Ctrl+D, Backspace, the context menu and the modal's red
+                    Delete all reach the same `intercept("delete-task")`, which
+                    is what actually holds a deletion back;
+     · Move ↑ / ↓ — the context menu's own **Move ▸ Up / Down**, and now
+                    **Alt+↑ / Alt+↓** on the focused row (see `rowKeyHandler`).
+
+   That last one is why this is not a straight removal. `move-task` is reached
+   from nowhere else in `src/` except the cut/paste path, and the grid's plain
+   Arrow keys move FOCUS, not the row — so dropping the two buttons as they
+   stood would have taken reordering off the keyboard entirely. The shortcut
+   goes in with them, which also closes the review finding that Move up / Move
+   down were unreachable without a mouse in the first place.
+
+   With them gone there is no `comp: "icon"` button left, and with it goes the
+   whole reason `labelToolbarButtons()` and its private MutationObserver
+   existed: for that comp the library forwards only `title` to the DOM and
+   renders a `" "` child, so those four shipped with no accessible name at all.
+   "New task" is `comp: "button"`, renders its own text, and was never the
+   problem. */
 const TOOLBAR_ITEMS = [
   { id: "add-task", comp: "button", icon: "wxi-plus", text: "New task", type: "primary",
     title: "Add a task to the end of the list" },
-  { id: "edit-task", comp: "icon", icon: "wxi-edit", menuText: "Edit", text: "Ctrl+E",
-    title: "Edit the selected row (Ctrl+E)" },
-  { id: "delete-task", comp: "icon", icon: "wxi-delete", menuText: "Delete", text: "Ctrl+D, Backspace",
-    title: "Delete the selected row (Ctrl+D or Backspace)" },
-  { comp: "separator" },
-  { id: "move-task:up", comp: "icon", icon: "wxi-angle-up", menuText: "Move up",
-    title: "Move the selected row up" },
-  { id: "move-task:down", comp: "icon", icon: "wxi-angle-down", menuText: "Move down",
-    title: "Move the selected row down" },
 ];
-/* what the tagger copies onto aria-label, keyed by the glyph the button wears */
-const TOOLBAR_LABELS: Record<string, string> = {
-  "wxi-plus": "Add a task to the end of the list",
-  "wxi-edit": "Edit the selected row (Ctrl+E)",
-  "wxi-delete": "Delete the selected row (Ctrl+D or Backspace)",
-  "wxi-angle-up": "Move the selected row up",
-  "wxi-angle-down": "Move the selected row down",
-};
 
 /* "" rather than null: SVAR's select needs a value for the empty choice, and
    db.ts maps anything that is not "mvp"/"full" back to a NULL column.
@@ -942,43 +953,11 @@ function costSentence(c: DeletionCost): string {
   return "Everything inside it goes too \u2014 " + c.rows + (c.rows === 1 ? " row" : " rows") + inner + links + ".";
 }
 
-/* ---------- names for the four toolbar buttons the library leaves bare ------
-   `title` comes from the item config (see TOOLBAR_ITEMS); this adds the
-   matching `aria-label`, because the accessible-name fallback to `title` only
-   holds while the button has no text content and the library renders a `" "`
-   child. Append-only in spirit: it sets attributes on nodes the library owns
-   and inserts nothing. */
-function labelToolbarButtons() {
-  document.querySelectorAll<HTMLElement>(".toolbar-row .wx-button").forEach((btn) => {
-    const icon = btn.querySelector("i");
-    if (!icon) return;
-    let label: string | undefined;
-    for (const cls of Array.from(icon.classList)) {
-      if (TOOLBAR_LABELS[cls]) { label = TOOLBAR_LABELS[cls]; break; }
-    }
-    if (!label) return;
-    if (btn.getAttribute("aria-label") !== label) btn.setAttribute("aria-label", label);
-    if (!btn.title) btn.title = label;
-  });
-}
-
-/* Edit / Delete / Move up / Move down are mounted and unmounted by the toolbar
-   as the SELECTION changes, and the toolbar row sits outside `.gantt-holder` —
-   which is what the row tagger's observer watches. So it gets a small observer
-   of its own rather than widening that one: this does nothing but re-stamp the
-   names, and only when the toolbar's own children move. */
-let toolbarObserver: MutationObserver | null = null;
-function watchToolbar() {
-  if (toolbarObserver) { toolbarObserver.disconnect(); toolbarObserver = null; }
-  const row = document.querySelector(".toolbar-row");
-  if (!row) return;
-  toolbarObserver = new MutationObserver(() => {
-    if (toolbarObserver) toolbarObserver.takeRecords();
-    labelToolbarButtons();
-  });
-  toolbarObserver.observe(row, { childList: true, subtree: true });
-  labelToolbarButtons();
-}
+/* `labelToolbarButtons()` and the private MutationObserver that kept re-running
+   it are GONE with the four `comp: "icon"` buttons they existed for — see
+   TOOLBAR_ITEMS. The one button left renders its own text, so it has had an
+   accessible name all along, and an observer firing on every toolbar mutation
+   to stamp a label onto nothing is not worth keeping "in case". */
 
 /* the "+" in the Add column's HEADER is a control of its own — it appends a
    task at the end of the list — and shipped with no name at all */
@@ -1007,9 +986,16 @@ function labelAddColumnHeader() {
 
    It sets attributes and listens; it inserts no nodes and rewrites no
    library-rendered content. */
+const ROW_MOVE_KEYS = "Alt+ArrowUp Alt+ArrowDown";
 function rovingRow(row: HTMLElement, active: boolean) {
   const want = active ? "0" : "-1";
   if (row.getAttribute("tabindex") !== want) row.setAttribute("tabindex", want);
+  /* the reorder shortcut, in the one channel a screen reader reads out on
+     focus. The sighted routes to it are the context menu's Move ▸ Up / Down
+     and the line in the task editor's footer — see ensureEditorChrome. */
+  if (row.getAttribute("aria-keyshortcuts") !== ROW_MOVE_KEYS) {
+    row.setAttribute("aria-keyshortcuts", ROW_MOVE_KEYS);
+  }
   /* the "+" cell rides the same tab stop, so the whole grid costs two of them
      rather than two per row */
   const add = row.querySelector<HTMLElement>('[data-col-id=":add-task"] i');
@@ -1076,6 +1062,33 @@ function installRowKeys(api: GanttApi) {
          it — so the selection cannot be left to depend on one. */
       select(next);
     };
+    /* ---------- Alt+Arrow reorders the row itself ----------
+       This is the toolbar's Move up / Move down, which is now the ONLY pair of
+       buttons the strip lost that had no second route (the context menu's
+       Move ▸ Up / Down is the other, and it is a mouse). It is the same
+       `move-task` exec those buttons fired — the library splits `move-task:up`
+       into exactly this — so it lands in `finalEvents` like any other change:
+       one undo snapshot, one debounced save, and the `sort_order` rewrite goes
+       out as the multi-row upsert the write model already has for it.
+
+       Alt is what keeps it clear of the plain Arrow keys above, which move
+       FOCUS and must stay cheap. `move-task` is refused by the store at the
+       ends of a branch (first row of a top-level list, last row of one), so
+       there is nothing to bounds-check here. */
+    if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      const id = taskIdOfRow(el);
+      if (id === null) return;
+      e.preventDefault();
+      e.stopPropagation();
+      try { void api.exec("move-task", { id, mode: e.key === "ArrowUp" ? "up" : "down" }); } catch (err) {}
+      /* the widget re-renders the rows, so the focused node is replaced —
+         put the caret back on the row that moved */
+      window.setTimeout(() => {
+        const again = gridRows().find((r) => String(taskIdOfRow(r)) === String(id));
+        if (again) { again.setAttribute("tabindex", "0"); again.focus(); }
+      }, 0);
+      return;
+    }
     if (e.key === "ArrowDown") return go(i + 1);
     if (e.key === "ArrowUp") return go(i - 1);
     if (e.key === "Home") return go(0);
@@ -1339,7 +1352,6 @@ function watchRowTags(api: GanttApi) {
     });
     syncFoldAllButton(api);
     syncScopeFilterButton();
-    labelToolbarButtons();
     labelAddColumnHeader();
     /* the arrowhead the connectors point at, and the hint on the two discs a
        link is dragged from — both idempotent, both append-only */
@@ -1353,7 +1365,6 @@ function watchRowTags(api: GanttApi) {
   const sched = () => { if (!raf) raf = requestAnimationFrame(tag); };
   retagHook = sched;
   installRowKeys(api);
-  watchToolbar();
   const target = document.querySelector(".gantt-holder");
   if (target) {
     rowTagObserver = new MutationObserver(sched);
@@ -1431,6 +1442,12 @@ export default function GanttEditor({
   const [picker, setPicker] = useState<Picker | null>(null); /* { taskId, el, rect, ids } */
   const pickerKeyRef = useRef("none");                       /* last opened row: see the popover below */
   const lastPickerRef = useRef<Picker | null>(null);
+  /* ---------- which grid columns are on screen ----------
+     Seeded from localStorage on the first render, so the choice is already in
+     hand before the widget mounts and there is no flash of the full grid. It is
+     NOT a search param: see features/gantt/lib/columns.ts for the argument. */
+  const [hiddenCols, setHiddenCols] = useState<string[]>(() => readHiddenColumns(EDITOR_COLUMNS_KEY));
+  const hiddenColsKey = hiddenKey(hiddenCols);
   /* the Scope column header's own filter trigger, anchored the same way the Who
      picker is: the button is tagger-built, so React never renders it and the
      popover has to be told where it is */
@@ -1441,6 +1458,17 @@ export default function GanttEditor({
      indistinguishable from one that was never clicked */
   const [copyState, setCopyState] = useState<"idle" | "ok" | "fail">("idle");
   const shareInputRef = useRef<HTMLInputElement>(null);
+  /* Ark focuses the first focusable node in a popover by default. In the
+     Columns panel that would be the first COLUMN toggle, which is fine — this
+     just names it, so the rule the People popover had to learn the hard way
+     (the caret landing in a live rename field) is stated rather than inherited
+     by accident. */
+  const columnsFirstRef = useRef<HTMLButtonElement>(null);
+  /* which row the task-editor modal is open on. The modal's own Move up / Move
+     down buttons need it, and the panel is library-rendered — it carries no id
+     in its DOM. `show-editor` is not in `finalEvents`, so listening costs
+     nothing: no save, no undo snapshot. */
+  const editorTaskRef = useRef<TID | null>(null);
   const addPersonRef = useRef<HTMLInputElement>(null);
   /* the armed confirms. Both follow the projects list's pattern — the
      destructive step names what it costs, the safe option takes focus, and
@@ -1763,12 +1791,57 @@ export default function GanttEditor({
       const hint = document.createElement("span");
       hint.className = "editor-okay-hint";
       hint.textContent = "Changes apply as you make them.";
+      /* Where the reorder shortcut is ADVERTISED. The toolbar's Move up /
+         Move down carried a `title` each and are gone; the keys that replaced
+         them would otherwise be folklore. This is the one panel that is about
+         a single row and nothing else, so it is where someone asking "how do I
+         move this one" is already looking — and the row's own context menu
+         still lists Move ▸ Up / Down for the mouse. */
+      const keys = document.createElement("span");
+      keys.className = "editor-okay-hint";
+      keys.textContent = "Or move it with Alt+\u2191 / Alt+\u2193 in the list.";
       const btn = document.createElement("button");
       btn.className = "editor-okay";
       btn.type = "button";
       btn.textContent = "Done";
       btn.onclick = commitAndClose;
-      bar.appendChild(hint);
+      const hints = document.createElement("div");
+      hints.className = "editor-okay-hints";
+      hints.appendChild(hint);
+      hints.appendChild(keys);
+      bar.appendChild(hints);
+      /* ---------- the mouse's way to reorder a row ----------
+         The toolbar's Move up / Move down are gone and **the library's context
+         menu never opens in this configuration** (`ContextMenu` is mounted
+         without children, so the span carrying its `onContextMenu` wraps
+         nothing) — so without these, reordering would be keyboard-only and
+         would not exist at all on a touch device. Here they are contextual
+         rather than two permanently greyed glyphs in the strip: the panel is
+         already open on exactly one row, and the shortcut is advertised on the
+         line beside them. Same `exec("move-task", {mode})` the buttons fired,
+         so it is one undo step and one multi-row upsert, as before. */
+      const moves = document.createElement("div");
+      moves.className = "editor-move-group";
+      const mover = (mode: "up" | "down", label: string, glyph: string) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "editor-move";
+        b.title = label;
+        b.setAttribute("aria-label", label);
+        const g = document.createElement("span");
+        g.className = "ci " + glyph;
+        setGlyph(g, glyph);
+        b.appendChild(g);
+        b.onclick = () => {
+          const id = editorTaskRef.current;
+          if (id === null || id === undefined) return;
+          try { void api.exec("move-task", { id, mode }); } catch (e) {}
+        };
+        return b;
+      };
+      moves.appendChild(mover("up", "Move this row up (Alt+\u2191)", "ci-move-up"));
+      moves.appendChild(mover("down", "Move this row down (Alt+\u2193)", "ci-move-down"));
+      bar.appendChild(moves);
       bar.appendChild(btn);
       ed.appendChild(bar);
       /* focus the first field — the Name text input — once, on open */
@@ -1976,6 +2049,12 @@ export default function GanttEditor({
       } catch (e) { /* the widget rejected it; the bar keeps the dragged dates */ }
     });
 
+    /* see editorTaskRef: the modal's footer Move buttons read this */
+    a.on("show-editor", (ev) => {
+      const id = ev && ev.id !== undefined && ev.id !== null ? ev.id : null;
+      editorTaskRef.current = id;
+    });
+
     const finalEvents = [
       "add-task", "update-task", "delete-task", "move-task", "copy-task",
       "indent-task", "add-link", "update-link", "delete-link", "open-task",
@@ -2015,6 +2094,47 @@ export default function GanttEditor({
      as well as when the filter itself moves. Clearing goes through here too:
      `filter-tasks` with no handler is what drops SVAR's visible-id set. */
   useEffect(() => { runFilter(); }, [api, fKey, seed, projectId, st.storeRev, people, runFilter]);
+
+  /* ---------- hidden columns, applied WITHOUT re-initialising the widget -----
+     `columns` and `gridWidth` stay exactly the constants they were: SVAR
+     re-runs `init(config)` on ANY prop change, which rebuilds the store and
+     drops the filter, the selection and the scroll position with it. Both
+     values move through the store's own `set-columns` / `resize-grid` actions
+     instead, which are plain setStates — so a toggle re-renders the grid and
+     nothing else. Neither action is in `finalEvents`, so no save is scheduled
+     and no undo snapshot is taken: hiding a column is not an edit to the plan.
+
+     Keyed on `api`, which is a fresh object on every widget mount (project
+     switch, undo/redo `seed`, an adopted snapshot) — the three things that give
+     the store a clean `columns` array to re-apply this to. */
+  useEffect(() => {
+    const a = apiRef.current;
+    if (!a) return;
+    applyColumnVisibility(a, hiddenCols, BASE_GRID_WIDTH);
+    /* the tagger fills `scope`, `who`, `tracker` and `state` by column id and
+       guards every lookup, but a column that just came BACK has empty cells
+       until it is re-run */
+    if (retagHook) retagHook();
+  }, [api, hiddenColsKey, hiddenCols]);
+
+  /* One place a column is turned on or off. The updater form is load-bearing:
+     two toggles in the same tick would otherwise both compute from the render's
+     `hiddenCols` and the second would undo the first. */
+  const setHidden = useCallback((make: (cur: readonly string[]) => string[]) => {
+    setHiddenCols((cur) => make(cur));
+  }, []);
+  /* persistence and the one popover that cannot outlive its column, keyed on
+     the same settled value rather than done inside the updater — React is free
+     to run an updater twice, and neither of these may happen twice */
+  useEffect(() => {
+    writeHiddenColumns(EDITOR_COLUMNS_KEY, hiddenCols);
+    /* the release filter's second trigger LIVES in the Scope column's header.
+       Hiding that column takes the button with it, and an Ark popover anchored
+       to a node that is no longer in the document measures 0x0 and floats in
+       the corner — so close it. The dimension is not lost: the header's Filter
+       popover still holds all three. */
+    if (hiddenCols.includes("scope")) setScopePick(null);
+  }, [hiddenColsKey, hiddenCols]);
 
   /* ---------- people roster ---------- */
   /* the tagger reads the roster from module scope; keep it in step and repaint */
@@ -2741,6 +2861,86 @@ export default function GanttEditor({
                 aria-label="Redo the change that was undone"
               ><ArrowArcRight size={14} aria-hidden="true" /></button>
             </div>
+            {/* ---------- which columns the list shows ----------
+                It sits HERE, and not beside Filter in the page header, on
+                purpose. That header has overflowed twice already — it is nine
+                controls deep at its worst, it is what clipped the project's own
+                name to four characters, and its labels already start
+                disappearing at 1080px. This strip is the grid's own control
+                bar, it sits directly above the columns it governs, and removing
+                the four icon buttons above just made room in it. The trigger
+                carries a count while anything is hidden, so a grid missing a
+                column is never a mystery. */}
+            <Popover.Root
+              positioning={{ placement: "bottom-start", gutter: 8 }}
+              initialFocusEl={() => columnsFirstRef.current}
+            >
+              <Popover.Trigger
+                className={`${hiddenCols.length ? BTN_ON : BTN} ml-2`}
+                title="Choose which columns the list shows"
+              >
+                <Columns size={13} aria-hidden="true" />
+                <span className="max-[1080px]:sr-only">Columns</span>
+                {hiddenCols.length > 0 && (
+                  <span className="tabular-nums">{HIDEABLE_COLUMNS.length - hiddenCols.length + 1}/{HIDEABLE_COLUMNS.length + 1}</span>
+                )}
+              </Popover.Trigger>
+              <Portal>
+                <Popover.Positioner style={{ zIndex: 60 }}>
+                  <Popover.Content className={`${POP} w-[252px] rounded-xl p-3`}>
+                    <Popover.Title className={POP_TITLE}>Columns</Popover.Title>
+                    <Popover.Description className={POP_HINT}>
+                      Hides them on this device only. Nothing is deleted, and the totals and the PDF still carry every column.
+                    </Popover.Description>
+                    <ul className="m-0 list-none p-0">
+                      {/* Task name is shown as a row rather than left out, so it
+                          is clear it is a deliberate exception and not a
+                          column that went missing from the list. */}
+                      <li>
+                        <span className="flex w-full items-center gap-2 rounded-lg px-1.5 py-[0.3125rem] text-left font-ui text-body text-muted">
+                          <span className="min-w-0 flex-1 overflow-hidden">
+                            <span className="block overflow-hidden text-ellipsis whitespace-nowrap">Task name</span>
+                            <span className="block overflow-hidden text-tiny text-ellipsis whitespace-nowrap text-faint">Always shown</span>
+                          </span>
+                          <span className="flex-none text-faint" aria-hidden="true"><Check size={13} weight="bold" /></span>
+                        </span>
+                      </li>
+                      {HIDEABLE_COLUMNS.map((c, i) => {
+                        const on = !hiddenCols.includes(c.id);
+                        return (
+                          <li key={c.id}>
+                            <button
+                              ref={i === 0 ? columnsFirstRef : undefined}
+                              type="button"
+                              role="menuitemcheckbox"
+                              aria-checked={on}
+                              className={`press flex w-full cursor-pointer items-center gap-2 rounded-lg border-0 px-1.5 py-[0.3125rem] text-left font-ui text-body text-ink hover:bg-surface-hover ${FOCUS} ${on ? "bg-accent-hover" : "bg-transparent"}`}
+                              onClick={() => setHidden((cur) => toggleHiddenColumn(cur, c.id))}
+                            >
+                              <span className="min-w-0 flex-1 overflow-hidden">
+                                <span className="block overflow-hidden text-ellipsis whitespace-nowrap">{c.label}</span>
+                                <span className="block overflow-hidden text-tiny text-ellipsis whitespace-nowrap text-faint">{c.hint}</span>
+                              </span>
+                              <span className="flex-none text-ink" aria-hidden="true">{on ? <Check size={13} weight="bold" /> : null}</span>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                    {/* the way back, always in the same place rather than
+                        seven clicks spread down the list */}
+                    <div className="mt-2.5 border-t border-t-line-soft pt-2.5">
+                      <button
+                        type="button"
+                        className={BTN}
+                        disabled={hiddenCols.length === 0}
+                        onClick={() => setHidden(() => [])}
+                      >Show all columns</button>
+                    </div>
+                  </Popover.Content>
+                </Popover.Positioner>
+              </Portal>
+            </Popover.Root>
             <div className="flex flex-none items-center gap-[14px] px-4 text-tiny whitespace-nowrap text-muted max-[900px]:hidden" aria-hidden="true">
               {LEGEND.map((t) => (
                 <span key={t.id} className="inline-flex items-center gap-[5px]">
@@ -2778,7 +2978,7 @@ export default function GanttEditor({
                    tracked the window would re-initialise the store — and drop
                    the filter — on every resize tick. The widget's own
                    draggable resizer is how this is adjusted. */
-                gridWidth={812}
+                gridWidth={BASE_GRID_WIDTH}
                 start={range.start}
                 end={range.end}
                 autoScale={true}

@@ -6,12 +6,16 @@ import { Willow as CoreWillow } from "@svar-ui/react-core";
 import { Willow as GridWillow } from "@svar-ui/react-grid";
 import { Popover } from "@ark-ui/react/popover";
 import { Portal } from "@ark-ui/react/portal";
-import { Funnel, X } from "@phosphor-icons/react";
+import { Check, Columns, Funnel, X } from "@phosphor-icons/react";
 import { setGlyph, type GlyphHost } from "./icons";
 import { installWxiMasks } from "./lib/wxi-masks";
 import { trackerId, trackerNumber } from "./lib/tracker";
 import { ensureLinkArrowMarker } from "./lib/link-marker";
 import { DAY_CELL_WIDTH, DAY_SCALES, WEEKEND_HIGHLIGHT, setTodayLine, shortDate, todayStart } from "./lib/scale";
+import {
+  HIDEABLE_COLUMNS, VIEWER_COLUMNS_KEY, applyColumnVisibility, hiddenKey,
+  readHiddenColumns, toggleHiddenColumn, writeHiddenColumns,
+} from "./lib/columns";
 import { initialsOf, nameHue, parseAssignees } from "../people/roster";
 import {
   EMPTY_FILTER, RELEASE_INCLUSION_NOTE, RELEASES, TASK_TYPES, UNSET, asWidgetType, effectiveType,
@@ -336,6 +340,10 @@ function shapeStore(raw: Feed | null): ViewStore {
    ./lib/scale, which the editor uses too — a shared link and the editor it
    came from have to draw the same timeline, and two copies of the week band
    were two chances to disagree. */
+/* the width of the grid pane with every column shown; hiding one subtracts its
+   width through `resize-grid`, never by moving the prop — see ./lib/columns */
+const BASE_GRID_WIDTH = 732;
+
 const COLUMNS: IColumnConfig[] = [
   { id: "text", header: "Task name", width: 183, flexgrow: 1, sort: true },
   /* the editor's Status column, filled by the decorator below with the same
@@ -721,6 +729,20 @@ function Board({ store, activeId }: { store: ViewStore; activeId: string | null 
      anchored through Ark's getAnchorRect — the same bridge the editor uses */
   const [scopePick, setScopePick] = useState<HTMLElement | null>(null);
   const lastScopeRef = useRef<{ el: HTMLElement | null; rect: DOMRect | null }>({ el: null, rect: null });
+  /* ---------- which grid columns this page shows ----------
+     The same control the editor has, on the same mechanism, under its OWN
+     storage key: a column the owner hid while planning has no business
+     disappearing from a link they hand somebody else, and a recipient's choice
+     here is theirs. Like the filter on this page it is local — `/share/:id`
+     takes no search params today — so it is not part of the link either. */
+  const [hiddenCols, setHiddenCols] = useState<string[]>(() => readHiddenColumns(VIEWER_COLUMNS_KEY));
+  const hiddenColsKey = hiddenKey(hiddenCols);
+  const columnsFirstRef = useRef<HTMLButtonElement>(null);
+  /* the updater form, for the same reason the editor uses it: two toggles in
+     one tick must not both compute from the same render's value */
+  const setHidden = useCallback((make: (cur: readonly string[]) => string[]) => {
+    setHiddenCols((cur) => make(cur));
+  }, []);
 
   /* ShareViewer only mounts Board once the feed has at least one project */
   const project: ViewProject = store.projects.find((p) => p.id === activeId) || store.projects[0];
@@ -778,6 +800,29 @@ function Board({ store, activeId }: { store: ViewStore; activeId: string | null 
   useEffect(() => {
     releaseFilterRef = liveFilter.releases;
   }, [liveFilter]);
+
+  /* Applied through the store's own `set-columns` / `resize-grid` actions, not
+     by moving the `columns` / `gridWidth` props: react-gantt re-runs
+     `init(config)` on any prop change, which would rebuild the store and drop
+     the filter with it. `init` runs in the widget's own effect, which React
+     flushes before this one on mount, so apiRef is set by the time this reads
+     it — and `activeId` is the holder's key, so a project switch comes back
+     through here with a fresh store to re-apply to. */
+  useEffect(() => {
+    const a = apiRef.current;
+    if (!a) return;
+    applyColumnVisibility(a, hiddenCols, BASE_GRID_WIDTH);
+  }, [activeId, hiddenColsKey, hiddenCols]);
+
+  /* persistence, and the popover that cannot outlive the column hosting its
+     trigger — outside the updater, which React may run twice */
+  useEffect(() => {
+    writeHiddenColumns(VIEWER_COLUMNS_KEY, hiddenCols);
+    /* the release filter's second trigger lives in the Scope column's header,
+       so hiding that column takes the button with it. The header's own Filter
+       popover still holds all three dimensions. */
+    if (hiddenCols.includes("scope")) setScopePick(null);
+  }, [hiddenColsKey, hiddenCols]);
   useEffect(() => {
     scopeFilterHook = (hostEl) => {
       lastScopeRef.current = { el: hostEl, rect: hostEl ? hostEl.getBoundingClientRect() : null };
@@ -984,6 +1029,75 @@ function Board({ store, activeId }: { store: ViewStore; activeId: string | null 
         <CoreWillow fonts={false}>
         <GridWillow fonts={false}>
           <div className="toolbar-row flex min-h-[44px] flex-none items-center justify-end border-b border-b-line-soft">
+            {/* the editor's Columns control, in the same place relative to the
+                grid: this strip, not the page header. A recipient did not
+                choose these columns, so the default here is all of them —
+                but a narrow window is a narrow window whoever is at it. */}
+            <Popover.Root
+              positioning={{ placement: "bottom-start", gutter: 8 }}
+              initialFocusEl={() => columnsFirstRef.current}
+            >
+              <Popover.Trigger
+                className={`${hiddenCols.length ? BTN_ON : BTN} mr-auto ml-3`}
+                title="Choose which columns the list shows"
+              >
+                <Columns size={13} aria-hidden="true" />
+                <span className="max-[1080px]:sr-only">Columns</span>
+                {hiddenCols.length > 0 && (
+                  <span className="tabular-nums">{HIDEABLE_COLUMNS.length - hiddenCols.length + 1}/{HIDEABLE_COLUMNS.length + 1}</span>
+                )}
+              </Popover.Trigger>
+              <Portal>
+                <Popover.Positioner style={{ zIndex: 60 }}>
+                  <Popover.Content className={`${POP} w-[252px] rounded-xl p-3`}>
+                    <Popover.Title className={POP_TITLE}>Columns</Popover.Title>
+                    <Popover.Description className={POP_HINT}>
+                      Hides them on this device only. Nothing here can be changed — the plan itself is untouched.
+                    </Popover.Description>
+                    <ul className="m-0 list-none p-0">
+                      <li>
+                        <span className="flex w-full items-center gap-2 rounded-lg px-1.5 py-[0.3125rem] text-left font-ui text-body text-muted">
+                          <span className="min-w-0 flex-1 overflow-hidden">
+                            <span className="block overflow-hidden text-ellipsis whitespace-nowrap">Task name</span>
+                            <span className="block overflow-hidden text-tiny text-ellipsis whitespace-nowrap text-faint">Always shown</span>
+                          </span>
+                          <span className="flex-none text-faint" aria-hidden="true"><Check size={13} weight="bold" /></span>
+                        </span>
+                      </li>
+                      {HIDEABLE_COLUMNS.map((c, i) => {
+                        const on = !hiddenCols.includes(c.id);
+                        return (
+                          <li key={c.id}>
+                            <button
+                              ref={i === 0 ? columnsFirstRef : undefined}
+                              type="button"
+                              role="menuitemcheckbox"
+                              aria-checked={on}
+                              className={`press flex w-full cursor-pointer items-center gap-2 rounded-lg border-0 px-1.5 py-[0.3125rem] text-left font-ui text-body text-ink hover:bg-surface-hover ${FOCUS} ${on ? "bg-accent-hover" : "bg-transparent"}`}
+                              onClick={() => setHidden((cur) => toggleHiddenColumn(cur, c.id))}
+                            >
+                              <span className="min-w-0 flex-1 overflow-hidden">
+                                <span className="block overflow-hidden text-ellipsis whitespace-nowrap">{c.label}</span>
+                                <span className="block overflow-hidden text-tiny text-ellipsis whitespace-nowrap text-faint">{c.hint}</span>
+                              </span>
+                              <span className="flex-none text-ink" aria-hidden="true">{on ? <Check size={13} weight="bold" /> : null}</span>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                    <div className="mt-2.5 border-t border-t-line-soft pt-2.5">
+                      <button
+                        type="button"
+                        className={BTN}
+                        disabled={hiddenCols.length === 0}
+                        onClick={() => setHidden(() => [])}
+                      >Show all columns</button>
+                    </div>
+                  </Popover.Content>
+                </Popover.Positioner>
+              </Portal>
+            </Popover.Root>
             <div className="flex flex-none items-center gap-[14px] px-4 text-tiny whitespace-nowrap text-muted max-[900px]:hidden" aria-hidden="true">
               {LEGEND.map((t) => (
                 <span key={t.id} className="inline-flex items-center gap-[5px]">
@@ -1011,7 +1125,7 @@ function Board({ store, activeId }: { store: ViewStore; activeId: string | null 
               scaleHeight={36}
               /* as in the editor: the Status column costs 88 and Scope and
                  Who give back 16, so the chart gives up 64 */
-              gridWidth={732}
+              gridWidth={BASE_GRID_WIDTH}
               start={range.start}
               end={range.end}
               autoScale={true}

@@ -22,6 +22,8 @@
 import {
   AppWindow,
   ArrowsInLineVertical,
+  ArrowUp,
+  ArrowDown,
   BookOpenText,
   ArrowsOutLineVertical,
   CheckSquare,
@@ -58,6 +60,11 @@ const GLYPHS: Record<string, Icon> = {
      release dimension is constraining is said with colour and a count, not
      with a second silhouette nobody would tell apart at 14px. */
   "ci-filter": Funnel,
+  /* the task editor's footer: the mouse's route to reordering a row, now that
+     the toolbar's Move up / Move down are gone and the library's context menu
+     never opens in this configuration */
+  "ci-move-up": ArrowUp,
+  "ci-move-down": ArrowDown,
 };
 
 /* the tagger stamps the glyph name onto the node it wrote, so a re-run can

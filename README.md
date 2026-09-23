@@ -27,10 +27,11 @@ MVP is a *subset* of the full release, so the full figure includes it and says s
 **dependency links** between tasks, drawn as elbow connectors with an arrowhead and
 created by dragging the handle that appears on a bar's edge,
 **filtering** by type, release and assignee held in the URL and reachable from the Scope
-column's own header, Yandex Tracker links with an
+column's own header, **hiding the grid columns you do not need** (per device, not in the
+link), Yandex Tracker links with an
 extracted `PRODUCT-XXXX` ID column, a centered edit modal, keyboard copy/paste/undo
-(Cmd+C / Cmd+V / Cmd+Z), collapse/expand-all, PDF export, and a Share button that hands
-out the read-only link.
+(Cmd+C / Cmd+V / Cmd+Z) and Alt+↑/↓ to reorder a row, collapse/expand-all, PDF export, and
+a Share button that hands out the read-only link.
 
 ## Layout
 
@@ -67,7 +68,9 @@ src/
                         taxonomy (the three tiers, the release scopes, the filter — and
                         the one place the story↔summary mapping lives), scale (the
                         week/day scale, the weekend predicate, the today line),
-                        link-marker (the connectors' arrowhead and the drag handles)
+                        link-marker (the connectors' arrowhead and the drag handles),
+                        columns (which grid columns are shown, where that choice is
+                        stored, and how it reaches a live widget)
     people/roster.ts    assignee helpers shared by both gantt screens
     projects/
       store.tsx       the React Query snapshot, the draft, and the write mutations
@@ -221,6 +224,37 @@ the dataset. It is also applied with `open: false`, because the library's
 expand-the-ancestors option would set `open` — a persisted column — on every match's
 parent, and applying a filter must not dirty a row.
 
+## Hiding grid columns
+
+The grid carries `Task name · Status · Scope · Who · ID · Start · Effort h · Effort d` plus
+the add gutter, and it is wide enough that on a narrow window the chart gets pushed off
+screen. A **Columns** popover in the toolbar strip — above the grid it governs, not in the
+page header, which has overflowed twice already — turns any of them off except Task name,
+with a count on the trigger while anything is hidden and **Show all columns** as the way
+back. The public viewer has the same control.
+
+**The choice is `localStorage`, not a search param, and that is the interesting decision.**
+The filter is in the URL because a filtered timeline is a statement about the plan and
+worth sending someone. Which columns are on screen is a statement about *this window on
+this machine*: in the URL it would ride along on every link copied out of the address bar
+and reshape a recipient's grid for a reason they never chose, and one URL cannot hold both
+a laptop's answer and a wide monitor's. So it is per device, under two keys —
+`gantt.columns.editor` and `gantt.columns.share`, kept apart so a column the owner hid
+while planning does not vanish from a link they hand out. Reads and writes are wrapped
+(Safari private mode throws on `localStorage` outright) and the stored list is validated
+against the known column ids. **No database column, and no migration.**
+
+**The grid's width tracks the visible columns, and nothing re-initialises.** `columns` and
+`gridWidth` are props, and react-gantt re-runs `init(config)` on *any* prop change —
+rebuilding the store and dropping the active filter, the selection and the scroll position
+with it. So neither prop moves. Both values go through the store's own actions instead:
+`set-columns`, which copies `hidden`/`width`/`flexgrow` onto the columns already in state,
+and `resize-grid`, the same one-line action the widget's draggable resizer fires. Neither
+is a task event, so a toggle emits **no request of any kind** — verified against a stubbed
+PostgREST on the production build: toggling three columns under an active `?type=` filter
+leaves the same rows visible and the filter pill intact, moves the grid from 812px to
+546px, and adds nothing at all to the request log.
+
 ## Styling stack
 
 Tailwind CSS v4 + [Ark UI](https://ark-ui.com) + [Phosphor icons](https://phosphoricons.com).
@@ -334,9 +368,16 @@ just the open one. Both confirms put focus on the safe option and back out on Es
 same shape the projects list uses. Undo and redo are buttons in the toolbar as well as
 ⌘Z, so the safety net exists on a touch device and in the accessibility tree.
 
-**Nothing is mouse-only.** The grid has a roving tab stop with arrow-key movement, so the
-toolbar's Move up / Move down are reachable without a click; the per-row `+` and the
-toolbar's four icon buttons carry real names; and the task editor is a genuine modal —
+**Nothing is mouse-only, and nothing is keyboard-only.** The grid has a roving tab stop
+with arrow-key movement, and **Alt+↑ / Alt+↓ reorder the focused row**. That is where the
+toolbar's Move up / Move down went when the toolbar was cut back to New task alone — with
+**two Move buttons in the task editor's footer** as the mouse's route to the same thing,
+because the library's context menu turns out never to open in this configuration. The
+toolbar's other losses were second routes to something that already had a first (the row
+pencil, Ctrl+E and Enter all open the editor; Ctrl+D, Backspace and the modal's red button
+all reach the same delete confirm). The shortcut is advertised in the modal's footer, on
+those buttons' tooltips and as `aria-keyshortcuts` on every row. The per-row `+` carries a
+real name; and the task editor is a genuine modal —
 focus on open, a Tab trap, Escape to close, a named close button and two distinctly
 labelled counter buttons. The save state is a live region rather than a silent pill, and
 it is an *event*: it appears after a change you made, says "All changes saved", and

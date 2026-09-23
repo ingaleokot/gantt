@@ -48,7 +48,7 @@ src/
                       chrome) · hooks/ (session redirects, recovery session) · lib/
                       (field validators)
     gantt/            Editor · ShareViewer · pdf · icons · lib/ (render-icon,
-                      wxi-masks, tracker, taxonomy, scale, link-marker)
+                      wxi-masks, tracker, taxonomy, scale, link-marker, columns)
     people/           roster.ts — the assignee helpers both gantt screens share
                       (the role LIST and the role→type map live in gantt/lib/taxonomy.ts,
                       next to the task types they name)
@@ -80,9 +80,11 @@ member of that set: the tier list, the release scopes, the tier↔widget mapping
 filter predicate, the roles and the role→task-type map, shared by the editor, the viewer,
 the PDF, the projects list **and the `/p/$projectId` route file** (which validates the
 filter out of the URL and therefore must not reach supabase either).
-`features/gantt/lib/scale.ts` (the week/day scale, the weekend predicate, the today line)
-and `features/gantt/lib/link-marker.ts` (the connectors' arrowhead, the drag handles'
-labels) are the two newest, and both are imported by the viewer — same ban.
+`features/gantt/lib/scale.ts` (the week/day scale, the weekend predicate, the today line),
+`features/gantt/lib/link-marker.ts` (the connectors' arrowhead, the drag handles'
+labels) and `features/gantt/lib/columns.ts` (which grid columns are shown, where that
+choice is stored, and the one function that applies it to a live widget) are all imported
+by the viewer — same ban.
 
 The one import that runs the other way is deliberate: **`lib/db.ts` imports `asRole` from
 `taxonomy.ts`**. The ban is one-directional — taxonomy and roster may not reach `lib/` —
@@ -250,10 +252,11 @@ What holds it together now:
   survive to ~700px instead of the whole line vanishing at 1100 as it used to.
 
 Verified at 700 / 900 / 1114 / 1280: one row of controls, all six present and inside the
-viewport, header 62px, title never clipped. Below **~825px** the fixed `gridWidth` pushes
-the chart off-screen — that is the widget's own layout, not the header's, and is what
-SVAR's draggable resizer is for. That number **used to be ~760** and moved when the Status
-column was added; see The grid's columns below for what it bought.
+viewport, header 62px, title never clipped. Below **~825px** the all-columns `gridWidth`
+pushes the chart off-screen — that is the widget's own layout, not the header's. SVAR's
+draggable resizer is one answer to it; **hiding columns is the other, and it moves that
+number** (hide four and 825 becomes ~480). That 825 **used to be ~760** and moved when the
+Status column was added; see The grid's columns below for what it bought.
 
 ## Auth (`src/features/auth/`)
 
@@ -469,9 +472,10 @@ and "what does MVP cost" would always be zero.
   on the rows that inherit — which is the same distinction the PDF's SCOPE column draws
   with bold and regular, and what makes the column readable as a column. The widget's own
   draggable resizer is how a narrow window is rebalanced.
-  `gridWidth` is deliberately a CONSTANT: SVAR re-runs `init(config)` on any prop change,
+  The `gridWidth` PROP is still a constant: SVAR re-runs `init(config)` on any prop change,
   so one that tracked the window would re-initialise the store — and drop the filter — on
-  every resize tick.
+  every resize tick. The grid's width does move when a column is hidden, but through the
+  store's own `resize-grid` action rather than the prop — see Hiding a column below.
 - **the Scope column header hosts the release filter.** A tagger-appended `.col-filter`
   button (append-only, positioned by CSS, `pointerdown` stopped, and the column declared
   `sort: false` so there is nothing for it to fight) opens a controlled Ark `Popover`
@@ -686,6 +690,45 @@ behind are load-bearing; each one below is the fix to a specific, reproducible f
   the shortcut and the button cannot come to mean different things; `hist` mirrors the two
   ref-held stacks into render for the disabled state. A shortcut you have to already know
   is not a safety net, and does not exist at all on a touch device.
+- **The toolbar is one button: New task.** Edit, Delete, Move up and Move down are gone,
+  and the separator with them. Edit and Delete were second routes to something that
+  already had a first and only lit up on a selection, so the strip spent most of its life
+  showing greyed glyphs: Edit is the row pencil / Ctrl+E / Enter on a focused row, Delete
+  is Ctrl+D / Backspace / the modal's red button, all of which end at the same
+  `intercept("delete-task")`. **Move up / down were the exception** — `move-task` is
+  reached from nowhere else in `src/` except cut/paste, and the grid's plain Arrow keys
+  move FOCUS, not the row — so they were REPLACED, in two places rather than dropped:
+    · **`Alt+↑` / `Alt+↓` on the focused row**, in `rowKeyHandler`, firing the same
+      `exec("move-task", {mode})` the buttons did (the library splits `move-task:up` into
+      exactly that). Alt keeps it clear of the plain arrows, and it closes the review
+      finding that Move up/down were unreachable by keyboard at all.
+    · **two `.editor-move` buttons in the task editor's footer bar**, appended by
+      `ensureEditorChrome` next to Done. These are the MOUSE's route, and they are not
+      optional politeness — see the context-menu finding below. Contextual rather than two
+      permanently greyed glyphs in the strip, because the panel is open on exactly one
+      row; `editorTaskRef` is which row, recorded from a `show-editor` listener
+      (`show-editor` is not in `finalEvents`, so listening costs nothing).
+  Advertised rather than left as folklore: the modal's footer carries *"Or move it with
+  Alt+↑ / Alt+↓ in the list."* under "Changes apply as you make them", the two buttons'
+  own titles name the shortcut, and every grid row carries
+  `aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"`. Verified with the stub: one Alt+Arrow
+  emits exactly one `POST /tasks` with `Prefer: resolution=merge-duplicates` carrying the
+  five rows whose `sort_order` moved — the multi-row upsert path — **and no delete**, and
+  undo puts the order back through the same one request.
+- **The context menu does not open, and has not for a while.** `<MContextMenu api={api} />`
+  is mounted with no CHILDREN, and the library's `ContextMenu` is what renders the
+  `<span onContextMenu=…>` that opens it — so that span wraps nothing and no right-click
+  ever reaches it (verified in the production build: right-clicking a row or a bar, and
+  calling `.wx-bars`'s own `onContextMenu` prop by hand, all leave `[data-wx-menu]`
+  absent). Anywhere this file claims the context menu as a route — to a delete, to the
+  Convert list — **treat that as stale**, and do not count it when weighing whether
+  something is still reachable. It is why the modal got the two Move buttons.
+- **`labelToolbarButtons()` and its private MutationObserver are gone with them.** That
+  helper existed only because `comp: "icon"` forwards nothing but `title` to the DOM and
+  renders a `" "` child, so those four buttons had no accessible name. "New task" is
+  `comp: "button"`, renders its own text and never had the problem — leaving an observer
+  running on every toolbar mutation to stamp a label onto nothing would have been dead
+  weight, so `TOOLBAR_LABELS` went too.
 - **The task editor is a real modal.** `ensureEditorChrome()` sets `role="dialog"` +
   `aria-modal`, names the close X, focuses the Name field, binds Escape, traps Tab, and
   fixes the counter's two buttons, which the library ships with the **same**
@@ -697,16 +740,16 @@ behind are load-bearing; each one below is the fix to a specific, reproducible f
   click, so Move up / Move down were unreachable by keyboard entirely. `rovingRow` gives
   the selected row (or the first) `tabindex="0"`, Arrow/Home/End move it, `focusin` runs
   `select-task` — which is *not* in `finalEvents`, so it schedules no save and takes no
-  undo snapshot — and Enter opens the editor. The `+` cell rides the same tab stop, so the
-  whole grid costs two, not two per row.
-- **The four `comp: "icon"` toolbar buttons are named.** For that comp the library
-  forwards exactly one config field to the DOM — `title` — and reads `menuText`/`text`
-  only in an overflow menu this configuration never shows, so Edit / Delete / Move up /
-  Move down rendered as `title=""`. `TOOLBAR_ITEMS` carries real titles and
-  `labelToolbarButtons()` stamps the matching `aria-label` (the `title` fallback only
-  applies while a button has no text content, and the library renders a `" "` child). It
-  needs **its own small observer**: the toolbar remounts those buttons as the selection
-  changes and it sits outside `.gantt-holder`, which is what the row tagger watches.
+  undo snapshot — and Enter opens the editor. **Alt+↑ / Alt+↓ reorder the focused row**
+  (`move-task`), which is where Move up / Move down went. The `+` cell rides the same tab
+  stop, so the whole grid costs two, not two per row.
+- **The four `comp: "icon"` toolbar buttons used to be nameless, and are now simply
+  gone.** For that comp the library forwards exactly one config field to the DOM — `title`
+  — and reads `menuText`/`text` only in an overflow menu this configuration never shows,
+  so Edit / Delete / Move up / Move down rendered as `title=""`. That was fixed by
+  `labelToolbarButtons()` plus its own observer; both were removed with the buttons
+  themselves (see The toolbar is one button, above). Keep the finding in mind before
+  adding any `comp: "icon"` item back.
 - **The save pill is an event, not a label** — `useSavePhase` in `store.tsx`, shared by
   the editor and the projects list so they cannot drift. `SaveStatus` is the *mutation's*
   state: it turns `saved` on the first successful write and never leaves, and in the
@@ -724,12 +767,13 @@ behind are load-bearing; each one below is the fix to a specific, reproducible f
 - **User-facing text says what to do; the raw exception goes in the `title`.** The PDF
   failure is the example: the chip reads "The PDF could not be created, so nothing was
   downloaded…" and the exception's own message rides along as `Alert.detail`.
-- Two things the review asked for that are deliberately **not** done, and why:
-  `gridWidth` stays a constant (SVAR re-runs `init(config)` on any prop change, so a
+- Two things the review asked for that are still deliberately **not** done, and why: the
+  `gridWidth` PROP stays a constant (SVAR re-runs `init(config)` on any prop change, so a
   responsive one re-initialises the store and drops the filter on every resize tick — the
-  widget's own draggable resizer is the answer), and `/share` with no id still has nothing
-  to click, because the only place to send the recipient is a login page they have no
-  account for. Its copy says so honestly instead.
+  draggable resizer, and now the Columns control, are the answers), and `/share` with no id
+  still has nothing to click, because the only place to send the recipient is a login page
+  they have no account for. Its copy says so honestly instead. Note the distinction the
+  Columns control turns on: the prop is fixed, the store's `gridWidth` is not.
 
 ## The chart's visual language (the ReUI pass)
 
@@ -900,7 +944,7 @@ palette; there is no way to read a custom property from jsPDF.
 | --- | --- | --- |
 | declared widths | 724 | 794 |
 | `gridWidth` | 748 | 812 (viewer 668 → 732) |
-| chart starts vanishing at | ~760px | ~825px |
+| chart starts vanishing at | ~760px | ~825px (less, with columns hidden) |
 
 Status costs 88; Scope (72→68) and Who (78→72, the chips overlap now) gave back 16. The
 first pass also tried to pay for it out of ID, Start and the two Effort columns, and had
@@ -918,6 +962,63 @@ Two things that bite:
 - **The status dot in the name cell stays.** It is not redundant with the pill — it is
   what lets a column of names be scanned without reading a word, and the reference keeps
   both for the same reason.
+
+### Hiding a column, and why `gridWidth` can track them after all
+
+`features/gantt/lib/columns.ts` owns the whole thing — the hideable list, the two storage
+keys and `applyColumnVisibility`, the one function that puts a choice onto a live widget.
+Both gantt screens import it, so it may not reach `lib/`.
+
+- **The control is a `Columns` popover in the `.toolbar-row`, not in the page header.**
+  That header has overflowed twice (see The timeline scale, and the header) and its labels
+  already start disappearing at 1080px; the toolbar strip is the grid's own control bar,
+  it sits directly above the columns it governs, and removing the four icon buttons freed
+  room in it. The trigger carries a `5/8`-style count while anything is hidden, so a grid
+  missing a column is never a mystery, and "Show all columns" in the panel is the way back.
+- **Task name is not hideable** — a list of rows with no names is not a list — and neither
+  is the `add-task` gutter, which is chrome and the only way to add a child row in place.
+- **The choice lives in `localStorage`, NOT in the URL.** The filter is three search params
+  because a filtered timeline is a statement about the plan and worth sending. Which
+  columns are on screen is a statement about this window on this machine: putting it in the
+  URL would make every link copied out of the address bar carry a viewing preference the
+  recipient never chose, and one URL cannot hold both a laptop's answer and a wide
+  monitor's. Keys: `gantt.columns.editor` and `gantt.columns.share` — **two**, because a
+  column the owner hid while planning has no business disappearing from a link they hand
+  out. Both reads and writes are try/caught (Safari private mode throws outright) and the
+  stored list is validated against the known ids the way the route validates the filter.
+  **It is deliberately not a database column** and needs no migration.
+- **Neither `columns` nor `gridWidth` moves as a prop.** `init(config)` re-runs on ANY
+  prop change, which rebuilds the store and drops the filter, the selection and the scroll
+  position with it. Both values are changed through the store's own actions instead:
+  `set-columns` (which copies `width`, `hidden` and `flexgrow` onto the columns already in
+  state and calls setState) and `resize-grid` (a one-line setState, the same action the
+  widget's draggable resizer fires). `IGanttColumn.hidden` is real and the grid filters
+  hidden columns out of the rendered set; the two actions are typed in `TMethodsConfig`.
+  Neither is in `finalEvents` and neither touches a task, so **a toggle emits no request of
+  any kind** and the filter survives it because nothing re-initialises.
+- **So `gridWidth` DOES track the visible columns now**, and that is the payoff: hiding
+  ID + Effort h + Effort d + Start takes the grid from 812 to 466 and hands ~350px back to
+  the chart on a window where it used to be pushed off screen. `BASE_GRID_WIDTH` (812
+  editor, 732 viewer) is the all-columns number and is still the constant handed to the
+  prop; hiding subtracts that column's own width from it, so showing everything lands back
+  on exactly the width the screen always had. `set-columns` copies the width off what it is
+  HANDED, so the LIVE columns go back in — that is what stops a toggle from undoing a width
+  the user dragged. A dragged width survives until the next toggle, which re-derives it.
+- **The row tagger needs no change and must not get one.** It already guards every
+  `querySelector` for `scope`, `who`, `tracker` and `state`, so a hidden column is simply a
+  cell it does not find. A column coming BACK is repainted because the effect calls
+  `retagHook()` after applying.
+- **Hiding Scope takes the release filter's second trigger with it**, since that button is
+  appended into the Scope header cell. `syncScopeFilterButton()` already returns early when
+  the header cell is gone; what had to be added is closing the popover (`setScopePick(null)`)
+  — an Ark popover anchored to a detached node measures 0x0. The dimension is not lost: the
+  header's Filter popover still holds all three.
+- Verified against the stubbed PostgREST, on the production build: toggling three columns
+  while `?type=frontend` is on leaves the same three rows visible and the `1 of 6` pill
+  intact, moves the grid from 812px to 546px, and emits **zero requests** — the only five
+  in the log are the mount's own reads. The choice survives a reload and a widget remount
+  (undo/redo bumps `seed`), hiding Scope with its popover open throws nothing, and "Show
+  all columns" returns the grid to 812px with every tagger-filled cell repainted.
 
 ### Bars
 
