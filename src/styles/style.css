@@ -70,12 +70,43 @@
      what an opaque hairline could never do. */
   --color-line: rgba(10, 10, 10, 0.12);
   --color-line-soft: rgba(10, 10, 10, 0.07);
-  --color-accent: #10767f;
-  --color-accent-hover: rgba(16, 118, 127, 0.1);
+  /* ---- the accent is a NEUTRAL, and that is the whole point --------------
+     It used to be teal (#10767f / #4bb3bb), and with ~85 uses it was the
+     single loudest hue in the app: every tracker pill, every primary button,
+     every focus ring. The reference reserves hue STRICTLY for data — its
+     `--primary` is oklch(0.922 0 0) and its `--accent`/`--secondary` are
+     oklch(0.269 0 0), all zero-chroma — because on a chart the only things
+     that may carry a colour are the things the colour MEANS something about:
+     the bars, the status pills, the release pills, the today line. Chrome
+     that competes with them is chrome that makes the plan harder to read.
+
+     So: near-white on near-black, near-black on white. Do not "restore" a
+     coloured accent — it is neutral on purpose, and the hue it used to spend
+     is what the bars are now free to use.
+
+     Note what this token is NOT: it is not the focus ring. A near-white ring
+     on a near-black ground is deafening, so focus moved to --color-ring
+     below. The accent is a FILL (a primary button, the link handle, the
+     project span); the ring is an outline. Keeping them apart is what lets
+     the fill be emphatic and the ring be quiet. */
+  --color-accent: #1a1a1a;
+  /* the tinted chip/selection wash. Translucent, not an opaque grey, for the
+     same reason the separators are: it has to layer over whatever the row
+     already is. Roughly double --color-surface-hover so that "this option is
+     chosen" and "the pointer is over this option" are two different things. */
+  --color-accent-hover: rgba(10, 10, 10, 0.1);
   /* derived from the accent rather than restated as a hex, so it follows the
-     theme on its own and cannot drift out of step with it */
+     theme on its own and cannot drift out of step with it. Resolves to about
+     #d1d1d1 over the light surface and #414141 over the dark one. */
   --color-accent-selected: color-mix(in srgb, var(--color-accent) 18%, transparent);
-  --color-accent-ink: #ffffff;
+  --color-accent-ink: #fafafa;
+  /* ---- focus, split off the accent --------------------------------------
+     The reference's own `--ring` is oklch(0.556 0 0): a mid grey, not the
+     primary. Every `:focus-visible` outline in the app points here. It is
+     pitched for 3:1+ against both the raised surface and the ground in both
+     themes — #b5b5b5 (the first value tried in light) measured 2.05:1 on
+     white, which is not a focus ring anybody can find. */
+  --color-ring: #8a8a8a;
   --color-milestone: #b45309;
   --color-summary: #2563eb;
   --color-summary-fill: #1d4ed8;
@@ -90,12 +121,34 @@
   --color-grid-line: rgba(10, 10, 10, 0.06);
   --color-row-hover: rgba(10, 10, 10, 0.035);
   --color-summary-ink: #ffffff;
-  --color-epic-row: rgba(37, 99, 235, 0.07);
+  /* ---- tier rows are raised by LIGHTNESS, never by hue -------------------
+     These two used to be the tier's own colour at 7-12% — a blue wash on every
+     epic row and a violet one on every story row. On a plan that is mostly
+     epics and stories that is not an accent, it is ACRES: the wash covered the
+     whole grid and gave the entire app a blue-teal cast. The reference tints no
+     group row with hue at all; it separates them by weight, by the chevron and
+     by indentation, and reserves colour for the bars.
+
+     So the ladder is lightness now — epic raised most, story less, a leaf task
+     not at all — which still reads as three depths, and the tier is ALSO
+     carried by the type icon (a crown vs an open book, each in its tier's
+     colour), the bold label and the indentation. Four signals, none of them a
+     field of colour. The same tokens paint the epic/story bands on the chart,
+     which is why the band's hairline edges are mixed from the rails below
+     rather than from these. */
+  --color-epic-row: rgba(10, 10, 10, 0.045);
+  --color-story-row: rgba(10, 10, 10, 0.024);
+  /* the 3px rail down the left of a tier row and of the rows nested under it,
+     plus the elbow connector between them. GRID chrome, so neutral — unlike
+     the two rails below, which draw the tier's bar on the CHART and are data. */
+  --color-tier-rail: rgba(10, 10, 10, 0.22);
+  /* The tier rails keep their hue: on the chart they ARE the container's bar
+     (the rounded track, its end caps and its progress fill), and in the grid
+     they colour the tier's type icon — both of which are the same kind of
+     thing as a task bar's colour. They no longer paint any row background. */
   --color-epic-rail: #2563eb;
-  /* the story tier sits between an epic and a task, so it gets its own rail and
-     row wash — a violet that is neither the epic's blue nor the design type's
-     purple, which is only ever a bar fill */
-  --color-story-row: rgba(124, 92, 240, 0.07);
+  /* a violet that is neither the epic's blue nor the design type's purple,
+     which is only ever a bar fill */
   --color-story-rail: #7c5cf0;
   /* release scope: MVP is the one that has to catch the eye in a dense grid,
      Full release reads as the calmer "everything else" */
@@ -120,8 +173,16 @@
      chart. */
   --color-type-backend: #60a5fa;
   --color-type-backend-deep: #2563eb;
-  --color-type-frontend: #2dd4bf;
-  --color-type-frontend-deep: #0d9488;
+  /* Frontend used to be teal-400/teal-600 — the last hue in the app that was
+     the same family as the old accent, and the reason a chart full of Frontend
+     work still read as "a teal product". It is PINK now, and pink rather than
+     the violet first proposed: violet sits ~13 deg from the design type's
+     purple in oklch at the same lightness and chroma (indistinguishable on a
+     20px bar), and it is also within a hair of --color-story-rail. Pink is
+     ~50 deg from purple, nowhere near the epic's blue, and the only other
+     thing in that neighbourhood is --color-danger, which is never a bar. */
+  --color-type-frontend: #f472b6;
+  --color-type-frontend-deep: #db2777;
   --color-type-design: #c084fc;
   --color-type-design-deep: #9333ea;
   --color-type-testing: #4ade80;
@@ -261,9 +322,13 @@
     --color-faint: #737373;
     --color-line: rgba(255, 255, 255, 0.1);
     --color-line-soft: rgba(255, 255, 255, 0.06);
-    --color-accent: #4bb3bb;
-    --color-accent-hover: rgba(75, 179, 187, 0.14);
-    --color-accent-ink: #0a0a0a;
+    /* near-white primary on a near-black ground — the reference's
+       oklch(0.922 0 0) / oklch(0.205 0 0) pair. See the light block for why the
+       accent carries no hue and why the focus ring is a separate token. */
+    --color-accent: #ebebeb;
+    --color-accent-hover: rgba(255, 255, 255, 0.14);
+    --color-accent-ink: #1a1a1a;
+    --color-ring: #8a8a8a;
     --color-milestone: #fbbf24;
     --color-summary: #60a5fa;
     --color-summary-fill: #3b82f6;
@@ -273,9 +338,11 @@
     --color-grid-line: rgba(255, 255, 255, 0.055);
     --color-row-hover: rgba(255, 255, 255, 0.045);
     --color-summary-ink: #0a0a0a;
-    --color-epic-row: rgba(96, 165, 250, 0.12);
+    /* raised by lightness, never by hue — see the light block */
+    --color-epic-row: rgba(255, 255, 255, 0.055);
+    --color-story-row: rgba(255, 255, 255, 0.028);
+    --color-tier-rail: rgba(255, 255, 255, 0.24);
     --color-epic-rail: #60a5fa;
-    --color-story-row: rgba(165, 160, 250, 0.12);
     --color-story-rail: #a5a0fa;
     --color-release-mvp: #fcd34d;
     --color-release-mvp-bg: rgba(251, 191, 36, 0.16);
@@ -285,8 +352,8 @@
        (progress, and the grid's type icon) is the brighter one */
     --color-type-backend: #1e40af;
     --color-type-backend-deep: #60a5fa;
-    --color-type-frontend: #0f766e;
-    --color-type-frontend-deep: #2dd4bf;
+    --color-type-frontend: #9d174d;
+    --color-type-frontend-deep: #f472b6;
     --color-type-design: #6b21a8;
     --color-type-design-deep: #c084fc;
     --color-type-testing: #15803d;
@@ -329,9 +396,13 @@
   --color-faint: #737373;
   --color-line: rgba(255, 255, 255, 0.1);
   --color-line-soft: rgba(255, 255, 255, 0.06);
-  --color-accent: #4bb3bb;
-  --color-accent-hover: rgba(75, 179, 187, 0.14);
-  --color-accent-ink: #0a0a0a;
+  /* near-white primary on a near-black ground — the reference's
+     oklch(0.922 0 0) / oklch(0.205 0 0) pair. See the light block for why the
+     accent carries no hue and why the focus ring is a separate token. */
+  --color-accent: #ebebeb;
+  --color-accent-hover: rgba(255, 255, 255, 0.14);
+  --color-accent-ink: #1a1a1a;
+  --color-ring: #8a8a8a;
   --color-milestone: #fbbf24;
   --color-summary: #60a5fa;
   --color-summary-fill: #3b82f6;
@@ -341,9 +412,11 @@
   --color-grid-line: rgba(255, 255, 255, 0.055);
   --color-row-hover: rgba(255, 255, 255, 0.045);
   --color-summary-ink: #0a0a0a;
-  --color-epic-row: rgba(96, 165, 250, 0.12);
+  /* raised by lightness, never by hue — see the light block */
+  --color-epic-row: rgba(255, 255, 255, 0.055);
+  --color-story-row: rgba(255, 255, 255, 0.028);
+  --color-tier-rail: rgba(255, 255, 255, 0.24);
   --color-epic-rail: #60a5fa;
-  --color-story-row: rgba(165, 160, 250, 0.12);
   --color-story-rail: #a5a0fa;
   --color-release-mvp: #fcd34d;
   --color-release-mvp-bg: rgba(251, 191, 36, 0.16);
@@ -353,8 +426,8 @@
      (progress, and the grid's type icon) is the brighter one */
   --color-type-backend: #1e40af;
   --color-type-backend-deep: #60a5fa;
-  --color-type-frontend: #0f766e;
-  --color-type-frontend-deep: #2dd4bf;
+  --color-type-frontend: #9d174d;
+  --color-type-frontend-deep: #f472b6;
   --color-type-design: #6b21a8;
   --color-type-design-deep: #c084fc;
   --color-type-testing: #15803d;
@@ -545,6 +618,12 @@
 
 /* More contrast: near-solid surfaces with a defined border. */
 @media (prefers-contrast: more) {
+  /* The focus ring is a mid grey by default — quiet on purpose, now that it is
+     no longer the accent. Quiet is the one thing this mode is asking us not to
+     be, so it goes to full ink. `:root:root` rather than `:root` so it ties the
+     two dark blocks' specificity and wins on source order, which is what the
+     whole bottom-of-the-file, unlayered arrangement here depends on. */
+  :root:root { --color-ring: var(--color-ink); }
   .material-chrome,
   .material-pop {
     -webkit-backdrop-filter: none;

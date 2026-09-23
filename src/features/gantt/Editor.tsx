@@ -115,7 +115,7 @@ const LEGEND = [
    keyboard focus is never the state nobody styled. Sizes come from the rem
    type ramp; arbitrary spacing is rem too, so a larger text setting scales the
    whole control rather than bursting it. */
-const FOCUS = "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent";
+const FOCUS = "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring";
 const BTN =
   `press inline-flex cursor-pointer items-center gap-1.5 rounded-[9px] border border-line bg-surface px-[0.8125rem] py-1.5 font-ui text-small font-medium text-muted hover:bg-surface-hover hover:text-ink ${FOCUS} disabled:cursor-default disabled:opacity-60`;
 /* no radius here: each popover sets its own, and two rounded-* utilities on
@@ -125,7 +125,7 @@ const POP = "pop-anim material-pop border border-line outline-none";
 const POP_TITLE = "mb-1 text-body font-semibold";
 const POP_HINT = "m-0 mb-2.5 text-mini text-muted";
 const POP_INPUT =
-  `min-w-0 flex-1 rounded-lg border border-line bg-surface-alt px-[0.5625rem] py-[0.4375rem] font-ui text-mini text-ink focus:outline-2 focus:outline-accent ${FOCUS}`;
+  `min-w-0 flex-1 rounded-lg border border-line bg-surface-alt px-[0.5625rem] py-[0.4375rem] font-ui text-mini text-ink focus:outline-2 focus:outline-ring ${FOCUS}`;
 const POP_ACTION =
   `press flex-none cursor-pointer rounded-lg border-0 bg-accent px-3.5 py-[0.4375rem] font-ui text-small font-semibold text-accent-ink hover:brightness-[1.08] active:brightness-[0.94] ${FOCUS}`;
 /* an action reduced to its glyph. It still carries an accessible name and a
@@ -138,13 +138,13 @@ const BRAND_MARK =
 /* the filter trigger while something is filtered: a control the user forgot is
    on is worse than no control, so it does not look like the others */
 const BTN_ON =
-  `press inline-flex cursor-pointer items-center gap-1.5 rounded-[9px] border border-accent bg-accent-hover px-[0.8125rem] py-1.5 font-ui text-small font-semibold text-accent hover:brightness-[1.04] ${FOCUS}`;
+  `press inline-flex cursor-pointer items-center gap-1.5 rounded-[9px] border border-muted bg-accent-hover px-[0.8125rem] py-1.5 font-ui text-small font-semibold text-ink hover:brightness-[1.04] ${FOCUS}`;
 /* both states written out in full: Tailwind only keeps class names it can read
    verbatim, so a conditional spells out the whole list per branch */
 const CHIP_OFF =
   `press inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-line bg-surface px-2.5 py-[0.1875rem] font-ui text-mini text-muted hover:bg-surface-hover hover:text-ink ${FOCUS}`;
 const CHIP_ON =
-  `press inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-accent bg-accent-hover px-2.5 py-[0.1875rem] font-ui text-mini font-semibold text-accent ${FOCUS}`;
+  `press inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-muted bg-accent-hover px-2.5 py-[0.1875rem] font-ui text-mini font-semibold text-ink ${FOCUS}`;
 const GROUP_LABEL = "m-0 mt-3 mb-1.5 text-label font-semibold text-faint uppercase";
 /* The roster's role picker. `appearance-none` because preflight is deliberately
    not imported, so a native select would otherwise arrive wearing the platform's
@@ -2341,7 +2341,7 @@ export default function GanttEditor({
                 pointer-down would fight the caret rather than confirm a commit */}
             <h1
               key={projectId}
-              className="m-0 min-w-0 overflow-hidden rounded-[7px] px-1.5 py-[0.0625rem] font-display text-display font-semibold text-ellipsis whitespace-nowrap outline-none transition-colors duration-[130ms] ease-out hover:bg-surface-hover focus-visible:bg-surface focus-visible:shadow-[0_0_0_2px_var(--color-accent)]"
+              className="m-0 min-w-0 overflow-hidden rounded-[7px] px-1.5 py-[0.0625rem] font-display text-display font-semibold text-ellipsis whitespace-nowrap outline-none transition-colors duration-[130ms] ease-out hover:bg-surface-hover focus-visible:bg-surface focus-visible:shadow-[0_0_0_2px_var(--color-ring)]"
               contentEditable
               suppressContentEditableWarning
               spellCheck={false}
@@ -2398,9 +2398,9 @@ export default function GanttEditor({
                   failed
                     ? "save-pill flex-none font-semibold text-danger"
                     : savePhase === "leaving"
-                      ? "save-pill save-pill-out flex-none text-accent"
+                      ? "save-pill save-pill-out flex-none text-ink"
                       : savePhase === "saved"
-                        ? "save-pill flex-none text-accent"
+                        ? "save-pill flex-none text-ink"
                         : "save-pill flex-none text-muted"
                 }
               >{statusText}</span>
@@ -2410,7 +2410,7 @@ export default function GanttEditor({
             {filterOn && (
               <button
                 type="button"
-                className={`press inline-flex flex-none cursor-pointer items-center gap-1 rounded-full border border-accent bg-accent-hover px-2 py-0 text-mini whitespace-nowrap text-accent ${FOCUS}`}
+                className={`press inline-flex flex-none cursor-pointer items-center gap-1 rounded-full border border-muted bg-accent-hover px-2 py-0 text-mini whitespace-nowrap text-ink ${FOCUS}`}
                 title="Clear the filter"
                 onClick={() => onFilter(EMPTY_FILTER)}
               >
@@ -2532,7 +2532,7 @@ export default function GanttEditor({
                               looks identical here, in the Who picker and in the grid */}
                           <span className="who-chip" style={{ "--who-hue": nameHue(h.name) }}>{initialsOf(h.name)}</span>
                           <input
-                            className={`min-w-0 flex-1 rounded-[7px] border border-transparent bg-transparent px-2 py-[0.3125rem] font-ui text-body text-ink transition-colors duration-[130ms] ease-out hover:border-line-soft focus:border-accent focus:bg-surface-alt focus:outline-none ${FOCUS}`}
+                            className={`min-w-0 flex-1 rounded-[7px] border border-transparent bg-transparent px-2 py-[0.3125rem] font-ui text-body text-ink transition-colors duration-[130ms] ease-out hover:border-line-soft focus:border-ring focus:bg-surface-alt focus:outline-none ${FOCUS}`}
                             value={h.name}
                             aria-label="Name"
                             onChange={(e) => renamePerson(h.id, e.target.value)}
@@ -2966,7 +2966,7 @@ export default function GanttEditor({
                                 <span className="block overflow-hidden text-tiny text-ellipsis whitespace-nowrap text-faint">{role}</span>
                               )}
                             </span>
-                            <span className="flex-none text-accent" aria-hidden="true">{on ? <Check size={13} weight="bold" /> : null}</span>
+                            <span className="flex-none text-ink" aria-hidden="true">{on ? <Check size={13} weight="bold" /> : null}</span>
                           </button>
                         </li>
                       );

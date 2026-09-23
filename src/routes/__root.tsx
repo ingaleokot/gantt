@@ -8,7 +8,7 @@ import type { QueryClient } from "@tanstack/react-query";
    features/auth/api/auth.ts, which imports the client dynamically. */
 
 const SHELL = "grid min-h-screen place-items-center bg-ground p-6 text-center font-ui text-body text-muted";
-const LINK = "press inline-flex cursor-pointer items-center rounded-lg border-0 bg-accent px-3.5 py-2 font-ui text-body font-semibold text-accent-ink no-underline hover:brightness-[1.08] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent";
+const LINK = "press inline-flex cursor-pointer items-center rounded-lg border-0 bg-accent px-3.5 py-2 font-ui text-body font-semibold text-accent-ink no-underline hover:brightness-[1.08] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring";
 
 /* A throw from inside the gantt widget used to take the whole page with it and
    leave nothing to click. It is still a bug when it happens, but it must not
@@ -40,7 +40,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     <div className={SHELL}>
       <div>
         <p className="m-0 mb-2 font-display text-title font-semibold text-ink">No such page</p>
-        <Link to="/" className="text-accent underline">Back to your projects</Link>
+        <Link to="/" className="text-ink underline decoration-from-font underline-offset-2 hover:decoration-2">Back to your projects</Link>
       </div>
     </div>
   ),

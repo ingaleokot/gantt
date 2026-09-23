@@ -12,8 +12,8 @@ const DAY = 24 * 60 * 60 * 1000;
    fixed-length tuples and can be spread straight into them */
 type Rgb = readonly [number, number, number];
 type ColorName =
-  | "ink" | "muted" | "line" | "zebra" | "weekend" | "accent"
-  | "progress" | "summary" | "story" | "milestone" | "link" | "today" | "headerBg"
+  | "ink" | "muted" | "line" | "zebra" | "weekend" | "taskBar"
+  | "taskFill" | "summary" | "story" | "milestone" | "link" | "today" | "headerBg"
   | "relMvp" | "relFull";
 const C: Record<ColorName, Rgb> = {
   /* the LIGHT theme's neutral ramp, flattened onto white paper. Zero hue, like
@@ -24,8 +24,13 @@ const C: Record<ColorName, Rgb> = {
   line: [224, 224, 224],
   zebra: [246, 246, 246],
   weekend: [240, 240, 240],
-  accent: [16, 118, 127],
-  progress: [16, 118, 127],
+  /* The untyped task's bar and its progress fill: --color-type-task and
+     --color-type-task-deep in the light theme. These two used to be the old
+     teal accent, which printed an untyped row in a colour nothing on screen
+     wore — the screen has drawn it in the slate since the accent stopped being
+     a bar colour, and now the PDF does too. */
+  taskBar: [148, 163, 184],
+  taskFill: [71, 85, 105],
   summary: [37, 99, 235],
   /* the story tier's rail, matching --color-story-rail in the light theme */
   story: [124, 92, 240],
@@ -46,7 +51,9 @@ type TypeColor = { bar: Rgb; deep: Rgb; label: string };
    property from jsPDF. */
 const TYPE_COLORS: Record<string, TypeColor> = {
   backend:  { bar: [96, 165, 250], deep: [37, 99, 235],  label: "Backend" },
-  frontend: { bar: [45, 212, 191], deep: [13, 148, 136],  label: "Frontend" },
+  /* pink, not the teal it used to be — see --color-type-frontend in style.css
+     for why the family moved and why it is pink rather than violet */
+  frontend: { bar: [244, 114, 182], deep: [219, 39, 119],  label: "Frontend" },
   design:   { bar: [192, 132, 252], deep: [147, 51, 234], label: "Design" },
   testing:  { bar: [74, 222, 128], deep: [22, 163, 74],   label: "Testing" },
 };
@@ -497,11 +504,11 @@ export async function buildGanttPdf(name: string, tasks: StoreTask[], links: Sto
       } else {
         const w = Math.max(x1 - x0, 1.2);
         const tc = TYPE_COLORS[t.type || ""];
-        doc.setFillColor(...(tc ? tc.bar : C.accent));
+        doc.setFillColor(...(tc ? tc.bar : C.taskBar));
         doc.roundedRect(x0, yc - barH / 2, w, barH, 1, 1, "F");
         const pr = Math.max(0, Math.min(100, t.progress || 0)) / 100;
         if (pr > 0) {
-          doc.setFillColor(...(tc ? tc.deep : C.progress));
+          doc.setFillColor(...(tc ? tc.deep : C.taskFill));
           doc.roundedRect(x0, yc - barH / 2, Math.max(w * pr, 1), barH, 1, 1, "F");
         }
       }

@@ -744,8 +744,10 @@ three theme blocks and the two themes are derived, not ported.
 The shell used to be teal-biased — `#edf1f0` / `#1c2a2e` light, `#0e1517` / `#151f22`
 dark — and it fought every saturated bar on the chart: the whole app read as "a teal
 product" rather than as a plan drawn on paper. The reference uses shadcn's **neutral**
-ramp, which is `oklch(L 0 0)`: literally zero chroma. That is now the shell, and the hue
-lives only in the bars, the status pills, the release pills and the accent.
+ramp, which is `oklch(L 0 0)`: literally zero chroma. That is now the shell, and hue is
+reserved **strictly for data** — the bars, the status pills, the release pills, the tier
+icons and the today line. **The accent is a neutral too** (see below), and so are the
+tier row washes. Nothing that is only chrome carries a hue anywhere in the app.
 
 | token | light | dark |
 | --- | --- | --- |
@@ -777,9 +779,99 @@ be.
 initials underneath. Anything that *layers* gets the translucent token; anything that
 *covers* gets `-alt`.
 
-`--color-accent-selected` is now `color-mix`ed from `--color-accent` rather than restated
-as a hex, so it cannot drift out of step with it. The three shadow tokens lost their hue
+### The accent is a neutral, and focus is a separate token
+
+A first pass neutralised the shell and left `--color-accent` teal (`#10767f` / `#4bb3bb`),
+which meant ~85 of the loudest surfaces in the app — every primary button, every tracker
+pill, every focus ring, every "this is on" state — were still a hue. The reference has no
+such token: its `--primary` is `oklch(0.922 0 0)`, its `--accent`/`--secondary`
+`oklch(0.269 0 0)`, its `--ring` `oklch(0.556 0 0)`. **Every one of them is zero-chroma,
+because the only things on a plan allowed to carry a colour are the things the colour
+means something about.** Chrome that competes with the bars is chrome that makes the plan
+harder to read.
+
+| token | light | dark |
+| --- | --- | --- |
+| `--color-accent` | `#1a1a1a` | `#ebebeb` |
+| `--color-accent-ink` | `#fafafa` | `#1a1a1a` |
+| `--color-accent-hover` | `rgba(10,10,10,.10)` | `rgba(255,255,255,.14)` |
+| `--color-accent-selected` | `color-mix(accent 18%)` → ≈`#d1d1d1` | ≈`#414141` |
+| **`--color-ring`** | `#8a8a8a` | `#8a8a8a` |
+
+So: **do not "restore" a coloured accent.** The hue it used to spend is exactly what the
+bars are now free to use. Three consequences that are load-bearing:
+
+- **`--color-ring` exists because the accent is a fill, not an outline.** A near-white
+  2px ring on a near-black ground is deafening and a near-black one on white is no better,
+  so every `:focus-visible` in `src/` points at the ring instead — the shared `FOCUS`
+  recipe in `Editor.tsx` / `ProjectsPage.tsx` / `ShareViewer.tsx` / `AuthCard.tsx`, the
+  seven `outline: 2px solid` rules in `wx-overrides.css`, and the project title's focus
+  shadow. Measured: **3.45:1 light / 5.04:1 dark against the raised surface**, 3.17 / 5.73
+  against the ground. `prefers-contrast: more` raises it to `--color-ink` via a
+  `:root:root` override at the bottom of `style.css` (that doubled `:root` is what ties
+  the dark blocks' specificity and wins on source order).
+- **`text-accent` is gone from every component and must not come back.** `--color-ink` is
+  `#fafafa` and the accent is `#ebebeb`, so accent-coloured *text* is now body text.
+  Everything that was signalling "this is interactive" by colour alone had to grow a
+  signal that survives: the auth cross-links thicken their underline on hover
+  (`hover:decoration-2` — the `brightness-110` they used to carry is a no-op on ink that
+  is already near-white), the **tracker pill** gained a `--color-ring` inset ring (a
+  `--color-line` hairline measured 1.37:1 over the pill's own fill; the ring is 3.29:1
+  dark / 2.79:1 light against the pill and 3.45–5.04:1 against the row), and the ON
+  states — `BTN_ON`, `CHIP_ON`, the filter pill — are `border-muted bg-accent-hover
+  text-ink font-semibold` against their OFF twins' `border-line bg-surface text-muted`.
+- **"This filter is on" became a FILL.** `.col-filter.is-on` was accent text on an accent
+  tint; a *neutral* tint would have sat a hair from the plain hover, and a filter the user
+  has forgotten is on is worse than no filter. It is a solid `--color-accent` chip with
+  `--color-accent-ink` now: **14.6:1 dark / 17.4:1 light against the header**, unmissable
+  without a hue.
+
+The accent still IS the fill in every place that was already a fill and reads correctly as
+a near-white/near-black primary: the "New task" and "Sign in" buttons, `.editor-okay`, the
+link drag handle, `.project-span`, the modal's top edge, `--wx-color-primary`, and
+`CARD_FLASH`'s halo. Primary-button contrast is **14.6:1 dark / 16.67:1 light**.
+
+`--color-accent-selected` is `color-mix`ed from `--color-accent` rather than restated as a
+hex, so it cannot drift out of step with it — and it stays translucent so a selected epic
+row still shows its own wash through the selection. The three shadow tokens lost their hue
 too — a tinted shadow was half of what made the light theme read as teal.
+
+### Tier rows are raised by lightness, never by hue
+
+`--color-epic-row` and `--color-story-row` used to be the tier's own colour at 7–12%
+(`rgba(96,165,250,.12)` / `rgba(165,160,250,.12)` dark). On a plan built mostly out of
+epics and stories that is not an accent — **it is the whole grid**, and a blue at 12% over
+`#1a1a1a` is exactly the cast that made the app read as blue-teal however neutral the
+tokens around it were. The reference tints no group row at all.
+
+| token | light | dark | painted over the surface |
+| --- | --- | --- | --- |
+| `--color-epic-row` | `rgba(10,10,10,.045)` | `rgba(255,255,255,.055)` | `#f4f4f4` / `#272727` |
+| `--color-story-row` | `rgba(10,10,10,.024)` | `rgba(255,255,255,.028)` | `#f9f9f9` / `#202020` |
+| `--color-tier-rail` *(new)* | `rgba(10,10,10,.22)` | `rgba(255,255,255,.24)` | the grid's 3px left rail |
+
+- **The three tiers stay distinguishable on four signals, none of them a field of colour**:
+  the lightness ladder (leaf `#1a1a1a` → story `#202020` → epic `#272727` dark; `#ffffff`
+  → `#f9f9f9` → `#f4f4f4` light — measured, all zero-chroma), the **type icon** (a crown
+  vs an open book, each still in its tier's own colour, because that icon is data in the
+  same way a bar's fill is), the label at `font-weight: 600`, and the indentation plus the
+  nesting elbow.
+- **`--color-epic-rail` / `--color-story-rail` keep their hue and no longer paint any row.**
+  They draw the container's bar on the CHART (the rounded track, the end caps, the
+  progress fill) and colour the tier's grid icon — both data. The GRID's left rail and the
+  nesting elbow moved to the neutral `--color-tier-rail`, which is why `in-story` no longer
+  needs to recolour anything.
+- **The epic band on the chart is split**: its wash is the same neutral `--color-epic-row`,
+  but its two hairline EDGES stay mixed from the rails, because that hairline is the only
+  thing telling an epic band from a story band on the canvas. The acreage is chrome; a
+  hairline is a line, not a field.
+- **A hover over a tier row is painted as a `background-image`**, not a background colour:
+  `linear-gradient(var(--color-row-hover), var(--color-row-hover))` composites over
+  whatever wash the row already has, so who wins the `background-color` race with SVAR
+  stops mattering. Measured, every row lightens by the same step — epic 39→48, story
+  32→42, leaf 26→36 dark.
+- `prefers-contrast: more` cannot see a 5%-alpha raise at all, so the block at the foot of
+  `wx-overrides.css` takes the rails and the elbow to full `--color-ink`.
 
 **The per-person Who chip hues are GENERATED, not tokens** (`nameHue` in
 `features/people/roster.ts` hashes the name to 0–360), so the palette move had to be
@@ -790,7 +882,8 @@ both above AA and both better than the pairs they replaced. Change either pair a
 that sweep — a hue that looks fine at 200 can be illegible at 60.
 
 Measured contrast elsewhere, for the same reason: `muted` on `surface` is 4.74:1 light /
-6.74:1 dark (up from 4.64 / 6.36), `accent` 5.36 / 7.02, `danger` 4.83 / 6.29. `--color-faint`
+6.74:1 dark (unchanged by the accent pass), `danger` 4.83 / 6.29, and the accent's own
+numbers are in the table above. `--color-faint`
 is 2.58:1 light and is for uppercase micro-labels and decorative glyphs only — it was
 never body text and must not become it.
 
@@ -849,6 +942,14 @@ Two things that bite:
   reference gets by stacking `bg-(--color)/20` under `bg-(--color)/40`.
   `--color-type-task` / `-deep` (a slate) is new: the untyped task used to be the accent,
   and a chart full of the accent left nothing for a selection or a link to mean.
+  **Frontend is PINK** (`#f472b6` / `#db2777` light, `#9d174d` / `#f472b6` dark), not the
+  teal-400/teal-600 it shipped as — that was the last hue in the app still in the old
+  accent's family, so a plan full of Frontend work still read as a teal product. Pink
+  rather than the violet first proposed: violet sits ~13° from the design type's purple in
+  oklch at the same lightness and chroma, which is indistinguishable on a 20px bar, and it
+  is also within a hair of `--color-story-rail`. Pink is ~50° from purple, nowhere near
+  the epic's blue, and the only other thing in that neighbourhood is `--color-danger`,
+  which is never a bar fill. The four bar hues are now **blue · pink · purple · green**.
 - **A done bar is dimmed (`opacity: .72`), not desaturated.** It used to be `.5` plus
   `saturate(.6)`, which threw away which discipline it was. Its label is struck through,
   as the row's name already is.
@@ -933,6 +1034,8 @@ All declared in `@theme static` **and** both dark blocks, except the two marked 
 --color-status-done-bg     /
 --color-link               the connector, the arrowhead
 --color-link-hover         (= --color-accent)
+--color-ring               every :focus-visible outline — NOT the accent, see above
+--color-tier-rail          the GRID's 3px tier rail and nesting elbow (neutral)
 --color-epic-track         DERIVED from --color-epic-rail  (no dark copy needed)
 --color-story-track        DERIVED from --color-story-rail (no dark copy needed)
 ```
@@ -941,7 +1044,11 @@ All declared in `@theme static` **and** both dark blocks, except the two marked 
 `--color-status-progress` / `-done` were already there and now also back the pills.
 `pdf.ts` holds the LIGHT theme's RGB of the four type pairs and had to move with them —
 there is no way to read a custom property from jsPDF, so those two lists are kept in step
-by hand.
+by hand. That is why the Frontend pink had to be typed into `TYPE_COLORS` by hand as well.
+Its two old teal entries `accent` / `progress` are gone: they were the fallback fill for
+an UNTYPED row, so the PDF printed in teal what the screen had been drawing in the slate
+ever since `--color-type-task` arrived. They are `taskBar` / `taskFill` now, carrying
+`--color-type-task` / `-deep`.
 
 ## Styling layer (Tailwind v4 + Ark UI + Phosphor)
 
@@ -955,8 +1062,9 @@ by hand.
   in `src/styles/`, and automatic source detection would start from there and find nothing
   but CSS. That line points the scanner at `src/`, which is the whole surface — index.html
   carries no utility classes. Drop it and every utility silently vanishes from the build.
-- New tokens keep to the same rule: `--color-story-row` / `--color-story-rail` (the story
-  tier's wash and rail), `--color-release-mvp[-bg]` / `--color-release-full[-bg]` (the two
+- New tokens keep to the same rule: `--color-ring` (focus), `--color-tier-rail` (the
+  grid's neutral tier rail), `--color-story-row` / `--color-story-rail` (the story tier's
+  wash and rail), `--color-release-mvp[-bg]` / `--color-release-full[-bg]` (the two
   release pills) and everything the ReUI pass added (see **The chart's visual language**)
   are declared in all three theme blocks. The two exceptions are `--color-epic-track` and
   `--color-story-track`, which are `color-mix`ed from the rails and therefore follow the

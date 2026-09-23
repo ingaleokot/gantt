@@ -89,21 +89,46 @@
   );
 }
 
-/* ---------- epic → task hierarchy in the task list ---------- */
-.wx-willow-theme .wx-row.is-epic { background: var(--color-epic-row); }
+/* ---------- epic → story → task hierarchy in the task list ----------
+   The depth ladder is LIGHTNESS, not hue. These rows used to be washed in the
+   tier's own colour (blue at 12% on every epic, violet on every story), and on
+   a plan built mostly out of tiers that is not an accent — it is the whole
+   grid, and it gave the app a colour cast that had nothing to do with the
+   data. The reference tints no group row at all.
+
+   What tells the three apart now, in order of how loud each signal is:
+     1. the row's lightness — epic raised most, story less, a leaf not at all
+     2. the type icon: a crown for an epic, an open book for a story, each
+        still in its tier's colour (that icon IS data, like a bar's fill)
+     3. the label's weight — 600 on both tiers, 400 on a leaf
+     4. indentation and the nesting elbow
+   `background-color` rather than `background`, so SVAR's own hover can still
+   composite on top; the explicit hover rules below guarantee it either way. */
+.wx-willow-theme .wx-row.is-epic { background-color: var(--color-epic-row); }
 .wx-willow-theme .wx-row.is-epic .wx-text { font-weight: 600; }
-.wx-willow-theme .wx-row.is-epic > .wx-cell:first-child { box-shadow: inset 3px 0 0 var(--color-epic-rail); }
-.wx-willow-theme .wx-row.in-epic > .wx-cell:first-child { box-shadow: inset 3px 0 0 var(--color-epic-rail); }
+.wx-willow-theme .wx-row.is-epic > .wx-cell:first-child { box-shadow: inset 3px 0 0 var(--color-tier-rail); }
+.wx-willow-theme .wx-row.in-epic > .wx-cell:first-child { box-shadow: inset 3px 0 0 var(--color-tier-rail); }
 /* ---------- the story tier: a parent to the widget, its own thing here ----------
    A story is handed to SVAR as a summary row (that is the only parent type it
    has), so these rules are what keeps it visually distinct from an epic. The
    tagger adds `is-story` from the row's real tier, and `in-story` alongside
-   `in-epic` on rows nested under one — `in-epic` owns the connector's shape,
-   `in-story` only recolours it. */
-.wx-willow-theme .wx-row.is-story { background: var(--color-story-row); }
+   `in-epic` on rows nested under one. The rails are one neutral token for both
+   tiers now, so `in-story` no longer needs to recolour anything — the elbow's
+   shape and the indentation say which container a row is in, and the icon says
+   which tier the container is. */
+.wx-willow-theme .wx-row.is-story { background-color: var(--color-story-row); }
 .wx-willow-theme .wx-row.is-story .wx-text { font-weight: 600; }
-.wx-willow-theme .wx-row.is-story > .wx-cell:first-child { box-shadow: inset 3px 0 0 var(--color-story-rail); }
-.wx-willow-theme .wx-row.in-story > .wx-cell:first-child { box-shadow: inset 3px 0 0 var(--color-story-rail); }
+.wx-willow-theme .wx-row.is-story > .wx-cell:first-child { box-shadow: inset 3px 0 0 var(--color-tier-rail); }
+.wx-willow-theme .wx-row.in-story > .wx-cell:first-child { box-shadow: inset 3px 0 0 var(--color-tier-rail); }
+/* The row washes are translucent and SVAR sets its hover as a background of
+   its own, so which of the two wins is a specificity race we should not be
+   running. Paint the hover as a background IMAGE instead: it composites over
+   whatever wash the row already has, which means a tier row highlights by
+   exactly the same step a leaf row does. */
+.wx-willow-theme .wx-row.is-epic:hover,
+.wx-willow-theme .wx-row.is-story:hover {
+  background-image: linear-gradient(var(--color-row-hover), var(--color-row-hover));
+}
 .wx-willow-theme .wx-row.in-epic .wx-content { position: relative; }
 .wx-willow-theme .wx-row.in-epic .wx-content::before {
   content: "";
@@ -112,33 +137,49 @@
   top: -19px;
   height: 38px;
   width: 10px;
-  border-left: 1.5px solid var(--color-epic-rail);
-  border-bottom: 1.5px solid var(--color-epic-rail);
+  border-left: 1.5px solid var(--color-tier-rail);
+  border-bottom: 1.5px solid var(--color-tier-rail);
   border-bottom-left-radius: 6px;
-  opacity: 0.55;
+  /* the token is already translucent, so this is higher than the 0.55 it used
+     to carry over a solid rail colour — same drawn weight, no hue */
+  opacity: 0.85;
   pointer-events: none;
 }
-.wx-willow-theme .wx-row.in-story .wx-content::before { border-color: var(--color-story-rail); }
 
 /* ---------- ticket ID column (extracted from the link) ---------- */
 .wx-willow-theme .tracker-link {
   font-size: 12px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
-  color: var(--color-accent);
+  /* This was accent text on an accent wash inside an accent-bordered pill —
+     three signals, all of them the same one: colour. With the accent neutral
+     it would have flattened into a label, so the "you can click this" job
+     moves onto shape: a ring (drawn as an inset shadow, not a border, so the
+     pill does not grow inside a fixed-width column) plus the underline it has
+     always taken on hover. The ring is --color-ring and not --color-line:
+     measured, a --color-line hairline over this pill's own fill is 1.37:1,
+     which is a rule you have to go looking for rather than an edge. At
+     --color-ring it is 3.2:1 against the pill and 3.9:1 against the row, so
+     the pill reads as a bounded control at a glance, and the hover step to
+     full ink confirms it. */
+  color: var(--color-ink);
   text-decoration: none;
   padding: 2px 8px;
   border-radius: 99px;
   background: var(--color-accent-hover);
+  box-shadow: inset 0 0 0 1px var(--color-ring);
   white-space: nowrap;
   cursor: pointer;
 }
 .wx-willow-theme .tracker-link {
-  transition: transform var(--dur-press) ease-out, background-color var(--dur-hover) ease-out;
+  transition: transform var(--dur-press) ease-out, background-color var(--dur-hover) ease-out, box-shadow var(--dur-hover) ease-out;
 }
-.wx-willow-theme .tracker-link:hover { text-decoration: underline; }
+.wx-willow-theme .tracker-link:hover {
+  text-decoration: underline;
+  box-shadow: inset 0 0 0 1px var(--color-ink);
+}
 .wx-willow-theme .tracker-link:active { transform: scale(0.94); }
-.wx-willow-theme .tracker-link:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.wx-willow-theme .tracker-link:focus-visible { outline: 2px solid var(--color-ring); outline-offset: 1px; }
 
 /* ---------- Who column: assignee initials ----------
    The chip rules are written twice on purpose — once bare and once under
@@ -162,7 +203,7 @@
 }
 .wx-willow-theme .who-chips:hover { background: var(--color-surface-hover); }
 .wx-willow-theme .who-chips:active { transform: scale(0.94); }
-.wx-willow-theme .who-chips:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.wx-willow-theme .who-chips:focus-visible { outline: 2px solid var(--color-ring); outline-offset: 1px; }
 .wx-willow-theme .who-empty {
   display: inline-flex;
   align-items: center;
@@ -416,10 +457,20 @@
 .wx-willow-theme .col-filter > .ci { width: 13px; height: 13px; }
 .wx-willow-theme .col-filter:hover { background: var(--color-surface-hover); color: var(--color-ink); }
 .wx-willow-theme .col-filter:active { transform: translateY(-50%) scale(0.9); }
-.wx-willow-theme .col-filter:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.wx-willow-theme .col-filter:focus-visible { outline: 2px solid var(--color-ring); outline-offset: 1px; }
+/* On is a FILLED control now, not a tinted one. The accent used to carry this
+   state by colour alone; a neutral tint would have been a hair away from the
+   plain hover, and a filter the user has forgotten is on is worse than no
+   filter at all. A solid accent chip with its own ink reads as pressed from
+   across the room and needs no hue to do it. */
 .wx-willow-theme .col-filter.is-on {
-  background: var(--color-accent-hover);
-  color: var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+}
+.wx-willow-theme .col-filter.is-on:hover {
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+  filter: brightness(1.08);
 }
 @media (prefers-reduced-motion: reduce) {
   .wx-willow-theme .col-filter:active { transform: translateY(-50%); filter: brightness(0.92); }
@@ -442,16 +493,16 @@
   border: 0;
   padding: 0;
   background: none;
-  color: var(--color-epic-rail);
+  color: var(--color-muted);
   cursor: pointer;
   opacity: 0;
   transition: opacity var(--dur-hover), transform var(--dur-press) ease-out, color var(--dur-hover);
 }
 .wx-willow-theme .wx-row:hover .row-edit,
 .wx-willow-theme .row-edit:focus-visible { opacity: 1; }
-.wx-willow-theme .row-edit:hover { color: var(--color-accent); transform: scale(1.12); }
+.wx-willow-theme .row-edit:hover { color: var(--color-ink); transform: scale(1.12); }
 .wx-willow-theme .row-edit:active { transform: scale(0.96); }
-.wx-willow-theme .row-edit:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.wx-willow-theme .row-edit:focus-visible { outline: 2px solid var(--color-ring); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) {
   .wx-willow-theme .row-edit { transition: opacity var(--dur-hover); }
   .wx-willow-theme .row-edit:active,
@@ -684,7 +735,14 @@
    saturated rule across the whole chart was doing it louder than the bars it
    was bracketing — the one thing the reference is most careful about. Both
    edges are hairlines mixed back towards the ground now; the wash still
-   carries the grouping. */
+   carries the grouping.
+
+   The WASH is neutral (it is the same --color-epic-row the grid rows take, and
+   that token stopped carrying hue — see style.css), while the two hairline
+   EDGES stay mixed from the tier's rail. That split is deliberate: the acreage
+   is chrome and must not tint the chart, but the hairline is what tells an
+   epic band from a story band on the canvas, where the tier rail is already
+   the bar's own colour. A hairline is a line, not a field. */
 .wx-willow-theme .epic-band {
   position: absolute;
   left: 0;
@@ -820,7 +878,7 @@
 .editor-okay { transition: transform var(--dur-press) ease-out, filter var(--dur-hover) ease-out; }
 .editor-okay:hover { filter: brightness(1.08); }
 .editor-okay:active { transform: scale(0.97); filter: brightness(0.94); }
-.editor-okay:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.editor-okay:focus-visible { outline: 2px solid var(--color-ring); outline-offset: 2px; }
 
 /* ---------- custom task-type bar colors ----------
    The `color` these used to set was the bar's own text, which now lives
@@ -863,7 +921,7 @@
 }
 .wx-willow-theme .fold-all:hover { background: var(--color-surface-hover); color: var(--color-ink); }
 .wx-willow-theme .fold-all:active { transform: translateY(-50%) scale(0.9); }
-.wx-willow-theme .fold-all:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.wx-willow-theme .fold-all:focus-visible { outline: 2px solid var(--color-ring); outline-offset: 1px; }
 
 /* ---------- §1/§16 on the widget's own controls ----------
    SVAR's toolbar buttons ("New task", the icon buttons, the editor's own
@@ -877,7 +935,7 @@
 .wx-willow-theme .wx-toggle-icon:focus-visible,
 .wx-willow-theme .wx-cell:focus-visible,
 .wx-willow-theme .wx-scale-cell:focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: 2px solid var(--color-ring);
   outline-offset: -2px;
 }
 @media (prefers-reduced-motion: reduce) {
@@ -927,4 +985,21 @@
      the background alone */
   .wx-willow-theme .release-tag.rel-soft,
   .release-tag.rel-soft { opacity: 1; }
+  /* An epic, a story and a leaf are told apart by how far each row is RAISED,
+     and a 5%-alpha raise is exactly the signal this mode cannot see. The rails
+     and the nesting elbow go to full ink, so the hierarchy survives on line
+     weight alone. */
+  .wx-willow-theme .wx-row.is-epic > .wx-cell:first-child,
+  .wx-willow-theme .wx-row.in-epic > .wx-cell:first-child,
+  .wx-willow-theme .wx-row.is-story > .wx-cell:first-child,
+  .wx-willow-theme .wx-row.in-story > .wx-cell:first-child {
+    box-shadow: inset 3px 0 0 var(--color-ink);
+  }
+  .wx-willow-theme .wx-row.in-epic .wx-content::before {
+    border-color: var(--color-ink);
+    opacity: 1;
+  }
+  /* same story for the tracker pill's hairline ring, which is the only thing
+     left saying it is a control */
+  .wx-willow-theme .tracker-link { box-shadow: inset 0 0 0 1px var(--color-ink); }
 }

@@ -364,11 +364,11 @@ const LEGEND = [
 ];
 
 /* the shell recipes the editor uses, kept in step by hand */
-const FOCUS = "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent";
+const FOCUS = "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring";
 const BTN =
   `press inline-flex cursor-pointer items-center gap-1.5 rounded-[9px] border border-line bg-surface px-[0.8125rem] py-1.5 font-ui text-small font-medium text-muted hover:bg-surface-hover hover:text-ink ${FOCUS} disabled:cursor-default disabled:opacity-60`;
 const BTN_ON =
-  `press inline-flex cursor-pointer items-center gap-1.5 rounded-[9px] border border-accent bg-accent-hover px-[0.8125rem] py-1.5 font-ui text-small font-semibold text-accent hover:brightness-[1.04] ${FOCUS}`;
+  `press inline-flex cursor-pointer items-center gap-1.5 rounded-[9px] border border-muted bg-accent-hover px-[0.8125rem] py-1.5 font-ui text-small font-semibold text-ink hover:brightness-[1.04] ${FOCUS}`;
 const POP = "pop-anim material-pop border border-line outline-none";
 const POP_TITLE = "mb-1 text-body font-semibold";
 const POP_HINT = "m-0 mb-2.5 text-mini text-muted";
@@ -377,7 +377,7 @@ const POP_HINT = "m-0 mb-2.5 text-mini text-muted";
 const CHIP_OFF =
   `press inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-line bg-surface px-2.5 py-[0.1875rem] font-ui text-mini text-muted hover:bg-surface-hover hover:text-ink ${FOCUS}`;
 const CHIP_ON =
-  `press inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-accent bg-accent-hover px-2.5 py-[0.1875rem] font-ui text-mini font-semibold text-accent ${FOCUS}`;
+  `press inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-muted bg-accent-hover px-2.5 py-[0.1875rem] font-ui text-mini font-semibold text-ink ${FOCUS}`;
 const GROUP_LABEL = "m-0 mt-3 mb-1.5 text-label font-semibold text-faint uppercase";
 const BRAND_MARK =
   "block h-3.5 w-3.5 rounded-[4px] bg-[linear-gradient(135deg,var(--color-accent)_0_50%,var(--color-summary-fill)_50%_100%)]";
@@ -827,7 +827,7 @@ function Board({ store, activeId }: { store: ViewStore; activeId: string | null 
             {filterOn && (
               <button
                 type="button"
-                className={`press inline-flex flex-none cursor-pointer items-center gap-1 rounded-full border border-accent bg-accent-hover px-2 py-0 text-mini whitespace-nowrap text-accent ${FOCUS}`}
+                className={`press inline-flex flex-none cursor-pointer items-center gap-1 rounded-full border border-muted bg-accent-hover px-2 py-0 text-mini whitespace-nowrap text-ink ${FOCUS}`}
                 title="Clear the filter"
                 onClick={() => setFilter(EMPTY_FILTER)}
               >

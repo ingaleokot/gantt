@@ -9,21 +9,27 @@
    visible focus ring on every interactive element. */
 import type { ReactNode } from "react";
 
-export const FOCUS = "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent";
+export const FOCUS = "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring";
 export const FIELD = "flex flex-col gap-1 font-ui text-mini text-muted";
 export const INPUT =
   `rounded-lg border border-line bg-surface-alt px-2.5 py-2 font-ui text-body text-ink transition-colors duration-[130ms] ease-out ${FOCUS}`;
 export const ERROR_TEXT = "m-0 mt-1.5 text-mini text-danger";
-export const NOTICE_TEXT = "m-0 text-mini text-accent";
+export const NOTICE_TEXT = "m-0 text-mini text-ink";
 export const SUBMIT =
   `press mt-1.5 cursor-pointer rounded-lg border-0 bg-accent px-3 py-[0.5625rem] font-ui text-body font-semibold text-accent-ink hover:brightness-[1.08] active:brightness-[0.94] disabled:cursor-default disabled:opacity-60 ${FOCUS}`;
 /* The cross-links between the pages ("No account? Sign up", "Back to sign in").
    They used to render as plain grey body text with no underline under a
    divider — and on the sign-in page these are the ONLY routes out, so nothing
-   on screen said they could be clicked. Accent colour plus an underline that
-   thickens on hover: the two signals that do not depend on each other. */
+   on screen said they could be clicked.
+
+   The colour half of that signal is gone now that the accent is a neutral (it
+   would read as body text), so the underline carries it alone and has to be
+   real: `hover:decoration-2` actually thickens the rule, where the
+   `brightness-110` this replaced was a no-op on ink that is already #fafafa /
+   #0a0a0a. Weight, the underline and the ink colour against the muted body
+   copy around it are the three signals left, none of them a hue. */
 export const QUIET_LINK =
-  `press inline-block cursor-pointer rounded-md bg-transparent p-1 font-ui text-mini font-medium text-accent underline decoration-from-font underline-offset-2 hover:brightness-110 ${FOCUS}`;
+  `press inline-block cursor-pointer rounded-md bg-transparent p-1 font-ui text-mini font-medium text-ink underline decoration-from-font underline-offset-2 hover:decoration-2 ${FOCUS}`;
 export const FORM = "flex flex-col gap-2.5";
 
 export function AuthCard({ title, intro, children }: { title: string; intro: string; children: ReactNode }) {

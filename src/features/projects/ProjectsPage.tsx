@@ -24,7 +24,7 @@ import type { StoreProject } from "../../lib/db";
 
 /* literal class strings only — Tailwind reads source text, so none of these may
    be assembled from fragments at runtime */
-const FOCUS = "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent";
+const FOCUS = "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring";
 const BTN =
   `press inline-flex cursor-pointer items-center gap-1.5 rounded-[9px] border border-line bg-surface px-[0.8125rem] py-1.5 font-ui text-small font-medium text-muted hover:bg-surface-hover hover:text-ink disabled:cursor-default disabled:opacity-60 ${FOCUS}`;
 const BTN_PRIMARY =
@@ -96,7 +96,7 @@ function ProjectCard({ project, lastOpened, busy, locked, flash, armed, onArm, o
         {/* a real input, not a contentEditable heading: it is a form control,
             and it is the only way to rename a project from here */}
         <input
-          className={`m-0 min-w-0 flex-1 rounded-[7px] border border-transparent bg-transparent px-1.5 py-1 font-display text-title font-semibold text-ink transition-colors duration-[130ms] ease-out hover:border-line-soft hover:bg-surface-hover focus:border-accent focus:bg-surface-alt focus:outline-none ${FOCUS}`}
+          className={`m-0 min-w-0 flex-1 rounded-[7px] border border-transparent bg-transparent px-1.5 py-1 font-display text-title font-semibold text-ink transition-colors duration-[130ms] ease-out hover:border-line-soft hover:bg-surface-hover focus:border-ring focus:bg-surface-alt focus:outline-none ${FOCUS}`}
           value={project.name}
           aria-label="Project name"
           spellCheck={false}
@@ -105,12 +105,12 @@ function ProjectCard({ project, lastOpened, busy, locked, flash, armed, onArm, o
           onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); } }}
         />
         {flash && (
-          <span role="status" className="mt-1.5 flex-none rounded-full bg-accent-hover px-2 py-[0.125rem] text-label font-semibold text-accent uppercase">
+          <span role="status" className="mt-1.5 flex-none rounded-full bg-accent-hover px-2 py-[0.125rem] text-label font-semibold text-ink uppercase">
             Copied
           </span>
         )}
         {lastOpened && !flash && (
-          <span className="mt-1.5 flex-none rounded-full bg-accent-hover px-2 py-[0.125rem] text-label font-semibold text-accent uppercase">
+          <span className="mt-1.5 flex-none rounded-full bg-accent-hover px-2 py-[0.125rem] text-label font-semibold text-ink uppercase">
             Last opened
           </span>
         )}
@@ -331,9 +331,9 @@ export default function ProjectsPage() {
               failed
                 ? "save-pill rounded-full border border-danger bg-surface px-2.5 py-[0.1875rem] text-mini font-semibold whitespace-nowrap text-danger"
                 : savePhase === "leaving"
-                  ? "save-pill save-pill-out rounded-full border border-transparent bg-accent-hover px-2.5 py-[0.1875rem] text-mini whitespace-nowrap text-accent"
+                  ? "save-pill save-pill-out rounded-full border border-transparent bg-accent-hover px-2.5 py-[0.1875rem] text-mini whitespace-nowrap text-ink"
                   : savePhase === "saved"
-                    ? "save-pill rounded-full border border-transparent bg-accent-hover px-2.5 py-[0.1875rem] text-mini whitespace-nowrap text-accent"
+                    ? "save-pill rounded-full border border-transparent bg-accent-hover px-2.5 py-[0.1875rem] text-mini whitespace-nowrap text-ink"
                     : "save-pill rounded-full border border-line bg-surface px-2.5 py-[0.1875rem] text-mini whitespace-nowrap text-muted"
             }
           >{statusText}</span>
