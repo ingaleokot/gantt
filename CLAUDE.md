@@ -1116,7 +1116,10 @@ ever since `--color-type-task` arrived. They are `taskBar` / `taskFill` now, car
   `material-pop` (floating surfaces: 30px blur, 82% surface, `--shadow-material`). Both
   carry a bright top hairline (`--color-glass-edge`). Bigger surfaces read thicker. Never
   stack one on the other — solid chips (buttons, inputs) are what sits *on* glass. The
-  topbar closes with `edge-fade` (a soft gradient) rather than a 1px rule.
+  topbar has **no bottom edge at all** — it used to close with an `edge-fade`
+  gradient, which read as a smear of shading over the first rows and was removed.
+  Only `prefers-contrast: more` draws a real rule there, because that mode cannot
+  see a boundary made of translucency alone.
 - **Type ramp, not px.** Nine rem steps — `text-label` (10.5px) · `tiny` · `mini` ·
   `small` · `body` · `copy` · `title` · `display` · `hero` (20px) — each with its own
   tracking and leading: `+0.06em` at the uppercase micro end down to `-0.022em` at the

@@ -814,7 +814,7 @@ function Board({ store, activeId }: { store: ViewStore; activeId: string | null 
     <div className="flex h-full flex-col">
       {/* same material topbar as the editor (§12): translucent layer, bright top
           edge, soft scroll edge where it meets the board */}
-      <header className="material-chrome edge-fade relative z-10 flex flex-none items-center gap-3 py-2 pr-[18px] pl-4">
+      <header className="material-chrome relative z-10 flex flex-none items-center gap-3 py-2 pr-[18px] pl-4">
         <div aria-hidden="true"><span className={BRAND_MARK} /></div>
         {/* identity, with the quiet run of state and totals underneath it —
             laid out exactly as the editor's, so a shared link reads the same */}

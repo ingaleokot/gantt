@@ -2316,7 +2316,7 @@ export default function GanttEditor({
           The stats moved under the title, the two scale-switcher segments are
           gone, and Share and Export PDF are icons, which is what bought the
           name the room it needed. */}
-      <header className="material-chrome edge-fade relative z-10 flex flex-none items-center gap-3 py-2 pr-[18px] pl-3">
+      <header className="material-chrome relative z-10 flex flex-none items-center gap-3 py-2 pr-[18px] pl-3">
         {/* the way back to the list. It is a real link, so the browser's own
             open-in-a-new-tab still works, and it serializes the widget into the
             draft on the way out — leaving the editor must not lose the edit

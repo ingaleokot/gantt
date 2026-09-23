@@ -303,7 +303,7 @@ export default function ProjectsPage() {
       {/* the same material and the same controls as the editor's topbar, so
           the front door reads as the same product. It wraps rather than
           overflowing — the editor header's own failure below 1100px. */}
-      <header className="material-chrome edge-fade relative z-10 flex flex-none flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5">
+      <header className="material-chrome relative z-10 flex flex-none flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5">
         <div className="flex items-center gap-2">
           <span
             className="block h-3.5 w-3.5 rounded-[4px] bg-[linear-gradient(135deg,var(--color-accent)_0_50%,var(--color-summary-fill)_50%_100%)]"

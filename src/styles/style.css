@@ -17,7 +17,7 @@
      2. dark theme blocks
      3. @keyframes
      4. @layer base      — document chrome
-     5. @layer components — .press / .material-* / .pop-anim / .edge-fade
+     5. @layer components — .press / .material-* / .pop-anim
      6. unlayered structural hooks into SVAR DOM
      7. unlayered accessibility blocks (reduced motion / transparency / contrast)
    The accessibility blocks are unlayered ON PURPOSE: they have to beat the
@@ -538,23 +538,6 @@
     box-shadow: inset 0 1px 0 var(--color-glass-edge), var(--shadow-material);
   }
 
-  /* Scroll edge, not a hairline: where floating chrome meets the content
-     below it, fade the boundary out instead of drawing a 1px rule. */
-  .edge-fade::after {
-    content: "";
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: 100%;
-    height: 0.75rem;
-    background: linear-gradient(
-      to bottom,
-      color-mix(in srgb, var(--color-ink) 7%, transparent),
-      transparent
-    );
-    pointer-events: none;
-  }
-
   /* ---- §7 anchored, mirrored entry/exit ------------------------------- */
   .pop-anim { transform-origin: var(--transform-origin, center); }
   .pop-anim[data-state="open"] { animation: pop-in var(--dur-enter) var(--ease-emphasized); }
@@ -612,7 +595,6 @@
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
-  .edge-fade::after { display: none; }
   .pop-anim[data-state="open"] { animation-name: fade-in; }
 }
 
@@ -635,9 +617,9 @@
     border-color: var(--color-ink);
     box-shadow: var(--shadow-modal);
   }
-  .edge-fade::after {
-    height: 1px;
-    background: var(--color-ink);
-    opacity: 0.5;
+  /* The header's boundary was a fade, now removed. In this mode the edge
+     still has to be findable, so it becomes a real rule. */
+  .material-chrome {
+    border-bottom: 1px solid var(--color-ink);
   }
 }
