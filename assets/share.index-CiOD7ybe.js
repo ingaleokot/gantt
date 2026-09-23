@@ -1,0 +1,1 @@
+import{j as r}from"./index-BckXi1e-.js";import{S as o}from"./ShareViewer-BCqXA-tu.js";import"./scale-DYMa-yWl.js";import"./runtime-BBQ_fZdg.js";import"./Plus.es-CouXN4q6.js";function n(){return r.jsx(o,{projectId:null})}export{n as component};
