@@ -1,1 +1,0 @@
-import{l as o,j as t}from"./index-BckXi1e-.js";import{S as e}from"./ShareViewer-BCqXA-tu.js";import"./scale-DYMa-yWl.js";import"./runtime-BBQ_fZdg.js";import"./Plus.es-CouXN4q6.js";function n(){const{projectId:r}=o.useParams();return t.jsx(e,{projectId:r})}export{n as component};

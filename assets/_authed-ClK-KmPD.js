@@ -1,1 +1,0 @@
-import{j as t,O as o,g as r}from"./index-BckXi1e-.js";import{u as s}from"./useSessionRedirect-BIHs8kUu.js";import{S as n}from"./store-D6sGFClg.js";import"./supabase-DCZ-s2fz.js";const u=r("/_authed");function i(){const{session:e}=u.useRouteContext();return s(),t.jsx(n,{ownerId:e.userId,children:t.jsx(o,{})})}const c=i;export{c as component};
