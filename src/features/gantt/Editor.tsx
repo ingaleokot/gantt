@@ -12,9 +12,9 @@ import type { Person, StoreLink, StoreProject, StoreTask, TaskId } from "../../l
 import { uid, useSavePhase, useStore } from "../projects/store";
 import { setGlyph, type GlyphHost } from "./icons";
 import { installWxiMasks } from "./lib/wxi-masks";
-import { trackerId } from "./lib/tracker";
+import { trackerId, trackerNumber } from "./lib/tracker";
 import { ensureLinkArrowMarker, labelLinkHandles } from "./lib/link-marker";
-import { DAY_CELL_WIDTH, DAY_SCALES, WEEKEND_HIGHLIGHT, setTodayLine, todayStart } from "./lib/scale";
+import { DAY_CELL_WIDTH, DAY_SCALES, WEEKEND_HIGHLIGHT, setTodayLine, shortDate, todayStart } from "./lib/scale";
 import { initialsOf, nameHue, parseAssignees } from "../people/roster";
 import { HOURS_PER_DAY } from "../projects/summary";
 import {
@@ -187,7 +187,7 @@ const COLUMNS: IColumnConfig[] = [
   { id: "who", header: "Who", width: 72, align: "center", sort: false },
   /* back to 100: a `PRODUCT-2907` pill is 88px wide on its own */
   { id: "tracker", header: "ID", width: 100, align: "center", sort: false },
-  { id: "start", header: "Start", width: 84, align: "center", sort: true },
+  { id: "start", header: "Start", width: 84, align: "center", sort: true, template: shortDate },
   /* "Effort", not "Hrs"/"Days": these are how much work the row contains, and
      for an epic they are the sum of its tasks' work — a number that sits next
      to a calendar bar of a completely different length. Labelling them by unit
@@ -312,7 +312,7 @@ const EDITOR_ITEMS = [
   /* just "Link". The placeholder already carries the example, and a field
      label is not the place to name one tracker out of all of them. */
   { key: "url", comp: "text", label: "Link", config: { placeholder: "https://tracker.yandex.com/PRODUCT-123" } },
-  { key: "start", comp: "date", label: "Start date", config: { format: "%d-%m-%Y" }, isHidden: (t: ITask) => t.type === "summary" },
+  { key: "start", comp: "date", label: "Start date", config: { format: "%d.%m.%y" }, isHidden: (t: ITask) => t.type === "summary" },
   /* effort, not elapsed time — 7 h of effort is one working day of it */
   { key: "hours", comp: "counter", label: "Effort (hours of work)", config: { min: 1 }, isHidden: (t: ITask) => !isBar(t) },
   { key: "days", comp: "text", label: "Effort (working days, 7 h each)", config: { placeholder: "e.g. 1.5" }, isHidden: (t: ITask) => !isBar(t) },
@@ -1291,8 +1291,10 @@ function watchRowTags(api: GanttApi) {
             (cell.querySelector(".wx-content") || cell).appendChild(a2);
           }
           /* tid is only non-null when rawUrl was, which the compiler misses */
-          if (a2.getAttribute("href") !== rawUrl) { a2.setAttribute("href", rawUrl!); a2.title = rawUrl!; }
-          if (a2.textContent !== tid) a2.textContent = tid;
+          if (a2.getAttribute("href") !== rawUrl) { a2.setAttribute("href", rawUrl!); }
+          const label = trackerNumber(tid) || tid;
+          if (a2.title !== tid) a2.title = tid;
+          if (a2.textContent !== label) a2.textContent = label;
         } else if (a2) {
           a2.remove();
         }

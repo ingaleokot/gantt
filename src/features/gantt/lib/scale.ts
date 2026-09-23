@@ -118,3 +118,14 @@ export function todayStart(): Date {
   const d = new Date();
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }
+
+/* The grid's Start cell: 03.09.26. A column `template` is the library's own
+   hook for this — (value, row, col) => string — so the date never has to be
+   rewritten in the DOM after the widget has drawn it. Two digits for the year
+   because the column is 84px and the century is not in question. */
+export function shortDate(value: unknown): string {
+  const d = value instanceof Date ? value : value ? new Date(value as string) : null;
+  if (!d || isNaN(d.getTime())) return "";
+  const p2 = (n: number) => String(n).padStart(2, "0");
+  return `${p2(d.getDate())}.${p2(d.getMonth() + 1)}.${p2(d.getFullYear() % 100)}`;
+}

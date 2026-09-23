@@ -9,9 +9,9 @@ import { Portal } from "@ark-ui/react/portal";
 import { Funnel, X } from "@phosphor-icons/react";
 import { setGlyph, type GlyphHost } from "./icons";
 import { installWxiMasks } from "./lib/wxi-masks";
-import { trackerId } from "./lib/tracker";
+import { trackerId, trackerNumber } from "./lib/tracker";
 import { ensureLinkArrowMarker } from "./lib/link-marker";
-import { DAY_CELL_WIDTH, DAY_SCALES, WEEKEND_HIGHLIGHT, setTodayLine, todayStart } from "./lib/scale";
+import { DAY_CELL_WIDTH, DAY_SCALES, WEEKEND_HIGHLIGHT, setTodayLine, shortDate, todayStart } from "./lib/scale";
 import { initialsOf, nameHue, parseAssignees } from "../people/roster";
 import {
   EMPTY_FILTER, RELEASE_INCLUSION_NOTE, RELEASES, TASK_TYPES, UNSET, asWidgetType, effectiveType,
@@ -347,7 +347,7 @@ const COLUMNS: IColumnConfig[] = [
   { id: "scope", header: "Scope", width: 68, align: "center", sort: false },
   { id: "who", header: "Who", width: 72, align: "center", sort: false },
   { id: "tracker", header: "ID", width: 100, align: "center", sort: false },
-  { id: "start", header: "Start", width: 84, align: "center", sort: true },
+  { id: "start", header: "Start", width: 84, align: "center", sort: true, template: shortDate },
   /* "Effort", not "Hrs"/"Days" — the editor labels the same two columns the
      same way. They are how much work a row contains, and on an epic they are
      the sum of its tasks' work, which is nothing like the length of its bar. */
@@ -567,8 +567,10 @@ function decorate(api: GanttApi, project: ViewProject) {
           (cell.querySelector(".wx-content") || cell).appendChild(a2);
         }
         /* tid is only non-null when rawUrl was, which the compiler misses */
-        if (a2.getAttribute("href") !== rawUrl) { a2.setAttribute("href", rawUrl!); a2.title = rawUrl!; }
-        if (a2.textContent !== tid) a2.textContent = tid;
+        if (a2.getAttribute("href") !== rawUrl) { a2.setAttribute("href", rawUrl!); }
+        const label = trackerNumber(tid) || tid;
+        if (a2.title !== tid) a2.title = tid;
+        if (a2.textContent !== label) a2.textContent = label;
       } else if (a2) a2.remove();
     }
   });
