@@ -63,6 +63,15 @@ export interface StoreTask {
      the scope of the nearest tier above it, which is a read-side roll-up and
      never a stored value. */
   release?: string | null;
+  /* `tasks.auto_test`: this row is a GENERATED testing bar, maintained by
+     features/gantt/lib/testing-buffer.ts. It is an ordinary leaf task in every
+     other respect — it carries hours, it rolls up into its tier, it exports to
+     the PDF — the flag only says who is allowed to move it. */
+  autoTest?: boolean;
+  /* `tasks.auto_test_locked`: the user edited this generated bar's dates,
+     duration or hours by hand, so the generator stops rescheduling it. Cleared
+     by "Reset to auto" in the task editor. */
+  autoTestLocked?: boolean;
   /* what `tasks.sort_order` actually holds for this row. Only the snapshot side
      carries it — the draft's order is its array order — and it exists so the
      diff can see that the two disagree. See rowsOf(). */
@@ -82,6 +91,12 @@ export interface StoreProject {
   view: string;
   tasks: StoreTask[];
   links: StoreLink[];
+  /* `projects.test_buffer_pct` (0–100, default 20): how much of a tier's
+     development effort its generated testing bar is worth. */
+  testBufferPct?: number;
+  /* `projects.test_queue_mode`: 'queued' (one tester's bars never overlap) or
+     'parallel' (each starts as soon as its own development ends). */
+  testQueueMode?: string;
   /* what `projects.position` actually holds — the snapshot's copy of reality,
      which the draft's array index is measured against */
   position?: number;
@@ -109,6 +124,8 @@ export function cloneStore(s: StoreData): StoreData {
       id: p.id,
       name: p.name,
       view: p.view,
+      testBufferPct: p.testBufferPct,
+      testQueueMode: p.testQueueMode,
       position: p.position,
       tasks: p.tasks.map((t) => ({ ...t })),
       links: p.links.map((l) => ({ ...l })),
@@ -177,6 +194,11 @@ function toTask(t: Tables<"tasks">): StoreTask {
   if (t.assignees) o.assignees = t.assignees;
   if (t.release) o.release = t.release;
   o.status = t.status || "todo";
+  /* both columns are NOT NULL with a default in Postgres, so the in-memory row
+     always carries a real boolean — which is what keeps the diff quiet for the
+     thousands of rows that are simply not testing bars */
+  o.autoTest = t.auto_test === true;
+  o.autoTestLocked = t.auto_test_locked === true;
   if (t.sort_order !== null && t.sort_order !== undefined) o.sortOrder = t.sort_order;
   return o;
 }
@@ -190,7 +212,7 @@ export async function fetchStore(): Promise<StoreData> {
      without a tie-break the list could reorder itself between two loads of the
      same unchanged data. */
   const [projects, tasks, links, people, state] = await Promise.all([
-    supabase.from("projects").select("id,name,view,position")
+    supabase.from("projects").select("id,name,view,position,test_buffer_pct,test_queue_mode")
       .order("position", { ascending: true }).order("id", { ascending: true }),
     supabase.from("tasks").select("*")
       .order("sort_order", { ascending: true }).order("id", { ascending: true }),
@@ -212,6 +234,9 @@ export async function fetchStore(): Promise<StoreData> {
     id: p.id,
     name: p.name,
     view: p.view || "day",
+    testBufferPct: p.test_buffer_pct === null || p.test_buffer_pct === undefined
+      ? undefined : Number(p.test_buffer_pct),
+    testQueueMode: p.test_queue_mode || undefined,
     position: p.position ?? undefined,
     tasks: (tasks.data || []).filter((t) => t.project_id === p.id).map(toTask),
     links: (links.data || [])
@@ -261,6 +286,17 @@ function parentsFirst(rows: TaskRow[]): TaskRow[] {
 
 const key = (id: TaskId | null | undefined): string => (id === null || id === undefined ? "" : String(id));
 
+/* `projects.test_buffer_pct` is `numeric not null default 20 check (0..100)`.
+   The clamp lives here as well as in features/gantt/lib/testing-buffer.ts
+   deliberately: that module may not import from lib/ and this one is the last
+   thing between a stray value and a rejected write. */
+const DEFAULT_TEST_BUFFER_PCT = 20;
+function clampBufferPct(v: number | undefined): number {
+  const n = Number(v);
+  if (!isFinite(n)) return DEFAULT_TEST_BUFFER_PCT;
+  return Math.min(100, Math.max(0, n));
+}
+
 function taskRow(t: StoreTask, projectId: string, i: number): TaskRow {
   return {
     id: t.id,
@@ -283,15 +319,21 @@ function taskRow(t: StoreTask, projectId: string, i: number): TaskRow {
     /* "" is what the editor's select sends for "unassigned"; the column's check
        constraint only allows null, 'mvp' and 'full' */
     release: t.release === "mvp" || t.release === "full" ? t.release : null,
+    /* NOT NULL booleans in Postgres: an undefined here is a row that has never
+       been a testing bar, which is `false`, not a null */
+    auto_test: t.autoTest === true,
+    auto_test_locked: t.autoTestLocked === true,
   };
 }
 const TASK_KEYS: (keyof TaskRow)[] = [
   "id", "project_id", "parent_id", "text", "type", "start_date", "end_date", "duration",
   "hours", "days", "progress", "details", "open", "sort_order", "url", "status", "assignees",
-  "release",
+  "release", "auto_test", "auto_test_locked",
 ];
 const LINK_KEYS: (keyof LinkRow)[] = ["id", "project_id", "source", "target", "type"];
-const PROJECT_KEYS: (keyof ProjectRow)[] = ["id", "name", "view", "position", "owner"];
+const PROJECT_KEYS: (keyof ProjectRow)[] = [
+  "id", "name", "view", "position", "owner", "test_buffer_pct", "test_queue_mode",
+];
 const PERSON_KEYS: (keyof PersonRow)[] = ["id", "name", "position", "owner", "role"];
 
 /* a numeric 7 and the text "7" Postgres handed back are the same value; every
@@ -351,7 +393,18 @@ function rowsOf(store: StoreData, ownerId: string, skip: Set<string>, ordering: 
   store.projects.forEach((p, i) => {
     if (skip.has(p.id)) return;
     const pos = stored && p.position !== undefined ? p.position : i;
-    projects.set(p.id, { id: p.id, name: p.name || "Untitled project", view: p.view || "day", position: pos, owner: ownerId });
+    /* The two testing settings default on BOTH sides of the diff to exactly
+       what the column defaults to in Postgres, so a project that has never been
+       given one compares equal and emits no write. */
+    projects.set(p.id, {
+      id: p.id,
+      name: p.name || "Untitled project",
+      view: p.view || "day",
+      position: pos,
+      owner: ownerId,
+      test_buffer_pct: clampBufferPct(p.testBufferPct),
+      test_queue_mode: p.testQueueMode === "parallel" ? "parallel" : "queued",
+    });
     (p.tasks || []).forEach((t, j) => {
       const order = stored && t.sortOrder !== undefined ? t.sortOrder : j;
       tasks.set(key(t.id), taskRow(t, p.id, order));

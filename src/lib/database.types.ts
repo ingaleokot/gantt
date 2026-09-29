@@ -152,6 +152,8 @@ export type Database = {
           name: string
           owner: string | null
           position: number
+          test_buffer_pct: number
+          test_queue_mode: string
           updated_at: string
           view: string
         }
@@ -161,6 +163,8 @@ export type Database = {
           name?: string
           owner?: string | null
           position?: number
+          test_buffer_pct?: number
+          test_queue_mode?: string
           updated_at?: string
           view?: string
         }
@@ -170,6 +174,8 @@ export type Database = {
           name?: string
           owner?: string | null
           position?: number
+          test_buffer_pct?: number
+          test_queue_mode?: string
           updated_at?: string
           view?: string
         }
@@ -216,6 +222,8 @@ export type Database = {
       tasks: {
         Row: {
           assignees: string | null
+          auto_test: boolean
+          auto_test_locked: boolean
           days: number | null
           details: string
           duration: number | null
@@ -237,6 +245,8 @@ export type Database = {
         }
         Insert: {
           assignees?: string | null
+          auto_test?: boolean
+          auto_test_locked?: boolean
           days?: number | null
           details?: string
           duration?: number | null
@@ -258,6 +268,8 @@ export type Database = {
         }
         Update: {
           assignees?: string | null
+          auto_test?: boolean
+          auto_test_locked?: boolean
           days?: number | null
           details?: string
           duration?: number | null

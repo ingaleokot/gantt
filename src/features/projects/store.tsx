@@ -171,6 +171,12 @@ export interface StoreApi {
   removeProject: (id: string) => Promise<void>;
   /* one project row, one `update … eq(id)` once the debounce fires */
   renameProject: (id: string, name: string) => void;
+  /* the testing buffer's two per-project settings — `projects.test_buffer_pct`
+     and `projects.test_queue_mode`. They go through the ordinary draft/diff
+     path like a rename: these belong to the PROJECT (everyone opening it plans
+     against the same buffer), unlike "show testing", which is a per-window
+     display preference and lives in localStorage. */
+  setProjectTesting: (id: string, patch: { pct?: number; mode?: string }) => void;
   /* records "last opened" so `/` can resolve to it next time */
   markOpened: (id: string) => void;
 }
@@ -417,6 +423,14 @@ export function StoreProvider({ ownerId, children }: { ownerId: string; children
     if (!draft || !src) throw new Error("That project is no longer here.");
     const name = copyName(src.name, draft.projects.map((p) => p.name));
     const newId = await create.mutateAsync({ name, seed: copyRows(src) });
+    /* the copy plans the same way the original does. `insertProject` wrote the
+       row with the column defaults, so this is one more field the next diff
+       finds changed — the same route the copied tasks take. */
+    const made = draftRef.current && draftRef.current.projects.find((x) => x.id === newId);
+    if (made) {
+      made.testBufferPct = src.testBufferPct;
+      made.testQueueMode = src.testQueueMode;
+    }
     /* the copied rows exist only in the draft until this lands */
     scheduleSave();
     return newId;
@@ -429,6 +443,26 @@ export function StoreProvider({ ownerId, children }: { ownerId: string; children
     const p = draft && draft.projects.find((x) => x.id === id);
     if (!p || p.name === name) return;
     p.name = name;
+    bump();
+    scheduleSave();
+  }, [bump, scheduleSave]);
+
+  /* the same shape as renameProject: mutate the draft, publish it, and let the
+     debounced diff turn it into the one `projects` row that changed */
+  const setProjectTesting = useCallback((id: string, patch: { pct?: number; mode?: string }) => {
+    const draft = draftRef.current;
+    const p = draft && draft.projects.find((x) => x.id === id);
+    if (!p) return;
+    let moved = false;
+    if (patch.pct !== undefined) {
+      const n = Math.min(100, Math.max(0, Math.round(Number(patch.pct) || 0)));
+      if (p.testBufferPct !== n) { p.testBufferPct = n; moved = true; }
+    }
+    if (patch.mode !== undefined) {
+      const m = patch.mode === "parallel" ? "parallel" : "queued";
+      if (p.testQueueMode !== m) { p.testQueueMode = m; moved = true; }
+    }
+    if (!moved) return;
     bump();
     scheduleSave();
   }, [bump, scheduleSave]);
@@ -479,11 +513,12 @@ export function StoreProvider({ ownerId, children }: { ownerId: string; children
       duplicateProject,
       removeProject,
       renameProject,
+      setProjectTesting,
       markOpened,
     };
     /* `rev` is the dependency that matters: the draft object keeps its
        identity while its contents change, so bump() is what re-publishes it */
-  }, [rev, draft, ownerId, status, error, warning, conflict, storeRev, bump, scheduleSave, flushSave, createProject, duplicateProject, removeProject, renameProject, markOpened]);
+  }, [rev, draft, ownerId, status, error, warning, conflict, storeRev, bump, scheduleSave, flushSave, createProject, duplicateProject, removeProject, renameProject, setProjectTesting, markOpened]);
 
   if (query.isError) {
     return (

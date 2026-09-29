@@ -515,6 +515,7 @@
   .wx-willow-theme .who-chips:active,
   .wx-willow-theme .tracker-link:active,
   .editor-move:active,
+  .editor-reset-auto:active,
   .editor-okay:active { transform: none; filter: brightness(0.92); }
   .wx-willow-theme .fold-all:active { transform: translateY(-50%); filter: brightness(0.92); }
 }
@@ -915,6 +916,31 @@
 .editor-move:focus-visible { outline: 2px solid var(--color-ring); outline-offset: 1px; }
 .editor-move .ci { display: flex; width: 15px; height: 15px; }
 .editor-move .ci svg { width: 100%; height: 100%; }
+
+/* ---------- the way back from a pinned testing bar ----------
+   Shown only while the open row is a generated bar the user has edited by
+   hand (`auto_test && auto_test_locked`) — the tagger toggles `display`, so
+   this rule must not set one of its own. Secondary weight, like the two Move
+   buttons beside it: Done is the single filled control in the bar. */
+.editor-reset-auto {
+  flex: 0 0 auto;
+  margin-right: 8px;
+  padding: 7px 12px;
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--color-muted);
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: 9px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: transform var(--dur-press) ease-out,
+    background-color var(--dur-hover) ease-out, color var(--dur-hover) ease-out;
+}
+.editor-reset-auto:hover { background: var(--color-surface-hover); color: var(--color-ink); }
+.editor-reset-auto:active { transform: scale(0.97); }
+.editor-reset-auto:focus-visible { outline: 2px solid var(--color-ring); outline-offset: 1px; }
 
 .editor-okay {
   font-family: var(--font-ui);
