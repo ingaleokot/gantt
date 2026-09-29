@@ -661,7 +661,42 @@ let pendingDrag: { id: TID; mode: DragMode; hours: number } | null = null;
 
 /* Epic and story estimates roll up from what is inside them, however deep:
    an epic of stories of tasks totals its tasks exactly once, because a tier
-   contributes its children's sum rather than its own stored hours. */
+   contributes its children's sum rather than its own stored hours.
+
+   ---------- it must never run in the tick that triggered it ----------
+   The grid and the chart get their vertical positions from two different
+   places. A grid row is laid out in flow under `--wx-body-offset`, so its line
+   is its INDEX in `_tasks`; a bar is absolutely positioned at the `$y` the
+   store computed for it (`cellHeight * index + 3`). They agree only for as long
+   as `$y` is recomputed whenever the row order changes.
+
+   `@svar-ui/gantt-store` has a fast path that skips exactly that recompute:
+
+     const rows = tree.toArray();
+     if (_tasksPatch && rows.every(t => t.$skip || typeof t.$x === "number"))
+       { setState({ _tasks: rows, _tasksPatch: null }); return; }   // stale $y
+
+   `_tasksPatch` is set by the store's own `update-task` when the patch touches
+   none of {start,end,duration,type,unscheduled,base_*,segments,rollup} — which
+   is true of the `{hours, days}` this function writes — and it is applied with
+   `setStateAsync`, so it lands in the SAME batched flush as anything else
+   changed in the same tick. Called straight out of the `delete-task` /
+   `move-task` / `indent-task` handler, the roll-up therefore hands the store a
+   reordered row list together with permission to reuse the old geometry: every
+   bar below the change keeps the `$y` of the row that used to sit there and is
+   drawn exactly ONE ROW off its name, until something else forces a recompute.
+
+   Letting the store settle first is the whole fix: the structural change gets
+   its own geometry pass, and the roll-up's patch then arrives against a row
+   order that really has not moved, which is the case the fast path is for.
+
+   `ROLLUP_DELAY` is why it is a number and not `setTimeout(…, 0)`. A store
+   reaction is not synchronous — `@svar-ui/lib-state`'s `setStateAsync` batches
+   into `timer: setTimeout(this._applyState.bind(this), 1)` — so a roll-up
+   posted at 0 ms lands INSIDE that same pending batch and changes nothing. One
+   frame clears it with room to spare; measured, the offset appears at 0 ms and
+   is gone from 1 ms upwards. */
+const ROLLUP_DELAY = 16;
 let ROLLUP_WRITE = false;
 function rollupEpics(api: GanttApi) {
   let list: StoreTask[] = [];
@@ -1585,6 +1620,9 @@ export default function GanttEditor({
   const undoRef = useRef<string[]>([]);
   const redoRef = useRef<string[]>([]);
   const snapTimer = useRef<number | null>(null);
+  /* the roll-up's own timer — see the comment on rollupEpics for why it may
+     never run in the same tick as the change that triggered it */
+  const rollupTimer = useRef<number | null>(null);
   const apiRef = useRef<GanttApi | null>(null);
   /* ---------- the filter ----------
      It hides rows and touches nothing else — see applyFilterTo above for why
@@ -1812,7 +1850,9 @@ export default function GanttEditor({
           if (clip.op === "cut") clipRef.current = null;
           const newId = clip.op === "cut" ? clip.id : cfg.id;
           if (newId !== undefined) api.exec("select-task", { id: newId });
-          setTimeout(() => { try { rollupEpics(api); } catch (err) {} }, 0);
+          /* ROLLUP_DELAY, not 0: the paste is a structural change and the
+             roll-up must not share its state batch — see rollupEpics */
+          setTimeout(() => { try { rollupEpics(api); } catch (err) {} }, ROLLUP_DELAY);
         } catch (err) {}
         return;
       }
@@ -2167,7 +2207,17 @@ export default function GanttEditor({
       /* the mount's own roll-up runs inside ROLLUP_WRITE; anything else
          reaching here is a change the user made */
       if (!ROLLUP_WRITE) touchedRef.current = true;
-      if (!ROLLUP_WRITE) { try { rollupEpics(a); } catch (e) {} }
+      /* AFTER the store has settled, never in this batch, and coalesced across
+         a burst of events — see the comment above rollupEpics: a roll-up write
+         riding along with a structural change is what lets the store reuse the
+         bar positions the old row order had. */
+      if (!ROLLUP_WRITE && rollupTimer.current === null) {
+        rollupTimer.current = window.setTimeout(() => {
+          rollupTimer.current = null;
+          if (apiRef.current !== a) return; /* a project switch superseded us */
+          try { rollupEpics(a); } catch (e) {}
+        }, ROLLUP_DELAY);
+      }
       scheduleSave();
       scheduleSnapshot();
       try {
