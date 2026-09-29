@@ -1333,6 +1333,51 @@ ever since `--color-type-task` arrived. They are `taskBar` / `taskFill` now, car
 - SVAR react-gantt 2.x, PRO features reimplemented manually: weekend-skipping
   scheduling (HOURS_PER_DAY=7, `scheduleFromHours` + intercepts) and undo/redo
   (JSON snapshot stacks, not `getHistory()` which is PRO-only).
+- **A roll-up in the same tick as a structural change draws every bar one row
+  off its name.** The grid and the chart get their vertical positions from two
+  different places: a grid row is laid out in flow under `--wx-body-offset`, so
+  its line is its INDEX in `_tasks`, while a bar is absolutely positioned at the
+  `$y` the store computed for it (`cellHeight * index + 3`). They agree only
+  while `$y` is recomputed whenever the row order changes — and
+  `@svar-ui/gantt-store` has a fast path that skips exactly that recompute:
+
+  ```js
+  const rows = tree.toArray();
+  if (_tasksPatch && rows.every(t => t.$skip || typeof t.$x === "number"))
+    { setState({ _tasks: rows, _tasksPatch: null }); return; }   // new order, OLD $y
+  ```
+
+  `_tasksPatch` is set by the store's own `update-task` whenever the patch
+  touches **none** of `{start, end, duration, type, unscheduled, base_*,
+  segments, rollup}` — exactly true of the `{hours, days}` a roll-up writes. So
+  `rollupEpics` called straight out of the `delete-task` / `move-task` /
+  `indent-task` handler handed the store a reordered row list *together with
+  permission to reuse the old geometry*, and every bar below the change kept the
+  `$y` of the row that used to sit at its index. Measured, `bar.top - row.top`:
+  **3** on every row when correct, **3** above the deleted row and **41**
+  (= +`cellHeight`) below it when not. A constant one-row offset, present at the
+  top of the list as much as scrolled; plain scrolling never causes it.
+
+  `touched()` therefore posts the roll-up on a **`ROLLUP_DELAY` (16 ms)** timer,
+  coalesced through `rollupTimer` and guarded by the mount check, and the
+  cut/paste path does the same. **`setTimeout(…, 0)` is NOT enough**:
+  `@svar-ui/lib-state` batches `setStateAsync` into its own
+  `setTimeout(_applyState, 1)`, so a roll-up posted at 0 ms lands inside that
+  same pending flush and changes nothing — measured broken at 0 ms, clean from
+  1 ms up. The delay still lands well inside `scheduleSnapshot`'s 350 ms and
+  `scheduleSave`'s 1400 ms, so undo still restores an edit and its roll-up
+  together. There is no public lever to clear `_tasksPatch`, and neither
+  data-level alternative works: an unchanged `type` in the patch is explicitly
+  skipped by the store's check, and `eventSource` takes a branch that writes the
+  task with no state update at all, so the hours would never reach the screen.
+  **To re-check on real data**: compare every `.wx-row[data-id]` top against its
+  `.wx-bar[data-task-id]` top — anything but a uniform 3 is this bug.
+- **`renderEpicBands` has the same family of off-by-one, still unfixed.** It
+  indexes `rows = _tasks.filter(t => !t.$skip)` and positions each band at
+  `i * cellHeight`. `$skip` is true for any task whose start equals its end —
+  **every milestone** — so an epic band below a milestone is drawn one row too
+  high. Decoration only, and not the cause of the bar/name mismatch above, but
+  the `i * ch` needs the UNFILTERED index.
 - **The widget's vertical scrolling is not what it looks like, and one CSS word broke
   it.** `.wx-gantt` is the scroller; inside it a tall `.wx-pseudo-rows` holds a
   `position: sticky` `.wx-stuck` sized to the viewport, and the chart's own content is
