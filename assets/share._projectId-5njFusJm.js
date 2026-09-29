@@ -1,1 +1,0 @@
-import{l as o,j as t}from"./index-kR_PDqEJ.js";import{S as e}from"./ShareViewer-BG91g0lb.js";import"./columns-b8-9RLXO.js";import"./Plus.es-Biyv33Xp.js";import"./runtime-knMPqztF.js";function n(){const{projectId:r}=o.useParams();return t.jsx(e,{projectId:r})}export{n as component};
