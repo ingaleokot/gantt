@@ -2,7 +2,7 @@ import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
-import { copyFileSync, existsSync } from "fs";
+import { copyFileSync, existsSync, writeFileSync } from "fs";
 import { resolve } from "path";
 
 /* SVAR ships @font-face rules that pull Roboto/Open Sans from its own CDN.
@@ -29,6 +29,16 @@ const pagesFallback: Plugin = {
   closeBundle() {
     const index = resolve(import.meta.dirname, "dist/index.html");
     if (existsSync(index)) copyFileSync(index, resolve(import.meta.dirname, "dist/404.html"));
+    /* `.nojekyll` is not optional and not cosmetic. Without it GitHub Pages
+       runs the published tree through Jekyll, which SKIPS every path starting
+       with an underscore — and `autoCodeSplitting` names the pathless layout's
+       chunk `_authed-<hash>.js`. The file then 404s while every other asset
+       serves, the entry loads fine, and the app dies on the first lazy import
+       with "Failed to fetch dynamically imported module". It is emitted by the
+       BUILD rather than left sitting in the gh-pages branch because a deploy
+       that clears the branch before copying `dist/` silently removes it —
+       which is exactly how it went missing once. */
+    writeFileSync(resolve(import.meta.dirname, "dist/.nojekyll"), "");
   },
 };
 
