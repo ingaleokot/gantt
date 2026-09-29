@@ -6,7 +6,7 @@ import { Willow as GridWillow } from "@svar-ui/react-grid";
 import { Popover } from "@ark-ui/react/popover";
 import { Portal } from "@ark-ui/react/portal";
 import { Link } from "@tanstack/react-router";
-import { ArrowArcLeft, ArrowArcRight, ArrowClockwise, CaretDown, CaretLeft, Check, Columns, DownloadSimple, Flask, Funnel, ShareNetwork, SignOut, Trash, Users, X } from "@phosphor-icons/react";
+import { ArrowArcLeft, ArrowArcRight, CaretDown, CaretLeft, Check, Columns, DownloadSimple, Flask, Funnel, ShareNetwork, SignOut, Trash, Users, X } from "@phosphor-icons/react";
 import { buildGanttPdf } from "./pdf";
 import type { Person, StoreLink, StoreProject, StoreTask, TaskId } from "../../lib/db";
 import { uid, useSavePhase, useStore } from "../projects/store";
@@ -20,16 +20,16 @@ import {
   readHiddenColumns, toggleHiddenColumn, writeHiddenColumns,
 } from "./lib/columns";
 /* The working-time calendar lives in ./lib/testing-buffer now, with the
-   generator that needs it — one copy, imported back here, rather than the
-   editor and the buffer each keeping their own idea of what a working day is.
-   `planTestingBars` is pure and knows nothing about the widget; everything
-   below that touches the live tree stays in this file. */
+   testing arithmetic that needs it — one copy, imported back here, rather than
+   the editor and the buffer each keeping their own idea of what a working day
+   is. That module is pure and knows nothing about the widget; everything below
+   that touches the live tree stays in this file. */
 import {
-  DEFAULT_TEST_BUFFER_PCT, MS_PER_DAY, QUEUE_MODES, addWorkDays, asQueueMode, clampPct,
-  isoDay, planTestingBars, readShowTesting, rollForward, scheduleFromHours, workDaysBetween,
-  writeShowTesting,
+  DEFAULT_TEST_BUFFER_PCT, DEV_TYPES, MS_PER_DAY, addWorkDays, clampPct, parseDay,
+  projectEndDates, readShowTesting, rollForward, scheduleFromHours, testingEndOf,
+  workDaysBetween, writeShowTesting,
 } from "./lib/testing-buffer";
-import type { BufferTask, TestQueueMode, TestingPlan } from "./lib/testing-buffer";
+import type { ProjectEnds } from "./lib/testing-buffer";
 import { initialsOf, nameHue, parseAssignees } from "../people/roster";
 import { HOURS_PER_DAY } from "../projects/summary";
 import {
@@ -105,14 +105,6 @@ const kindOf = (t: unknown): string | undefined => {
   if (!t || typeof t !== "object") return undefined;
   const k = (t as { kind?: unknown }).kind;
   return typeof k === "string" ? k : undefined;
-};
-/* ITask's index signature again: these two arrive as `any`, so they are read
-   through a real runtime check like `kindOf` above. `autoTest` marks a row the
-   testing-buffer generator owns; `autoTestLocked` marks one the user has since
-   edited by hand, which the generator then leaves alone for ever. */
-const flagOf = (t: unknown, field: "autoTest" | "autoTestLocked"): boolean => {
-  if (!t || typeof t !== "object") return false;
-  return (t as Record<string, unknown>)[field] === true;
 };
 /* the row's REAL tier, whichever side of the seam it came from */
 const tierOf = (t: unknown): string => {
@@ -240,8 +232,8 @@ const COLUMNS: IColumnConfig[] = [
 /* ---------- working-time model: estimates in hours, 7h = 1 work day, weekends skipped ----------
    `isWeekend`, `rollForward`, `addWorkDays`, `workDaysBetween` and
    `scheduleFromHours` USED to be declared here. They moved to
-   ./lib/testing-buffer, which needs exactly the same calendar to place the
-   generated testing bars — and a second copy of a calendar is how an
+   ./lib/testing-buffer, which needs exactly the same calendar to size the
+   testing tails — and a second copy of a calendar is how an
    off-by-one weekend gets into production. They are imported at the top of
    this file and behave identically; the ratio itself still lives in
    features/projects/summary.ts, because the projects list totals effort too. */
@@ -399,10 +391,11 @@ function fmtDate(d: Date | undefined): string | undefined {
 }
 
 /* ---------- serialize widget state back to plain data ---------- */
-/* `autoTest` / `autoTestLocked` round-trip like every other stored field —
-   they are real columns (`tasks.auto_test`, `tasks.auto_test_locked`), unlike
-   `kind`, which is stripped below. */
-const KEEP = ["id", "text", "start", "end", "duration", "hours", "days", "progress", "parent", "type", "open", "details", "url", "status", "assignees", "kind", "release", "autoTest", "autoTestLocked"];
+/* `tasks.auto_test` / `tasks.auto_test_locked` used to round-trip here, for the
+   generated `TEST:` rows. Testing is a drawn overlay now (see
+   ./lib/testing-buffer), so nothing in the app reads or writes either column
+   and neither is carried across the seam any more. */
+const KEEP = ["id", "text", "start", "end", "duration", "hours", "days", "progress", "parent", "type", "open", "details", "url", "status", "assignees", "kind", "release"];
 function cleanTask(t: ITask): StoreTask {
   const out: Partial<WidgetTask> = {};
   for (const k of KEEP) {
@@ -481,6 +474,11 @@ interface Stats {
   /* the same effort split by the scope each task inherits, so "what does MVP
      cost" is answerable without opening every epic */
   release: ReleaseTotals;
+  /* when the project is done, EXCLUSIVE, without and with each task's own
+     testing buffer. `plain` is the same figure as `max`; both are whole-project
+     numbers and neither moves under a filter. See ./lib/testing-buffer for why
+     `tested` implies no tester queue. */
+  ends: ProjectEnds;
 }
 /* Totals are always the WHOLE project, filter or no filter: serializeSide reads
    the widget's full tree (see applyFilterTo), and a number that silently meant
@@ -510,6 +508,10 @@ function computeStats(api: GanttApi): Stats | null {
     max: max ? new Date(max + "T00:00:00") : null,
     tasks, epics, stories,
     release: releaseTotals(list, (t) => Number(t.hours) || 0),
+    /* `testPctRef` rather than a parameter: computeStats is called from the
+       widget's own event handlers, which are built once per mount and cannot
+       see a React value that has moved since. Same bridge the tagger uses. */
+    ends: projectEndDates(list, testPctRef),
   };
 }
 
@@ -535,23 +537,21 @@ function computeStats(api: GanttApi): Stats | null {
    still shown, because SVAR keeps any branch with a surviving descendant, so
    the hierarchy above a match is never orphaned.
 
-   `showTesting` is the fourth dimension and the reason this takes a parameter
-   rather than reading the URL: hiding the generated testing bars is a DISPLAY
-   preference (per window, in localStorage — see ./lib/testing-buffer), not a
-   statement about the plan. It is composed into the same predicate rather than
-   given a path of its own, precisely so that it goes through `filter-tasks`
-   like everything else and cannot ever reduce the dataset.
+   There used to be a fourth dimension here: "Show testing" hid the GENERATED
+   `TEST:` rows by composing into this predicate. Those rows are gone — testing
+   is a tail drawn on each bar now — so the switch is pure decoration and never
+   reaches the filter at all. See ./lib/testing-buffer.
 
    Returns how many rows match, for the header count and the empty state. */
 function applyFilterTo(
-  api: GanttApi, f: FilterState, roster: Person[], showTesting: boolean,
+  api: GanttApi, f: FilterState, roster: Person[],
 ): { shown: number; total: number } {
   let list: StoreTask[] = [];
   try { list = serializeSide(api, "tasks"); } catch (e) { return { shown: 0, total: 0 }; }
   /* a person removed from the roster while their id sat in the URL must not
      hide the whole timeline — usableFilter drops ids nobody holds any more */
   const usable = usableFilter(f, new Set(roster.map((h) => h.id)));
-  if (!filterActive(usable) && showTesting) {
+  if (!filterActive(usable)) {
     try { api.exec("filter-tasks", {}); } catch (e) {}
     return { shown: list.length, total: list.length };
   }
@@ -561,10 +561,7 @@ function applyFilterTo(
   /* one predicate for both shapes: it reads the tier through effectiveType, so
      the stored rows in `list` ("story") and the parsed rows the widget hands it
      ("summary" + kind) answer identically */
-  const base = makeFilter(usable, lookup);
-  const match = showTesting
-    ? base
-    : (row: FilterRow): boolean => !flagOf(row, "autoTest") && base(row);
+  const match = makeFilter(usable, lookup);
   const shown = list.filter((t) => match(t)).length;
   try { api.exec("filter-tasks", { filter: match, open: false }); } catch (e) {}
   return { shown, total: list.length };
@@ -707,179 +704,38 @@ function rollupEpics(api: GanttApi) {
   ROLLUP_WRITE = false;
 }
 
-/* ---------- the generated testing bars ------------------------------------
-   Every story and every epic with development DIRECTLY under it carries a real
-   `tasks` row of type `testing` with `auto_test = true`, sized from the
-   project's testing buffer % and scheduled after the development it tests. The
-   ALGORITHM is `planTestingBars` in ./lib/testing-buffer — pure, plain data in
-   and plain data out, so the same function can be run from a script over rows
-   read straight out of Postgres. What lives here is only the wiring: serialize
-   the live tree, ask for the desired set, diff it against what the widget
-   holds, and exec exactly the differences.
+/* ---------- the testing tail ----------------------------------------------
+   Testing used to be GENERATED ROWS: one real `tasks` row per story and per
+   epic, with a lock flag, a queue, a burst guard and a `delete-task` bypass to
+   keep it all from fighting the user. All of that is gone. Every LEAF
+   development task now carries a tail drawn immediately after its own bar,
+   sized from `projects.test_buffer_pct` — nothing is stored, so nothing can
+   drift, and turning the drawing off touches no data at all.
 
-   ---- why the diff is not optional -----------------------------------------
-   This runs off the widget's own change events, and its writes raise more
-   change events. Writing unconditionally would therefore loop for ever. So it
-   computes the DESIRED set, compares it field by field with what is there, and
-   when nothing differs it issues no exec at all — which is also what makes a
-   second run immediately after the first one silent. `TESTING_WRITE` is the
-   same device `ROLLUP_WRITE` is: it marks the generator's own writes so the
-   re-entrant call is skipped, the save pill does not report them as something
-   the user did, and — see the `delete-task` intercept — a bar the generator
-   removes does not put a confirm dialog in the user's way. */
-let TESTING_WRITE = false;
-/* ---------- the belt to the idempotence braces ----------
-   The diff above is what stops this from looping: a second pass over the set
-   the first pass just wrote finds nothing to change and issues no exec. That
-   has been checked value by value (the update-task intercept re-derives the
-   same start/end/hours/days/duration the planner produced, so the widget hands
-   back exactly what went in). But a runaway write loop is the one failure that
-   takes the whole tab down rather than showing a wrong number, so a pass that
-   WRITES is counted, and a burst far beyond anything legitimate stops the
-   generator and says why instead of spinning. The window is rolling, so an
-   ordinary session of edits never approaches it. */
-const TESTING_BURST = 16;
-const TESTING_BURST_MS = 2000;
-let testingBurst: number[] = [];
+   The arithmetic is `testingEndOf` in ./lib/testing-buffer (pure, plain values
+   in and out). What lives here is the wiring: the two numbers the tagger needs
+   are published as module-scope refs, the same bridge `rosterRef` uses, because
+   the tagger runs outside React. */
+let testPctRef = DEFAULT_TEST_BUFFER_PCT;
+let showTailsRef = true;
 
-export interface TestingConfig {
-  pct: number;
-  mode: TestQueueMode;
-  testerId: string | null;
+/* Where this row's testing finishes, or null when it gets no tail at all.
+   A tier's bar already spans its children, whose tails are each drawn
+   underneath it, so giving the tier one of its own would draw the same buffer
+   twice; a milestone is a moment, not work; and a row with no estimate would
+   be handed the 3.5 h floor for nothing.
+
+   `tierOf` rather than the drawn type, deliberately: an EMPTY NESTED tier is
+   handed to the widget as a plain bar (see prepareTasks) and would otherwise
+   sneak in as a `task`. The returned date is EXCLUSIVE, exactly like `end`. */
+function tailEndOf(t: ParsedTask): Date | null {
+  if (!DEV_TYPES.includes(tierOf(t))) return null;
+  const hours = Number(t.hours) || 0;
+  if (!(hours > 0)) return null;
+  const end = t.end instanceof Date ? t.end : null;
+  if (!end || isNaN(+end)) return null;
+  return testingEndOf(end, hours, testPctRef);
 }
-
-/* the fields the diff compares — everything the generator owns, and nothing
-   else. `assignees` is in here because a bar created before the roster had a
-   tester has to pick one up when it gains one. */
-function barDiffers(prev: StoreTask, next: { parent: TaskId; text: string; hours: number; days: number; start: string; end: string; assignees: string | null }): boolean {
-  return String(prev.parent ?? "") !== String(next.parent)
-    || (prev.text || "") !== next.text
-    || Number(prev.hours) !== next.hours
-    || Number(prev.days) !== next.days
-    || (prev.start || "") !== next.start
-    || (prev.end || "") !== next.end
-    || ((prev.assignees || null) !== (next.assignees || null))
-    || (prev.type || "") !== "testing"
-    || prev.autoTest !== true;
-}
-
-/* the serialized store rows are already the shape the planner speaks — the
-   translation is a rename, kept explicit so the planner's contract stays plain
-   data rather than "whatever StoreTask happens to be this week" */
-const asBufferTask = (t: StoreTask): BufferTask => ({
-  id: t.id,
-  parent: t.parent ?? null,
-  type: t.type ?? null,
-  text: t.text ?? null,
-  hours: t.hours ?? null,
-  start: t.start ?? null,
-  end: t.end ?? null,
-  assignees: t.assignees ?? null,
-  autoTest: t.autoTest === true,
-  autoTestLocked: t.autoTestLocked === true,
-});
-
-/* the id of the person whose role is `tester`. There is one today; if a second
-   one ever appears the first on the roster wins, deterministically, and the
-   queue in ./lib/testing-buffer is keyed by assignee so both would still get a
-   calendar of their own. */
-export const testerIdOf = (roster: Person[]): string | null =>
-  (roster.find((h) => h.role === "tester") || { id: null }).id;
-
-export function syncTestingBars(api: GanttApi, cfg: TestingConfig): void {
-  if (TESTING_WRITE) return;
-  let list: StoreTask[] = [];
-  try { list = serializeSide(api, "tasks"); } catch (e) { return; }
-  if (!list.length) return;
-
-  let plan: TestingPlan;
-  try {
-    plan = planTestingBars(list.map(asBufferTask), {
-      pct: cfg.pct,
-      mode: cfg.mode,
-      testerId: cfg.testerId,
-      /* today, pinned once per pass: two calls inside one run must not be able
-         to straddle midnight and disagree */
-      today: isoDay(new Date()),
-    });
-  } catch (e) { return; }
-
-  const by = new Map<string, StoreTask>();
-  list.forEach((t) => by.set(String(t.id), t));
-
-  /* a discriminated union, so the exec below cannot reach for an `id` an add
-     does not have */
-  type Write =
-    | { kind: "add"; parent: TaskId; task: Partial<ITask> }
-    | { kind: "update"; id: TaskId; task: Partial<ITask> }
-    | { kind: "delete"; id: TaskId };
-  const writes: Write[] = [];
-
-  plan.bars.forEach((b) => {
-    /* the dates go back in as Dates: the widget parses them, the draft stores
-       the ISO strings cleanTask writes back out */
-    const task: Partial<ITask> = {
-      text: b.text,
-      type: "testing",
-      kind: "testing",
-      hours: b.hours,
-      days: b.days,
-      start: new Date(b.start + "T00:00:00"),
-      end: new Date(b.end + "T00:00:00"),
-      duration: b.duration,
-      assignees: b.assignees,
-      autoTest: true,
-      autoTestLocked: false,
-    };
-    if (b.id === undefined) {
-      /* `mode: "child"` appends to the end of that parent's children, which is
-         where a testing bar belongs: last, after the work it tests */
-      writes.push({ kind: "add", parent: b.parent, task });
-      return;
-    }
-    const prev = by.get(String(b.id));
-    if (!prev) return;
-    if (!barDiffers(prev, b)) return;
-    /* the parent only travels when it actually moved: `update-task` with a
-       parent is a re-parent, and re-parenting a row that is already there
-       would still be a write */
-    if (String(prev.parent ?? "") !== String(b.parent)) task.parent = b.parent;
-    writes.push({ kind: "update", id: b.id, task });
-  });
-  plan.removeIds.forEach((id) => { if (by.has(String(id))) writes.push({ kind: "delete", id }); });
-
-  /* THE idempotence gate: nothing differs, nothing is written, no event is
-     raised, and the pass that this one triggered stops here */
-  if (!writes.length) return;
-
-  const now = Date.now();
-  testingBurst = testingBurst.filter((t) => now - t < TESTING_BURST_MS).concat(now);
-  if (testingBurst.length > TESTING_BURST) {
-    console.error(
-      "gantt: the testing-buffer generator kept finding work to do — stopping to avoid a write loop. "
-      + "The bars on screen may be out of date; reload the page.",
-    );
-    return;
-  }
-
-  TESTING_WRITE = true;
-  try {
-    writes.forEach((w) => {
-      try {
-        /* `select: false` — the widget selects a newly added row by default,
-           and a generated bar appearing must not steal the row the user was
-           working on. `mode: "child"` with the tier as the target appends it
-           LAST inside that tier, which is where a testing bar belongs. */
-        if (w.kind === "add") api.exec("add-task", { task: w.task, target: w.parent, mode: "child", select: false });
-        else if (w.kind === "update") api.exec("update-task", { id: w.id, task: w.task });
-        else api.exec("delete-task", { id: w.id });
-      } catch (e) { /* one bar failing must not strand the flag below */ }
-    });
-  } finally {
-    TESTING_WRITE = false;
-  }
-}
-
 /* tag grid rows and paint epic bands on the chart so the epic → task
    hierarchy is visible on both sides; rows/bars are re-rendered by the
    widget, so redo the work whenever the gantt's DOM changes */
@@ -1517,6 +1373,10 @@ function watchRowTags(api: GanttApi) {
       const first = gridRows()[0];
       if (first) rovingRow(first, true);
     }
+    /* the rendered scale, read once for the whole sweep: every tail measures
+       against the same columns the bars were laid out on */
+    let barScale: ScaleData = null;
+    try { barScale = api.getState()._scales as unknown as ScaleData; } catch (e) { barScale = null; }
     document.querySelectorAll<HTMLElement>(".gantt-holder .wx-bar[data-task-id]").forEach((bar) => {
       const raw = bar.getAttribute("data-task-id") || "";
       const id = raw.startsWith(":") ? raw.slice(1) : raw;
@@ -1528,6 +1388,42 @@ function watchRowTags(api: GanttApi) {
       ["st-todo", "st-progress", "st-done"].forEach((c) => bar.classList.remove(c));
       bar.classList.add("st-" + status);
       bar.classList.toggle("is-story", tierOf(t) === "story");
+      /* ---------- the testing tail ----------
+         APPENDED, never inserted: React only ever adds at the end of this bar,
+         removes by node, or inserts before a node it owns, so a trailing child
+         of our own is safe — the same contract every other tagger-built node
+         keeps. `--test-w` goes on the BAR because the label is pulled outside
+         it to `left: 100%` (see wx-overrides.css) and would otherwise sit on
+         top of the tail; the CSS offsets it by this width. */
+      const tailEnd = showTailsRef ? tailEndOf(t) : null;
+      let w = 0;
+      if (tailEnd && barScale && t.end instanceof Date) {
+        const x0 = xForDate(barScale, t.end);
+        const x1 = xForDate(barScale, tailEnd);
+        if (x0 !== null && x1 !== null) w = Math.round(x1 - x0);
+      }
+      let tail = bar.querySelector<KeyedHost>(":scope > .test-tail");
+      if (w > 0) {
+        if (!tail) {
+          tail = document.createElement("div");
+          tail.className = "test-tail";
+          tail.setAttribute("aria-hidden", "true");
+          bar.appendChild(tail);
+        }
+        const sig = String(w);
+        if (tail.__key !== sig) {
+          tail.__key = sig;
+          tail.style.width = w + "px";
+          tail.title = "Testing buffer \u2014 " + testPctRef + "% of this task\u2019s estimate";
+        }
+      } else if (tail) {
+        tail.remove();
+      }
+      const wv = w > 0 ? w + "px" : "";
+      if (bar.style.getPropertyValue("--test-w") !== wv) {
+        if (wv) bar.style.setProperty("--test-w", wv);
+        else bar.style.removeProperty("--test-w");
+      }
     });
     syncFoldAllButton(api);
     syncScopeFilterButton();
@@ -1628,16 +1524,15 @@ export default function GanttEditor({
   const [hiddenCols, setHiddenCols] = useState<string[]>(() => readHiddenColumns(EDITOR_COLUMNS_KEY));
   const hiddenColsKey = hiddenKey(hiddenCols);
   /* ---------- the testing buffer ----------
-     Two of its three controls are per-PROJECT settings and go to Postgres
-     through the ordinary draft/diff path (`projects.test_buffer_pct`,
-     `projects.test_queue_mode`) — everyone opening the project plans against
-     the same buffer. The third, "Show testing", is a per-window DISPLAY
-     preference and lives in localStorage beside the column choice, for exactly
-     the reason features/gantt/lib/columns.ts sets out: it says nothing about
-     the plan, so it has no business in a link or in the database. */
-  const [showTesting, setShowTesting] = useState<boolean>(() => readShowTesting());
-  const showTestingRef = useRef(showTesting);
-  showTestingRef.current = showTesting;
+     The buffer % is a per-PROJECT setting and goes to Postgres through the
+     ordinary draft/diff path (`projects.test_buffer_pct`) — everyone opening
+     the project plans against the same number. "Show test estimates" is a
+     per-window DISPLAY preference and lives in localStorage beside the column
+     choice, for exactly the reason features/gantt/lib/columns.ts sets out: it
+     says nothing about the plan, so it has no business in a link or in the
+     database. It governs the DRAWING only — the project's "with testing" end
+     date is arithmetic and is shown either way. */
+  const [showTests, setShowTests] = useState<boolean>(() => readShowTesting());
   const [pctDraft, setPctDraft] = useState<string>("");
   const testingFirstRef = useRef<HTMLInputElement>(null);
   /* the Scope column header's own filter trigger, anchored the same way the Who
@@ -1691,15 +1586,6 @@ export default function GanttEditor({
   const redoRef = useRef<string[]>([]);
   const snapTimer = useRef<number | null>(null);
   const apiRef = useRef<GanttApi | null>(null);
-  /* what the generator should plan with right now. A ref rather than a
-     dependency: `init` is built once per widget mount and its event handlers
-     have to read the CURRENT buffer %, mode and tester without rebuilding —
-     rebuilding `init` would re-run the widget's own `init(config)` and drop the
-     filter, exactly as a moving `columns` prop would. */
-  const testingCfgRef = useRef<TestingConfig>({
-    pct: DEFAULT_TEST_BUFFER_PCT, mode: "queued", testerId: null,
-  });
-
   /* ---------- the filter ----------
      It hides rows and touches nothing else — see applyFilterTo above for why
      that is structurally true rather than a promise. The refs are what let the
@@ -1717,14 +1603,10 @@ export default function GanttEditor({
   const runFilter = useCallback(() => {
     const a = apiRef.current;
     if (!a) return;
-    /* hiding the generated testing bars is a fourth dimension of the same
-       predicate, so it has to count as "something is filtered" — otherwise the
-       early-out below would leave an editor that is hiding rows completely
-       inert and the bars would never disappear */
-    const on = filterActive(filterRef.current) || !showTestingRef.current;
+    const on = filterActive(filterRef.current);
     if (!on && !appliedRef.current) return;
     appliedRef.current = on;
-    setFilterInfo(applyFilterTo(a, filterRef.current, peopleRef.current, showTestingRef.current));
+    setFilterInfo(applyFilterTo(a, filterRef.current, peopleRef.current));
   }, []);
   const fKey = filterKey(filter);
   const knownPeople = useMemo(() => new Set(people.map((h) => h.id)), [people]);
@@ -1735,21 +1617,25 @@ export default function GanttEditor({
   /* what the filter actually constrains, once ids nobody holds any more are
      dropped — a deleted person left in the URL must not hide everything */
   const liveFilter = useMemo(() => usableFilter(filter, knownPeople), [fKey, knownPeople]);
-  /* hidden testing bars count as "filtered" for the empty-state overlay too: a
-     chart emptied by that switch must explain itself the same way one emptied
-     by the URL filter does */
-  const filterOn = filterActive(liveFilter) || !showTesting;
+  const filterOn = filterActive(liveFilter);
+  /* ---------- the two end dates, as the header prints them ----------
+     `stats.ends` holds EXCLUSIVE ISO days, exactly as every stored `end` does,
+     so the last WORKING day is the day before — the same step the span line
+     above already takes. `shortDate` is the grid's own 03.09.26. */
+  const endDates = useMemo(() => {
+    if (!stats || !stats.ends.plain || !stats.ends.tested) return null;
+    const back = (iso: string): string => {
+      const d = parseDay(iso);
+      if (!d) return "";
+      return shortDate(new Date(d.getTime() - DAY));
+    };
+    return { plain: back(stats.ends.plain), tested: back(stats.ends.tested) };
+  }, [stats]);
 
-  /* ---------- the three inputs the testing generator plans from ----------
-     The two project settings come off the draft, so they follow an undo, a
-     duplicate and an adopted snapshot without a second source of truth. The
-     tester is whoever on the roster carries the `tester` role — and a roster
-     with nobody in that role still gets its bars, unassigned, because the
-     buffer is real work whether or not it has a name on it yet. */
+  /* ---------- what the tails are sized from ----------
+     Off the draft, so it follows an undo, a duplicate and an adopted snapshot
+     without a second source of truth. */
   const bufferPct = clampPct(activeProject().testBufferPct ?? DEFAULT_TEST_BUFFER_PCT);
-  const queueMode = asQueueMode(activeProject().testQueueMode);
-  const testerId = useMemo(() => testerIdOf(people), [people]);
-  testingCfgRef.current = { pct: bufferPct, mode: queueMode, testerId };
 
   /* `st.storeRev` is in here for the same reason it is in the holder's key: an
      adopted snapshot replaces the draft object wholesale, and neither `seed`
@@ -1968,33 +1854,6 @@ export default function GanttEditor({
         ),
       ).filter((el) => el.offsetParent !== null || el === document.activeElement);
 
-    /* ---------- "Reset to auto", for a testing bar the user pinned ----------
-       A generated bar the user has dragged or re-estimated carries
-       `auto_test_locked` and the generator leaves it alone from then on. This
-       is the way back, and it lives in the editor modal's footer for the same
-       reason the two Move buttons do: the panel is open on exactly one row, so
-       the control is contextual rather than a permanently greyed glyph
-       somewhere else — and the row it applies to is the one already on screen.
-
-       It is a SEPARATE pass from building the bar, because the panel is reused
-       between rows: the button has to be shown or hidden every time the modal
-       opens on a different task, not once when it is created. */
-    const syncResetAuto = (ed: HTMLElement) => {
-      const btn = ed.querySelector<HTMLButtonElement>(".editor-reset-auto");
-      if (!btn) return;
-      const id = editorTaskRef.current;
-      let show = false;
-      if (id !== null && id !== undefined) {
-        try {
-          const t = api.getTask(id);
-          show = flagOf(t, "autoTest") && flagOf(t, "autoTestLocked");
-        } catch (e) { show = false; }
-      }
-      /* `display`, not the `hidden` attribute: the rule below sets `display`
-         and would win over it */
-      btn.style.display = show ? "" : "none";
-    };
-
     const ensureEditorChrome = () => {
       const ed = document.querySelector<HTMLElement>(".wx-gantt-editor");
       if (!ed) return;
@@ -2026,7 +1885,7 @@ export default function GanttEditor({
       if (inc && inc.getAttribute("aria-label") !== "Increase the effort by an hour") {
         inc.setAttribute("aria-label", "Increase the effort by an hour");
       }
-      if (ed.querySelector(".editor-okay")) { syncResetAuto(ed); return; }
+      if (ed.querySelector(".editor-okay")) return;
       const bar = document.createElement("div");
       bar.className = "editor-okay-bar";
       /* "Okay" beside a red Delete read as commit/cancel, which is not what
@@ -2087,28 +1946,8 @@ export default function GanttEditor({
       moves.appendChild(mover("up", "Move this row up (Alt+\u2191)", "ci-move-up"));
       moves.appendChild(mover("down", "Move this row down (Alt+\u2193)", "ci-move-down"));
       bar.appendChild(moves);
-      /* shown only while the open row is a PINNED generated testing bar — see
-         syncResetAuto above. Clearing the flag is an ordinary user edit: it
-         goes out as one `update-task`, so it takes one undo snapshot and one
-         row in the diff, and the change event it raises is what runs the
-         generator again and puts the bar back on the calendar. */
-      const reset = document.createElement("button");
-      reset.type = "button";
-      reset.className = "editor-reset-auto";
-      reset.textContent = "Reset to auto";
-      reset.title = "Let the testing buffer schedule this bar again";
-      reset.setAttribute("aria-label", "Reset this testing bar to the automatic schedule");
-      reset.style.display = "none";
-      reset.onclick = () => {
-        const id = editorTaskRef.current;
-        if (id === null || id === undefined) return;
-        try { void api.exec("update-task", { id, task: { autoTestLocked: false } }); } catch (e) {}
-        reset.style.display = "none";
-      };
-      bar.appendChild(reset);
       bar.appendChild(btn);
       ed.appendChild(bar);
-      syncResetAuto(ed);
       /* focus the first field — the Name text input — once, on open */
       const first = ed.querySelector<HTMLElement>("input, textarea, select");
       if (first) setTimeout(() => { if (first.isConnected) first.focus(); }, 0);
@@ -2225,11 +2064,6 @@ export default function GanttEditor({
        moment it is honoured — so a confirm covers exactly one deletion and
        never leaks into the next. */
     a.intercept("delete-task", (ev) => {
-      /* the testing-buffer generator removing a bar whose development is gone
-         is not a decision the user is making — it is the consequence of one
-         they already made, and a confirm dialog in the middle of a
-         recalculation would be unanswerable. Same device as ROLLUP_WRITE. */
-      if (TESTING_WRITE) return true;
       if (deleteOkRef.current !== null && deleteOkRef.current === String(ev.id)) {
         deleteOkRef.current = null;
         return true;
@@ -2258,21 +2092,6 @@ export default function GanttEditor({
         t.type = asWidgetType(asked);
       }
       const merged = { ...prev, ...t };
-      /* ---------- a hand edit pins a generated testing bar ----------
-         The bar is a real row and the user is allowed to move it. What must
-         not happen is the next recalculation silently undoing that. So the
-         moment a change to an `auto_test` row touches its SCHEDULE — dates,
-         duration or hours — `auto_test_locked` goes with the same update: one
-         event, one undo snapshot, one row in the diff carrying both columns.
-         `TESTING_WRITE` is what tells this apart from the generator's own
-         writes, exactly as `ROLLUP_WRITE` does for the roll-up. From then on
-         the bar keeps its parent's roll-up contribution and simply stops
-         moving, until "Reset to auto" in the task editor clears the flag. */
-      if (!TESTING_WRITE && flagOf(prev, "autoTest") && !flagOf(merged, "autoTestLocked")) {
-        const schedule = t.start !== undefined || t.end !== undefined
-          || t.duration !== undefined || t.hours !== undefined || t.days !== undefined;
-        if (schedule) t.autoTestLocked = true;
-      }
       if (merged.type === "summary" && !ROLLUP_WRITE) {
         /* epic estimates are derived from their tasks — ignore manual edits */
         delete t.hours; delete t.days;
@@ -2345,18 +2164,9 @@ export default function GanttEditor({
       "indent-task", "add-link", "update-link", "delete-link", "open-task",
     ];
     const touched = () => {
-      /* the mount's own roll-up and testing-buffer writes run inside
-         ROLLUP_WRITE / TESTING_WRITE; anything else reaching here is a change
-         the user made */
-      if (!ROLLUP_WRITE && !TESTING_WRITE) touchedRef.current = true;
-      /* BEFORE the roll-up, deliberately: a testing bar is an ordinary leaf and
-         its hours belong in its tier's total, so generating it first is what
-         makes the parents' numbers right in the SAME pass rather than one
-         event later. `syncTestingBars` writes nothing when nothing differs,
-         which is what stops its own events from looping back into it. */
-      if (!ROLLUP_WRITE && !TESTING_WRITE) {
-        try { syncTestingBars(a, testingCfgRef.current); } catch (e) {}
-      }
+      /* the mount's own roll-up runs inside ROLLUP_WRITE; anything else
+         reaching here is a change the user made */
+      if (!ROLLUP_WRITE) touchedRef.current = true;
       if (!ROLLUP_WRITE) { try { rollupEpics(a); } catch (e) {} }
       scheduleSave();
       scheduleSnapshot();
@@ -2366,12 +2176,8 @@ export default function GanttEditor({
       } catch (e) {}
       /* a row added, moved or retyped while a filter is on is not in the
          visible set yet; re-running the filter is a pure read of the same tree
-         and emits no event, so it cannot loop. Unconditional now, because the
-         generated testing bars are a fourth dimension of the same predicate
-         and `filterActive` knows nothing about them — a bar the generator has
-         just created has to be hidden straight away when "Show testing" is
-         off. `runFilter` returns immediately when nothing is filtered at all,
-         so an unfiltered editor stays exactly as inert as before. */
+         and emits no event, so it cannot loop. `runFilter` returns immediately
+         when nothing is filtered at all, so an unfiltered editor stays inert. */
       runFilter();
       if (retagHook) retagHook();
     };
@@ -2382,8 +2188,6 @@ export default function GanttEditor({
       /* a project switch may have superseded this mount */
       if (apiRef.current !== a || projectId !== mountProject) return;
       watchRowTags(a);
-      /* same order as `touched` above, and for the same reason */
-      try { syncTestingBars(a, testingCfgRef.current); } catch (e) {}
       try { rollupEpics(a); setStats(computeStats(a)); } catch (e) {}
       try { seedSnapshot(); } catch (e) {}
     }, 0);
@@ -2437,36 +2241,35 @@ export default function GanttEditor({
     if (hiddenCols.includes("scope")) setScopePick(null);
   }, [hiddenColsKey, hiddenCols]);
 
-  /* ---------- "Show testing" ----------
-     Persist the choice and re-run the filter. It goes through the SAME
-     `filter-tasks` path as every other dimension, which is what makes it
-     structurally incapable of causing a write: the widget is never handed a
-     reduced dataset, so the next save's diff still sees every row. Reducing it
-     instead would make the save DELETE every hidden bar. */
+  /* ---------- "Show test estimates", and the buffer % ----------
+     Both only ever reach the DRAWING. They are published to the tagger through
+     the same module-scope bridge `rosterRef` uses (it runs outside React), the
+     choice is persisted per window, and the chart is repainted. No filter is
+     involved — a tail is decoration, so nothing is hidden from the widget and
+     nothing can reach the save diff. */
   useEffect(() => {
-    writeShowTesting(showTesting);
-    runFilter();
-  }, [showTesting, runFilter]);
+    writeShowTesting(showTests);
+    showTailsRef = showTests;
+    testPctRef = bufferPct;
+    if (retagHook) retagHook();
+  }, [showTests, bufferPct, api, seed, projectId, st.storeRev]);
 
   /* the number field is a draft while it is being typed — an emptied box must
      not read as 0% and rewrite every bar mid-keystroke — so it is re-seeded
      from the project whenever the stored value moves under it */
   useEffect(() => { setPctDraft(String(bufferPct)); }, [bufferPct, projectId]);
 
-  /* ---------- recalculate on a settings change ----------
-     The task events already re-run the generator (see `touched` in `init`), but
-     the buffer %, the queue mode and the arrival of a tester on the roster
-     change nothing about the tasks — so nothing would fire. `syncTestingBars`
-     is idempotent, so running it here costs one serialize and no write at all
-     when the answer has not moved. */
+  /* ---------- the buffer % moves the header's own arithmetic too ----------
+     The end dates come out of `computeStats`, which reads `testPctRef`; a % the
+     user has just changed has to be reflected without waiting for a task event
+     that may never come. This is a pure read of the widget's tree — no exec, no
+     write. */
   useEffect(() => {
     const a = apiRef.current;
     if (!a) return;
-    try { syncTestingBars(a, { pct: bufferPct, mode: queueMode, testerId }); } catch (e) {}
-  }, [api, bufferPct, queueMode, testerId, seed, projectId, st.storeRev]);
+    try { setStats(computeStats(a)); } catch (e) {}
+  }, [api, bufferPct, seed, projectId, st.storeRev]);
 
-  /* the popover's own button. Same function, no arguments — there is one
-     generator and this is it. */
   /* The box is a draft while it is typed, so this is where a value becomes the
      project's: clamped to the column's own 0–100 check constraint, rounded to a
      whole percent, and written through the ordinary draft/diff path. An
@@ -2478,12 +2281,6 @@ export default function GanttEditor({
     setPctDraft(String(c));
     stRef.current.setProjectTesting(projectId, { pct: c });
   }, [bufferPct, projectId]);
-
-  const recalcTesting = useCallback(() => {
-    const a = apiRef.current;
-    if (!a) return;
-    try { syncTestingBars(a, testingCfgRef.current); } catch (e) {}
-  }, []);
 
   /* ---------- people roster ---------- */
   /* the tagger reads the roster from module scope; keep it in step and repaint */
@@ -2930,6 +2727,28 @@ export default function GanttEditor({
                 {stats.release.unscoped > 0 && (
                   <span className="flex-none max-[1180px]:hidden">unscoped {stats.release.unscoped}h</span>
                 )}
+                {/* ---------- when the project is done ----------
+                    Two figures, always the WHOLE project: the plan as drawn,
+                    and the plan with every leaf task's own testing buffer
+                    behind it. They are arithmetic over the stored estimates, so
+                    they are shown whether or not the tails are on screen — the
+                    switch in the Testing popover governs the drawing, not the
+                    numbers. `ends` is EXCLUSIVE, like every stored end, so the
+                    last working day is the day before it. */}
+                {endDates && (
+                  <span className="inline-flex flex-none items-center gap-1 max-[1180px]:hidden">
+                    ends <strong className="font-semibold text-ink">{endDates.plain}</strong>
+                  </span>
+                )}
+                {endDates && (
+                  <span
+                    className="inline-flex flex-none items-center gap-1"
+                    title={"With each task\u2019s own testing buffer (" + bufferPct + "% of its estimate) behind it. Each buffer runs alongside its own task \u2014 no tester queue is assumed."}
+                  >
+                    <span className="h-2 w-2 flex-none rounded-[3px] bg-type-testing-deep" aria-hidden="true" />
+                    with testing <strong className="font-semibold text-ink">{endDates.tested}</strong>
+                  </span>
+                )}
               </>
             )}
           </div>
@@ -3295,15 +3114,15 @@ export default function GanttEditor({
                 reason Columns is here rather than in the page header: that
                 header has overflowed twice and its labels already start
                 disappearing at 1080px. The trigger goes to its ON weight while
-                the generated bars are HIDDEN — a switch the user has forgotten
-                is worse than no switch. */}
+                the tails are HIDDEN — a switch the user has forgotten is worse
+                than no switch. */}
             <Popover.Root
               positioning={{ placement: "bottom-start", gutter: 8 }}
               initialFocusEl={() => testingFirstRef.current}
             >
               <Popover.Trigger
-                className={`${showTesting ? BTN : BTN_ON} ml-2`}
-                title="The generated testing bars: how big, when, and whether they are on screen"
+                className={`${showTests ? BTN : BTN_ON} ml-2`}
+                title="The testing tail on each task: how big, and whether it is on screen"
               >
                 <Flask size={13} aria-hidden="true" />
                 <span className="max-[1080px]:sr-only">Testing</span>
@@ -3314,8 +3133,8 @@ export default function GanttEditor({
                   <Popover.Content className={`${POP} w-[300px] rounded-xl p-3`}>
                     <Popover.Title className={POP_TITLE}>Testing buffer</Popover.Title>
                     <Popover.Description className={POP_HINT}>
-                      Every story and epic with development directly under it gets a <strong>TEST:</strong> bar
-                      of its own, scheduled after that development finishes.
+                      Every task with an estimate gets a green testing tail drawn straight after its
+                      own bar. Nothing is added to the list, and nothing is stored.
                     </Popover.Description>
 
                     <p className={GROUP_LABEL}>Buffer</p>
@@ -3328,7 +3147,7 @@ export default function GanttEditor({
                         max={100}
                         step={1}
                         inputMode="numeric"
-                        aria-label="Testing buffer, as a percentage of development effort"
+                        aria-label="Testing buffer, as a percentage of each task's estimate"
                         value={pctDraft}
                         onChange={(e) => setPctDraft(e.currentTarget.value)}
                         onBlur={(e) => commitPct(e.currentTarget.value)}
@@ -3336,57 +3155,41 @@ export default function GanttEditor({
                           if (e.key === "Enter") { e.preventDefault(); commitPct(e.currentTarget.value); }
                         }}
                       />
-                      <span className="flex-none font-ui text-mini text-muted">% of development effort</span>
+                      <span className="flex-none font-ui text-mini text-muted">% of each estimate</span>
                     </div>
                     <p className="m-0 mt-1.5 text-tiny text-faint">
                       Rounded up to the half hour, and never less than 3.5 h. Saved with the project.
                     </p>
 
-                    <p className={GROUP_LABEL}>When they run</p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {QUEUE_MODES.map((m) => (
-                        <button
-                          key={m.id}
-                          type="button"
-                          className={queueMode === m.id ? CHIP_ON : CHIP_OFF}
-                          aria-pressed={queueMode === m.id}
-                          onClick={() => stRef.current.setProjectTesting(projectId, { mode: m.id })}
-                        >{m.label}</button>
-                      ))}
-                    </div>
-                    {QUEUE_MODES.map((m) => (
-                      <p key={m.id} className="m-0 mt-1.5 text-tiny text-faint">
-                        <strong className="font-semibold text-muted">{m.label}</strong> — {m.hint}
-                      </p>
-                    ))}
-
                     <p className={GROUP_LABEL}>On screen</p>
                     <button
                       type="button"
                       role="switch"
-                      aria-checked={showTesting}
-                      className={`press flex w-full cursor-pointer items-center gap-2 rounded-lg border-0 px-1.5 py-[0.3125rem] text-left font-ui text-body text-ink hover:bg-surface-hover ${FOCUS} ${showTesting ? "bg-accent-hover" : "bg-transparent"}`}
-                      onClick={() => setShowTesting((v) => !v)}
+                      aria-checked={showTests}
+                      className={`press flex w-full cursor-pointer items-center gap-2 rounded-lg border-0 px-1.5 py-[0.3125rem] text-left font-ui text-body text-ink hover:bg-surface-hover ${FOCUS} ${showTests ? "bg-accent-hover" : "bg-transparent"}`}
+                      onClick={() => setShowTests((v) => !v)}
                     >
                       <span className="min-w-0 flex-1 overflow-hidden">
-                        <span className="block overflow-hidden text-ellipsis whitespace-nowrap">Show testing</span>
+                        <span className="block overflow-hidden text-ellipsis whitespace-nowrap">Show test estimates</span>
                         <span className="block overflow-hidden text-tiny text-ellipsis whitespace-nowrap text-faint">
-                          Hides them on this device only — nothing is deleted.
+                          Draws the tails on this device only. The dates below still count them.
                         </span>
                       </span>
-                      <span className="flex-none text-ink" aria-hidden="true">{showTesting ? <Check size={13} weight="bold" /> : null}</span>
+                      <span className="flex-none text-ink" aria-hidden="true">{showTests ? <Check size={13} weight="bold" /> : null}</span>
                     </button>
 
-                    <div className="mt-2.5 border-t border-t-line-soft pt-2.5">
-                      <button type="button" className={BTN} onClick={recalcTesting}>
-                        <ArrowClockwise size={13} aria-hidden="true" />
-                        Recalculate now
-                      </button>
-                      <p className="m-0 mt-1.5 text-tiny text-faint">
-                        It already runs on every change. A bar you moved by hand stays where you put
-                        it — open it and choose <strong>Reset to auto</strong> to hand it back.
-                      </p>
-                    </div>
+                    {endDates && (
+                      <div className="mt-2.5 border-t border-t-line-soft pt-2.5">
+                        <p className="m-0 font-ui text-mini text-muted">
+                          Ends <strong className="font-semibold text-ink">{endDates.plain}</strong>
+                          {" \u00b7 with testing "}
+                          <strong className="font-semibold text-ink">{endDates.tested}</strong>
+                        </p>
+                        <p className="m-0 mt-1.5 text-tiny text-faint">
+                          Each buffer runs alongside its own task \u2014 nobody is queued behind anybody.
+                        </p>
+                      </div>
+                    )}
                   </Popover.Content>
                 </Popover.Positioner>
               </Portal>

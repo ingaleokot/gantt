@@ -515,7 +515,6 @@
   .wx-willow-theme .who-chips:active,
   .wx-willow-theme .tracker-link:active,
   .editor-move:active,
-  .editor-reset-auto:active,
   .editor-okay:active { transform: none; filter: brightness(0.92); }
   .wx-willow-theme .fold-all:active { transform: translateY(-50%); filter: brightness(0.92); }
 }
@@ -542,7 +541,11 @@
 .wx-willow-theme .wx-bar:not(.wx-milestone) > .wx-content,
 .wx-willow-theme .wx-bar.wx-milestone > .wx-text-out {
   position: absolute;
-  left: 100%;
+  /* `--test-w` is the width of this bar's testing tail, written onto the BAR
+     by the row tagger (0 / unset on a bar that has none, and on every bar while
+     "Show test estimates" is off). Without it the label — which lives outside
+     the bar at `left: 100%` — would sit directly on top of the tail. */
+  left: calc(100% + var(--test-w, 0px));
   top: 50%;
   transform: translateY(-50%);
   margin-left: 10px;
@@ -565,6 +568,40 @@
 /* a done bar keeps its colour (the reference does not grey them out) but its
    label is struck through, exactly as the row's name is */
 .wx-willow-theme .wx-bar.st-done > .wx-content { text-decoration: line-through; }
+
+/* ---------- the testing tail ----------
+   Testing is not a row any more — it is this. Every leaf development task with
+   an estimate carries a translucent green block drawn straight after its own
+   bar, `projects.test_buffer_pct` of that task's estimate long, appended by the
+   row tagger with its width in an inline style (the only thing that has to be
+   measured per row; everything else is here).
+
+   It is the EXISTING testing green at low opacity, not a new hue: this is the
+   same discipline the `testing` bars wear, drawn as a provisional extension of
+   the work rather than as work that has been planned. Lower opacity is what
+   says "estimated" next to the solid bars beside it.
+
+   `pointer-events: none` for the same reason the label carries it: the tail
+   overhangs empty track, and a hit target there would swallow clicks that
+   belong to the chart. `top`/`bottom` rather than a translated height so it is
+   exactly as tall as the bar it extends, whatever `barHeight` is set to. */
+.wx-willow-theme .wx-bar > .test-tail {
+  position: absolute;
+  left: 100%;
+  top: 0;
+  bottom: 0;
+  background-color: var(--color-type-testing);
+  opacity: 0.45;
+  border-radius: 0 var(--wx-gantt-bar-border-radius, 5px) var(--wx-gantt-bar-border-radius, 5px) 0;
+  pointer-events: none;
+}
+/* the tail belongs to the WORK, not to the container: a tier's bar spans its
+   children and each of those draws its own */
+.wx-willow-theme .wx-bar.wx-summary > .test-tail,
+.wx-willow-theme .wx-bar.wx-milestone > .test-tail { display: none; }
+/* a done bar is already dimmed to .72; dimming its tail again would take it
+   under the grid lines */
+.wx-willow-theme .wx-bar.st-done > .test-tail { opacity: 0.6; }
 
 /* ---------- the bar body, and the darker segment inside it ----------
    Solid fill, small radius, and a progress segment a step deeper than the
@@ -917,31 +954,6 @@
 .editor-move .ci { display: flex; width: 15px; height: 15px; }
 .editor-move .ci svg { width: 100%; height: 100%; }
 
-/* ---------- the way back from a pinned testing bar ----------
-   Shown only while the open row is a generated bar the user has edited by
-   hand (`auto_test && auto_test_locked`) — the tagger toggles `display`, so
-   this rule must not set one of its own. Secondary weight, like the two Move
-   buttons beside it: Done is the single filled control in the bar. */
-.editor-reset-auto {
-  flex: 0 0 auto;
-  margin-right: 8px;
-  padding: 7px 12px;
-  font-family: var(--font-ui);
-  font-size: 12.5px;
-  font-weight: 500;
-  color: var(--color-muted);
-  background: var(--color-surface);
-  border: 1px solid var(--color-line);
-  border-radius: 9px;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: transform var(--dur-press) ease-out,
-    background-color var(--dur-hover) ease-out, color var(--dur-hover) ease-out;
-}
-.editor-reset-auto:hover { background: var(--color-surface-hover); color: var(--color-ink); }
-.editor-reset-auto:active { transform: scale(0.97); }
-.editor-reset-auto:focus-visible { outline: 2px solid var(--color-ring); outline-offset: 1px; }
-
 .editor-okay {
   font-family: var(--font-ui);
   font-size: 13.5px;
@@ -1043,6 +1055,15 @@
   .wx-willow-theme .wx-bar > .wx-content,
   .wx-willow-theme .wx-bar > .wx-text-out { color: var(--color-ink); }
   .wx-willow-theme .wx-bar.st-done { opacity: 1; }
+  /* a 45%-opacity block is exactly what this mode cannot see: the tail goes
+     opaque and gains an outline, so it still reads apart from the solid bar it
+     extends without relying on translucency alone */
+  .wx-willow-theme .wx-bar > .test-tail {
+    opacity: 1;
+    outline: 1px solid var(--color-ink);
+    outline-offset: -1px;
+  }
+  .wx-willow-theme .wx-bar.st-done > .test-tail { opacity: 1; }
   /* the weekend's hatch is carried by a near-transparent stripe, which is
      exactly what this mode cannot see — give the column a border instead */
   .wx-willow-theme .wx-weekend {
